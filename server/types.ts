@@ -32,3 +32,39 @@ export type ControlResult = {
   simulated: boolean;
   message: string;
 };
+
+export type ChatMessageExcerpt = {
+  text: string;
+  createdAt: string;
+};
+
+export type ChatSummary = {
+  id: string;
+  title: string;
+  projectName: string;
+  projectPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPromptPreview: string;
+  lastResponsePreview: string;
+  hasResponse: boolean;
+};
+
+export type ChatDetail = {
+  id: string;
+  title: string;
+  projectName: string;
+  projectPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPrompt: ChatMessageExcerpt | null;
+  lastResponse: ChatMessageExcerpt | null;
+  hasResponse: boolean;
+};
+
+export type ChatProjectGroup = {
+  projectName: string;
+  projectPath: string;
+  updatedAt: string;
+  chats: ChatSummary[];
+};

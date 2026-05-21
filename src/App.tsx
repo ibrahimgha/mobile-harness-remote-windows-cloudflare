@@ -1,386 +1,495 @@
 import {
-  Activity,
-  AlertTriangle,
+  ArrowRight,
   CheckCircle2,
-  Clipboard,
-  Command,
-  CornerDownLeft,
+  Clock3,
+  Folder,
   KeyRound,
   Loader2,
-  MonitorDot,
-  Play,
-  PlugZap,
-  Radio,
+  LogOut,
+  MessageSquareText,
   RefreshCw,
   Send,
-  Shield,
-  SquareTerminal,
+  ShieldCheck,
   Wifi,
   WifiOff
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-
-type BridgeEvent = {
-  id: string;
-  type: "action" | "error" | "status";
-  createdAt: string;
-  message: string;
-  detail?: Record<string, unknown>;
-};
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type BridgeState = {
   bridge: {
     mode: "simulation" | "window-control";
     targetTitle: string;
-    controlEnabled: boolean;
-    tokenConfigured: boolean;
     tokenRequired: boolean;
     platform: string;
   };
   server: {
     uptimeSeconds: number;
-    port: number;
     clients: number;
   };
-  recentEvents: BridgeEvent[];
+};
+
+type ChatMessageExcerpt = {
+  text: string;
+  createdAt: string;
+};
+
+type ChatSummary = {
+  id: string;
+  title: string;
+  projectName: string;
+  projectPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPromptPreview: string;
+  lastResponsePreview: string;
+  hasResponse: boolean;
+};
+
+type ChatDetail = {
+  id: string;
+  title: string;
+  projectName: string;
+  projectPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPrompt: ChatMessageExcerpt | null;
+  lastResponse: ChatMessageExcerpt | null;
+  hasResponse: boolean;
+};
+
+type ChatProjectGroup = {
+  projectName: string;
+  projectPath: string;
+  updatedAt: string;
+  chats: ChatSummary[];
+};
+
+type ChatIndex = {
+  projects: ChatProjectGroup[];
+  totalChats: number;
 };
 
 type ApiResult = {
   ok: boolean;
-  simulated: boolean;
-  message: string;
+  message?: string;
+  state?: BridgeState;
 };
 
-const quickPrompts = [
-  "Summarize the current workspace state.",
-  "Run the relevant checks and report blockers.",
-  "Continue the current implementation task."
-];
+const tokenKey = "control-token";
 
-const hotkeys = [
-  { key: "enter", label: "Enter", icon: CornerDownLeft },
-  { key: "escape", label: "Esc", icon: Command },
-  { key: "ctrl-c", label: "Ctrl C", icon: Command },
-  { key: "ctrl-l", label: "Ctrl L", icon: Command }
-];
+function formatRelative(value: string) {
+  const ms = Date.parse(value);
 
-function formatUptime(totalSeconds: number) {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes < 1) {
-    return `${seconds}s`;
+  if (!Number.isFinite(ms)) {
+    return "";
   }
 
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
+  const diffSeconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
 
-  return hours > 0 ? `${hours}h ${remainingMinutes}m` : `${minutes}m ${seconds}s`;
+  if (diffSeconds < 60) {
+    return "just now";
+  }
+
+  const minutes = Math.round(diffSeconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
-function getEventIcon(type: BridgeEvent["type"]) {
-  if (type === "error") {
-    return AlertTriangle;
+function formatDate(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
   }
 
-  if (type === "action") {
-    return CheckCircle2;
-  }
+  return date.toLocaleString();
+}
 
-  return Activity;
+function firstChatId(index: ChatIndex | null) {
+  return index?.projects[0]?.chats[0]?.id ?? null;
 }
 
 export function App() {
+  const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
+  const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
+  const [authenticated, setAuthenticated] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authError, setAuthError] = useState("");
   const [state, setState] = useState<BridgeState | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [token, setToken] = useState(() => localStorage.getItem("control-token") ?? "");
+  const [chatIndex, setChatIndex] = useState<ChatIndex | null>(null);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [selectedChat, setSelectedChat] = useState<ChatDetail | null>(null);
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [draft, setDraft] = useState("");
-  const [statusMessage, setStatusMessage] = useState("Connecting");
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [socketLive, setSocketLive] = useState(false);
 
-  const tokenRequired = state?.bridge.tokenRequired ?? false;
-  const canControl = !tokenRequired || token.length > 0;
+  const authHeaders = useMemo(
+    () => ({
+      "Content-Type": "application/json",
+      ...(token ? { "x-control-token": token } : {})
+    }),
+    [token]
+  );
 
-  useEffect(() => {
-    localStorage.setItem("control-token", token);
-  }, [token]);
+  const apiFetch = useCallback(
+    async <T,>(url: string, init?: RequestInit): Promise<T> => {
+      const response = await fetch(url, {
+        ...init,
+        headers: {
+          ...authHeaders,
+          ...(init?.headers ?? {})
+        }
+      });
+      const payload = (await response.json()) as T & { message?: string };
 
-  useEffect(() => {
-    let cancelled = false;
+      if (!response.ok) {
+        throw new Error(payload.message ?? "Request failed");
+      }
 
-    async function loadState() {
+      return payload;
+    },
+    [authHeaders]
+  );
+
+  const verifyToken = useCallback(
+    async (value: string) => {
+      setCheckingAuth(true);
+      setAuthError("");
+
       try {
-        const response = await fetch("/api/state");
-        const payload = (await response.json()) as BridgeState;
+        const response = await fetch("/api/auth/verify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(value ? { "x-control-token": value } : {})
+          }
+        });
+        const payload = (await response.json()) as ApiResult;
 
-        if (!cancelled) {
-          setState(payload);
-          setStatusMessage("Ready");
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message ?? "Invalid token");
         }
+
+        localStorage.setItem(tokenKey, value);
+        setToken(value);
+        setLoginToken(value);
+        setState(payload.state ?? null);
+        setAuthenticated(true);
+      } catch (error) {
+        setAuthenticated(false);
+        setAuthError(error instanceof Error ? error.message : "Invalid token");
+      } finally {
+        setCheckingAuth(false);
+      }
+    },
+    []
+  );
+
+  const loadChats = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    setLoadingChats(true);
+    try {
+      const index = await apiFetch<ChatIndex>("/api/chats");
+      setChatIndex(index);
+      setSelectedChatId((current) => current ?? firstChatId(index));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load chats");
+    } finally {
+      setLoadingChats(false);
+    }
+  }, [apiFetch, authenticated]);
+
+  const loadChatDetail = useCallback(
+    async (chatId: string) => {
+      setLoadingDetail(true);
+      try {
+        const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}`);
+        setSelectedChat(detail);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Could not load chat");
+      } finally {
+        setLoadingDetail(false);
+      }
+    },
+    [apiFetch]
+  );
+
+  useEffect(() => {
+    async function bootstrap() {
+      try {
+        const response = await fetch("/api/auth/status");
+        const status = (await response.json()) as { tokenRequired: boolean };
+
+        if (!status.tokenRequired) {
+          await verifyToken("");
+          return;
+        }
+
+        if (token) {
+          await verifyToken(token);
+          return;
+        }
+
+        setCheckingAuth(false);
       } catch {
-        if (!cancelled) {
-          setStatusMessage("Bridge unavailable");
-        }
+        setAuthError("Bridge unavailable");
+        setCheckingAuth(false);
       }
     }
 
-    void loadState();
-    const interval = window.setInterval(loadState, 10000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
+    void bootstrap();
+  }, [token, verifyToken]);
 
   useEffect(() => {
+    void loadChats();
+  }, [loadChats]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedChatId) {
+      return;
+    }
+
+    void loadChatDetail(selectedChatId);
+  }, [authenticated, loadChatDetail, selectedChatId]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedChatId) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void loadChats();
+      void loadChatDetail(selectedChatId);
+    }, 6000);
+
+    return () => window.clearInterval(interval);
+  }, [authenticated, loadChatDetail, loadChats, selectedChatId]);
+
+  useEffect(() => {
+    if (!authenticated) {
+      return;
+    }
+
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const encodedToken = token ? `?token=${encodeURIComponent(token)}` : "";
     const socket = new WebSocket(`${protocol}://${window.location.host}/ws${encodedToken}`);
 
-    socketRef.current = socket;
-    socket.addEventListener("open", () => {
-      setConnected(true);
-      setStatusMessage("Live");
-    });
-    socket.addEventListener("close", () => {
-      setConnected(false);
-      setStatusMessage("Socket closed");
-    });
-    socket.addEventListener("error", () => {
-      setConnected(false);
-      setStatusMessage("Socket error");
-    });
+    socket.addEventListener("open", () => setSocketLive(true));
+    socket.addEventListener("close", () => setSocketLive(false));
+    socket.addEventListener("error", () => setSocketLive(false));
     socket.addEventListener("message", (event) => {
-      const payload = JSON.parse(event.data as string) as { kind: string; state?: BridgeState };
+      const payload = JSON.parse(event.data as string) as { state?: BridgeState };
 
       if (payload.state) {
         setState(payload.state);
       }
     });
 
-    return () => {
-      socket.close();
-    };
-  }, [token]);
+    return () => socket.close();
+  }, [authenticated, token]);
 
-  const events = useMemo(() => state?.recentEvents ?? [], [state]);
-  const modeLabel = state?.bridge.mode === "window-control" ? "Window control" : "Simulation";
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await verifyToken(loginToken.trim());
+  }
 
-  async function callAction<T extends object>(action: string, body?: T) {
-    setBusyAction(action);
+  async function sendPrompt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedChatId || !draft.trim()) {
+      return;
+    }
+
+    setSending(true);
+    setNotice("");
 
     try {
-      const response = await fetch(`/api/actions/${action}`, {
+      const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "x-control-token": token } : {})
-        },
-        body: body ? JSON.stringify(body) : "{}"
+        body: JSON.stringify({ text: draft })
       });
-      const payload = (await response.json()) as ApiResult;
 
-      setStatusMessage(payload.message);
-
-      if (!response.ok) {
-        throw new Error(payload.message);
-      }
+      setDraft("");
+      setNotice(result.message ?? "Prompt sent");
+      window.setTimeout(() => {
+        void loadChats();
+        void loadChatDetail(selectedChatId);
+      }, 1600);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Action failed");
+      setNotice(error instanceof Error ? error.message : "Prompt failed");
     } finally {
-      setBusyAction(null);
+      setSending(false);
     }
   }
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            <MonitorDot size={22} />
-          </span>
-          <div>
-            <h1>Codex Window Remote</h1>
-            <p>{state?.bridge.targetTitle ?? "Codex"} on this laptop</p>
+  function logout() {
+    localStorage.removeItem(tokenKey);
+    setToken("");
+    setLoginToken("");
+    setAuthenticated(false);
+    setChatIndex(null);
+    setSelectedChat(null);
+    setSelectedChatId(null);
+  }
+
+  if (checkingAuth) {
+    return (
+      <main className="auth-shell">
+        <Loader2 className="spin" size={24} />
+      </main>
+    );
+  }
+
+  if (!authenticated) {
+    return (
+      <main className="auth-shell">
+        <form className="auth-panel" onSubmit={submitLogin}>
+          <div className="auth-mark" aria-hidden="true">
+            <ShieldCheck size={26} />
           </div>
-        </div>
-
-        <div className="topbar-status" aria-live="polite">
-          <span className={`status-pill ${connected ? "is-live" : "is-offline"}`}>
-            {connected ? <Wifi size={16} /> : <WifiOff size={16} />}
-            {statusMessage}
-          </span>
-          <span className={`status-pill ${state?.bridge.mode === "window-control" ? "is-danger" : "is-muted"}`}>
-            <Shield size={16} />
-            {modeLabel}
-          </span>
-        </div>
-      </header>
-
-      <section className="workspace-grid">
-        <section className="codex-surface" aria-label="Codex window representation">
-          <div className="surface-toolbar">
-            <div>
-              <span className="eyebrow">Live surface</span>
-              <h2>Remote session</h2>
-            </div>
-            <div className="metric-row">
-              <span>
-                <Radio size={15} />
-                {state?.server.clients ?? 0} clients
-              </span>
-              <span>
-                <PlugZap size={15} />
-                {formatUptime(state?.server.uptimeSeconds ?? 0)}
-              </span>
-            </div>
-          </div>
-
-          <div className="terminal-pane">
-            <div className="terminal-title">
-              <SquareTerminal size={16} />
-              <span>activity</span>
-            </div>
-            <div className="event-stream">
-              {events.length === 0 ? (
-                <div className="empty-state">
-                  <Activity size={26} />
-                  <span>No bridge events yet</span>
-                </div>
-              ) : (
-                events.map((event) => {
-                  const EventIcon = getEventIcon(event.type);
-
-                  return (
-                    <article key={event.id} className={`event-item event-${event.type}`}>
-                      <EventIcon size={16} />
-                      <div>
-                        <p>{event.message}</p>
-                        <time>{new Date(event.createdAt).toLocaleTimeString()}</time>
-                      </div>
-                    </article>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </section>
-
-        <aside className="control-panel" aria-label="Controls">
-          <div className="panel-section">
-            <div className="section-heading">
-              <KeyRound size={17} />
-              <h2>Access</h2>
-            </div>
-            <label className="field-label" htmlFor="token">
-              Control token
-            </label>
+          <h1>Codex Remote</h1>
+          <label htmlFor="control-token">Control token</label>
+          <div className="auth-row">
             <input
-              id="token"
-              className="text-input"
+              id="control-token"
               type="password"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder={tokenRequired ? "Required" : "Optional"}
-              autoComplete="off"
+              value={loginToken}
+              onChange={(event) => setLoginToken(event.target.value)}
+              autoComplete="current-password"
             />
-            <div className="state-grid">
-              <span>{state?.bridge.platform ?? "platform"}</span>
-              <span>{state?.bridge.tokenConfigured ? "token set" : "no token"}</span>
-            </div>
+            <button type="submit" aria-label="Unlock">
+              <ArrowRight size={18} />
+            </button>
           </div>
+          {authError ? <p className="auth-error">{authError}</p> : null}
+        </form>
+      </main>
+    );
+  }
 
-          <div className="panel-section">
-            <div className="section-heading">
-              <Send size={17} />
-              <h2>Prompt</h2>
-            </div>
-            <textarea
-              className="prompt-box"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="Type text for the Codex window"
-              spellCheck={false}
-            />
-            <div className="quick-prompts" aria-label="Quick prompts">
-              {quickPrompts.map((prompt) => (
-                <button key={prompt} type="button" className="quick-chip" onClick={() => setDraft(prompt)}>
-                  {prompt}
-                </button>
-              ))}
-            </div>
-            <div className="action-row">
-              <button
-                type="button"
-                className="primary-button"
-                disabled={!canControl || !draft.trim() || busyAction !== null}
-                onClick={() => callAction("send-text", { text: draft, submit: true })}
-                title="Paste text and submit"
-              >
-                {busyAction === "send-text" ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
-                Send
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                disabled={!canControl || !draft.trim() || busyAction !== null}
-                onClick={() => callAction("send-text", { text: draft, submit: false })}
-                title="Paste text"
-                aria-label="Paste text"
-              >
-                <Clipboard size={17} />
-              </button>
-            </div>
+  return (
+    <main className="remote-shell">
+      <aside className="chat-sidebar" aria-label="Project chats">
+        <div className="sidebar-header">
+          <div>
+            <h1>Codex Remote</h1>
+            <span>{chatIndex?.totalChats ?? 0} chats</span>
           </div>
+          <button className="icon-button" type="button" onClick={loadChats} aria-label="Refresh chats">
+            {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          </button>
+        </div>
 
-          <div className="panel-section">
-            <div className="section-heading">
-              <Command size={17} />
-              <h2>Window</h2>
-            </div>
-            <div className="button-grid">
-              <button
-                type="button"
-                className="tool-button"
-                disabled={!canControl || busyAction !== null}
-                onClick={() => callAction("focus")}
-              >
-                <MonitorDot size={17} />
-                Focus
-              </button>
-              <button
-                type="button"
-                className="tool-button"
-                disabled={busyAction !== null}
-                onClick={() => window.location.reload()}
-              >
-                <RefreshCw size={17} />
-                Refresh
-              </button>
-            </div>
-            <div className="hotkey-grid">
-              {hotkeys.map((hotkey) => {
-                const HotkeyIcon = hotkey.icon;
-
-                return (
+        <div className="project-list">
+          {chatIndex?.projects.map((project) => (
+            <section key={project.projectPath} className="project-group">
+              <div className="project-heading">
+                <Folder size={16} />
+                <div>
+                  <h2>{project.projectName}</h2>
+                  <p title={project.projectPath}>{project.projectPath}</p>
+                </div>
+              </div>
+              <div className="chat-list">
+                {project.chats.map((chat) => (
                   <button
-                    key={hotkey.key}
+                    key={chat.id}
                     type="button"
-                    className="tool-button"
-                    disabled={!canControl || busyAction !== null}
-                    onClick={() => callAction("hotkey", { key: hotkey.key })}
-                    title={hotkey.label}
+                    className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
+                    onClick={() => setSelectedChatId(chat.id)}
                   >
-                    <HotkeyIcon size={16} />
-                    {hotkey.label}
+                    <span>{chat.title}</span>
+                    <small>{formatRelative(chat.updatedAt)}</small>
                   </button>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      </aside>
+
+      <section className="chat-workspace" aria-label="Selected chat">
+        <header className="chat-topbar">
+          <div>
+            <p className="overline">{selectedChat?.projectName ?? "Project"}</p>
+            <h2>{selectedChat?.title ?? "Select a chat"}</h2>
           </div>
-        </aside>
+          <div className="status-row">
+            <span className={`status-pill ${socketLive ? "is-live" : "is-offline"}`}>
+              {socketLive ? <Wifi size={15} /> : <WifiOff size={15} />}
+              {socketLive ? "Live" : "Offline"}
+            </span>
+            <span className="status-pill is-muted">
+              <CheckCircle2 size={15} />
+              {state?.bridge.mode ?? "ready"}
+            </span>
+            <button className="icon-button" type="button" onClick={logout} aria-label="Sign out">
+              <LogOut size={18} />
+            </button>
+          </div>
+        </header>
+
+        <div className="chat-content">
+          {loadingDetail ? (
+            <div className="loading-state">
+              <Loader2 className="spin" size={24} />
+            </div>
+          ) : selectedChat ? (
+            <>
+              <section className="message-block prompt-block">
+                <div className="message-heading">
+                  <MessageSquareText size={17} />
+                  <h3>Last prompt</h3>
+                  {selectedChat.lastPrompt ? <time>{formatDate(selectedChat.lastPrompt.createdAt)}</time> : null}
+                </div>
+                <pre>{selectedChat.lastPrompt?.text ?? "No prompt found."}</pre>
+              </section>
+
+              <section className="message-block response-block">
+                <div className="message-heading">
+                  <MessageSquareText size={17} />
+                  <h3>Last response</h3>
+                  {selectedChat.lastResponse ? <time>{formatDate(selectedChat.lastResponse.createdAt)}</time> : null}
+                </div>
+                <pre>{selectedChat.lastResponse?.text ?? "No response found yet."}</pre>
+              </section>
+            </>
+          ) : (
+            <div className="empty-chat">
+              <Clock3 size={26} />
+            </div>
+          )}
+        </div>
+
+        <form className="composer" onSubmit={sendPrompt}>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="New prompt"
+            spellCheck={false}
+          />
+          <button type="submit" disabled={!selectedChatId || !draft.trim() || sending}>
+            {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+            Send
+          </button>
+        </form>
+
+        {notice ? <p className="notice">{notice}</p> : null}
       </section>
     </main>
   );

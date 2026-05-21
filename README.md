@@ -4,9 +4,10 @@ A local web control surface for a running Codex desktop window. It is designed t
 
 ## What Is Scaffolded
 
-- React/Vite control UI at `http://localhost:5173`
+- React/Vite authenticated chat UI at `http://localhost:5173`
 - Express bridge API at `http://localhost:8787`
 - WebSocket event stream at `/ws`
+- Codex session browser grouped by project folder
 - Windows-focused Codex window control through PowerShell and `WScript.Shell`
 - Simulation mode by default
 - Token-gated control actions for tunneled use

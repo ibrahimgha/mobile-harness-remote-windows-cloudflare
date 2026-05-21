@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CodexBridge } from "./codexBridge.js";
+import { getChat, listChats } from "./codexSessions.js";
 import type { BridgeEvent, BridgeState } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -107,11 +108,67 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
 }
 
 app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+});
+
+app.get("/api/auth/status", (_req, res) => {
+  res.json({
+    ok: true,
+    tokenRequired,
+    tokenConfigured: controlToken.length > 0
+  });
+});
+
+app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
   res.json({ ok: true, state: getState() });
 });
 
-app.get("/api/state", (_req, res) => {
+app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
+});
+
+app.get("/api/chats", requireControlAuth, async (_req, res) => {
+  try {
+    res.json(await listChats());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load Codex chats";
+
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    res.json(chat);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load Codex chat";
+
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const result = await bridge.sendText(text, true);
+
+  pushEvent(result.ok ? "action" : "error", result.message, {
+    action: "chat-prompt",
+    chatId,
+    simulated: result.simulated,
+    textLength: text.trimEnd().length
+  });
+
+  res.status(result.ok ? 200 : 400).json(result);
 });
 
 app.post("/api/actions/focus", requireControlAuth, async (_req, res) => {
