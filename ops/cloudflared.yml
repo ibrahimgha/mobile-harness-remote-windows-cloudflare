@@ -1,0 +1,8 @@
+tunnel: d7585ebe-ef27-4d6f-a22c-cd9a8caedd4b
+credentials-file: C:/Users/ibrah/.cloudflared/d7585ebe-ef27-4d6f-a22c-cd9a8caedd4b.json
+protocol: quic
+
+ingress:
+  - hostname: mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com
+    service: http://localhost:8787
+  - service: http_status:404

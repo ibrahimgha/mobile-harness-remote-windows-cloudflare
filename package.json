@@ -9,6 +9,12 @@
     "dev:client": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
+    "service:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 install",
+    "service:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 uninstall",
+    "service:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 start",
+    "service:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 stop",
+    "service:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 restart",
+    "service:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 status",
     "tunnel:dev": "cloudflared tunnel --url http://localhost:5173",
     "tunnel:prod": "cloudflared tunnel --url http://localhost:8787",
     "check": "tsc -b && tsc -p tsconfig.server.json"

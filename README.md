@@ -23,7 +23,28 @@ Open `http://localhost:5173`.
 
 ## Cloudflare Tunnel
 
-Development tunnel:
+This deployment has a named Cloudflare tunnel and DNS route:
+
+```text
+https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com
+```
+
+Start and stop the local production app plus tunnel:
+
+```powershell
+npm run service:start
+npm run service:stop
+npm run service:status
+```
+
+Install or remove logon startup persistence:
+
+```powershell
+npm run service:install
+npm run service:uninstall
+```
+
+Ad-hoc development tunnel:
 
 ```powershell
 npm run tunnel:dev
