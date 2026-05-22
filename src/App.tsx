@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Clock3,
   Folder,
-  KeyRound,
   Loader2,
   LogOut,
   MessageSquareText,
@@ -321,19 +320,6 @@ export function App() {
   }, [authenticated, loadChatDetail, selectedChatId]);
 
   useEffect(() => {
-    if (!authenticated || !selectedChatId) {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      void loadChats();
-      void loadChatDetail(selectedChatId);
-    }, 6000);
-
-    return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChats, selectedChatId]);
-
-  useEffect(() => {
     if (!authenticated) {
       return;
     }
@@ -494,7 +480,10 @@ export function App() {
                         key={chat.id}
                         type="button"
                         className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
-                        onClick={() => setSelectedChatId(chat.id)}
+                        onClick={() => {
+                          setSelectedChat(null);
+                          setSelectedChatId(chat.id);
+                        }}
                       >
                         <span>{chat.title}</span>
                         <small>{formatRelative(chat.updatedAt)}</small>

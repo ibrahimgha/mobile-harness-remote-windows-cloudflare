@@ -162,13 +162,17 @@ p {
 .remote-shell {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-sidebar {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   border-right: 1px solid var(--line);
   background: var(--surface);
 }
@@ -330,7 +334,10 @@ p {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   min-width: 0;
-  min-height: 100dvh;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .status-row {
@@ -375,7 +382,7 @@ p {
 
 .chat-content {
   display: grid;
-  grid-template-rows: minmax(180px, 0.9fr) minmax(240px, 1.2fr);
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 14px;
   min-height: 0;
   padding: 14px;
@@ -385,6 +392,7 @@ p {
 .message-block {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -447,7 +455,7 @@ p {
   gap: 10px;
   padding: 14px;
   border-top: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.76);
+  background: var(--surface);
 }
 
 .composer textarea {
@@ -494,16 +502,23 @@ p {
 @media (max-width: 920px) {
   .remote-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(190px, 32dvh) minmax(0, 1fr);
   }
 
   .chat-sidebar {
-    max-height: 42dvh;
+    min-height: 0;
+    max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
   .chat-workspace {
-    min-height: 58dvh;
+    min-height: 0;
+  }
+
+  .chat-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(110px, 0.85fr) minmax(140px, 1.15fr);
   }
 }
 
@@ -519,12 +534,19 @@ p {
   }
 
   .chat-content {
-    grid-template-rows: minmax(180px, auto) minmax(260px, auto);
-    overflow: visible;
+    gap: 10px;
+    padding: 10px;
+    grid-template-rows: minmax(96px, 0.78fr) minmax(128px, 1.22fr);
   }
 
   .composer {
     grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .composer textarea {
+    min-height: 58px;
   }
 
   .composer button {
