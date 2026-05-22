@@ -161,7 +161,7 @@ function Show-Status {
   Write-Host "Public URL: https://$PublicHost"
 
   try {
-    $health = Invoke-RestMethod -Uri "http://localhost:8787/api/health" -TimeoutSec 3
+    $health = Invoke-RestMethod -Uri "http://localhost:8787/api/health" -TimeoutSec 15
     Write-Host "Health: $($health.ok)"
   } catch {
     Write-Host "Health: unavailable"
