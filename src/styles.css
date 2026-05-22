@@ -683,7 +683,7 @@ p {
   display: none;
 }
 
-.attach-button {
+.composer .attach-button {
   width: 42px;
   min-height: 42px;
   height: 42px;
@@ -691,11 +691,16 @@ p {
   color: var(--teal-strong);
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 
-.attach-button:hover:not(:disabled) {
+.composer .attach-button:hover:not(:disabled),
+.composer .attach-button:active,
+.composer .attach-button:focus-visible {
+  color: var(--teal-strong);
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 
 .attachment-list {
@@ -1174,8 +1179,8 @@ p {
   }
 
   .composer {
-    padding: 4px max(20px, env(safe-area-inset-left)) calc(4px + env(safe-area-inset-bottom))
-      max(20px, env(safe-area-inset-right));
+    padding: 4px max(12px, env(safe-area-inset-left)) calc(4px + env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-right));
   }
 
   .command-queue {
