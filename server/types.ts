@@ -15,6 +15,7 @@ export type BridgeState = {
     mode: BridgeMode;
     targetTitle: string;
     controlEnabled: boolean;
+    promptDelivery: PromptDeliveryMode;
     tokenConfigured: boolean;
     tokenRequired: boolean;
     platform: NodeJS.Platform;
@@ -37,6 +38,7 @@ export type BridgeState = {
 };
 
 export type CodexRunMode = "codex-cli" | "simulation";
+export type PromptDeliveryMode = "cli" | "window" | "hybrid";
 
 export type CodexRunStatus = "queued" | "running" | "completed" | "failed";
 

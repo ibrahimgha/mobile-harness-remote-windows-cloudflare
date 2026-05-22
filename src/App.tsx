@@ -27,6 +27,7 @@ type BridgeState = {
   bridge: {
     mode: "simulation" | "window-control";
     targetTitle: string;
+    promptDelivery?: "cli" | "window" | "hybrid";
     tokenRequired: boolean;
     platform: string;
   };
@@ -116,6 +117,7 @@ type ApiResult = {
   message?: string;
   state?: BridgeState;
   job?: CodexRunJob;
+  delivery?: "cli" | "window" | "hybrid";
 };
 
 type ChatJobsResult = {
@@ -332,7 +334,7 @@ function StatusControls({
       </span>
       <span className="status-pill is-muted">
         <CheckCircle2 size={15} />
-        {state?.runner.mode ?? state?.bridge.mode ?? "ready"}
+        {state?.bridge.promptDelivery === "window" ? "window-send" : state?.runner.mode ?? state?.bridge.mode ?? "ready"}
       </span>
       <span className="status-pill is-muted">
         <MonitorUp size={15} />

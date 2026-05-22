@@ -10,7 +10,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import type { BridgeEvent, BridgeState } from "./types.js";
+import type { BridgeEvent, BridgeState, PromptDeliveryMode } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const clientOrigin = process.env.CLIENT_ORIGIN;
@@ -18,6 +18,7 @@ const controlToken = process.env.CONTROL_TOKEN?.trim() ?? "";
 const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
 const targetTitle = process.env.CODEX_WINDOW_TITLE?.trim() || "Codex";
 const tokenRequired = controlEnabled || controlToken.length > 0;
+const promptDelivery = resolvePromptDelivery(controlEnabled);
 
 const app = express();
 const server = createServer(app);
@@ -50,6 +51,16 @@ if (clientOrigin) {
 }
 
 app.use(express.json({ limit: "64kb" }));
+
+function resolvePromptDelivery(windowControlEnabled: boolean): PromptDeliveryMode {
+  const configured = process.env.CODEX_PROMPT_DELIVERY?.trim().toLowerCase();
+
+  if (configured === "cli" || configured === "window" || configured === "hybrid") {
+    return configured;
+  }
+
+  return windowControlEnabled ? "window" : "cli";
+}
 
 function sanitizedPath(rawPath: string): string {
   const url = new URL(rawPath, "http://local");
@@ -115,6 +126,7 @@ function getState(): BridgeState {
       mode: bridge.mode,
       targetTitle: bridge.title,
       controlEnabled,
+      promptDelivery,
       tokenConfigured: controlToken.length > 0,
       tokenRequired,
       platform: process.platform
@@ -314,6 +326,44 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     }
 
     const promptSummary = summarizePrompt(text);
+
+    if (promptDelivery === "window" || (promptDelivery === "hybrid" && bridge.isEnabled)) {
+      if (!bridge.isEnabled) {
+        res.status(400).json({
+          ok: false,
+          message: "Window prompt delivery requires ENABLE_WINDOW_CONTROL=true"
+        });
+        return;
+      }
+
+      const result = await bridge.sendText(text.trimEnd(), true);
+
+      pushEvent(result.ok ? "action" : "error", result.message, {
+        action: "chat-prompt-window-sent",
+        chatId,
+        route: "POST /api/chats/:id/prompt",
+        delivery: "window",
+        request: requestContext(req),
+        ...promptSummary,
+        diagnostics: result.diagnostics
+      });
+
+      if (!result.ok && promptDelivery === "window") {
+        res.status(400).json(result);
+        return;
+      }
+
+      if (result.ok) {
+        res.status(200).json({
+          ok: true,
+          message: "Prompt sent to the open Codex window",
+          delivery: "window",
+          result
+        });
+        return;
+      }
+    }
+
     const job = runner.enqueue({
       chatId,
       projectPath: chat.projectPath,
