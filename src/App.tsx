@@ -27,7 +27,7 @@ type BridgeState = {
   bridge: {
     mode: "simulation" | "window-control";
     targetTitle: string;
-    promptDelivery?: "cli" | "window" | "hybrid";
+    promptDelivery?: "cli";
     tokenRequired: boolean;
     platform: string;
   };
@@ -132,7 +132,6 @@ type ApiResult = {
   message?: string;
   state?: BridgeState;
   job?: CodexRunJob;
-  delivery?: "cli" | "window" | "hybrid";
 };
 
 type ChatJobsResult = {
@@ -144,6 +143,17 @@ type ChatJobsResult = {
 type PendingAttachment = {
   id: string;
   file: File;
+};
+
+type LocalQueuedCommand = {
+  id: string;
+  chatId: string;
+  text: string;
+  createdAt: string;
+  status: "pending" | "sending" | "failed";
+  message?: string;
+  attempts?: number;
+  retryAfter?: string;
 };
 
 type UploadedPromptFile = {
@@ -163,8 +173,13 @@ type FileUploadResult = {
 
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
+const localCommandQueueKey = "local-command-queue";
 const maxAttachmentFiles = 5;
 const maxAttachmentBytes = 10 * 1024 * 1024;
+const socketReconnectMs = 1500;
+const socketWatchdogMs = 5000;
+const socketConnectTimeoutMs = 12000;
+const socketStaleMs = 45000;
 
 function formatRelative(value: string) {
   const ms = Date.parse(value);
@@ -244,6 +259,82 @@ function readFileAsBase64(file: File) {
     reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read file")));
     reader.readAsDataURL(file);
   });
+}
+
+function isLocalCommandDue(command: LocalQueuedCommand) {
+  const retryAt = command.retryAfter ? Date.parse(command.retryAfter) : Number.NaN;
+
+  return command.status === "pending" && (!Number.isFinite(retryAt) || retryAt <= Date.now());
+}
+
+function localCommandRetryDelay(attempts: number) {
+  return Math.min(30000, 3000 * 2 ** Math.min(attempts, 3));
+}
+
+function localCommandStatusText(command: LocalQueuedCommand) {
+  if (command.status === "sending") {
+    return "Sending";
+  }
+
+  const retryAt = command.retryAfter ? Date.parse(command.retryAfter) : Number.NaN;
+
+  if (Number.isFinite(retryAt) && retryAt > Date.now()) {
+    return "Retry queued";
+  }
+
+  return "Local queued";
+}
+
+function localCommandDetailText(command: LocalQueuedCommand) {
+  if (command.message) {
+    return command.message;
+  }
+
+  return command.status === "sending" ? "Sending to target laptop" : "Waiting for previous task to finish";
+}
+
+function readLocalCommandQueue(): LocalQueuedCommand[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(localCommandQueueKey) ?? "[]");
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (item): item is LocalQueuedCommand =>
+        item &&
+        typeof item === "object" &&
+        typeof item.id === "string" &&
+        typeof item.chatId === "string" &&
+        typeof item.text === "string" &&
+        typeof item.createdAt === "string" &&
+        (item.status === "pending" || item.status === "sending" || item.status === "failed")
+      )
+      .map((item) => ({
+        ...item,
+        status: item.status === "failed" ? "pending" : item.status,
+        attempts: typeof item.attempts === "number" ? item.attempts : 0,
+        retryAfter: typeof item.retryAfter === "string" ? item.retryAfter : undefined
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function resizeTextareaElement(textarea: HTMLTextAreaElement) {
+  textarea.style.height = "auto";
+
+  const styles = window.getComputedStyle(textarea);
+  const minHeight = Number.parseFloat(styles.minHeight) || 44;
+  const maxHeight = Number.parseFloat(styles.maxHeight) || 180;
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+  return nextHeight > minHeight + 6;
 }
 
 function promptWithUploadedFiles(text: string, files: UploadedPromptFile[]) {
@@ -344,10 +435,6 @@ function jobDetailText(job: CodexRunJob) {
     return job.codexTranscript.message;
   }
 
-  if (job.heartbeat) {
-    return job.heartbeat;
-  }
-
   if (job.codexTranscript?.message) {
     return job.codexTranscript.message;
   }
@@ -359,23 +446,8 @@ function jobDetailText(job: CodexRunJob) {
   return job.status === "queued" ? "Waiting for the target laptop." : "No status details yet.";
 }
 
-function formattedJobHeartbeat(job: CodexRunJob) {
-  const heartbeat = job.heartbeat ?? job.message ?? "Waiting for the target laptop to start the Codex run.";
-  const status = job.status === "running" ? "Running on target laptop" : "Queued on target laptop";
-
-  return `**Heartbeat:** ${heartbeat}\n\n**Status:** ${status}`;
-}
-
 function deliveryLabel(state: BridgeState | null) {
-  if (state?.bridge.promptDelivery === "window") {
-    return "window-send";
-  }
-
-  if (state?.bridge.promptDelivery === "hybrid") {
-    return "hybrid-send";
-  }
-
-  if (state?.bridge.promptDelivery === "cli") {
+  if (state?.runner.mode === "codex-cli" || state?.bridge.promptDelivery === "cli") {
     return "session-send";
   }
 
@@ -644,14 +716,19 @@ export function App() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const selectedChatIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const localQueueSendingRef = useRef(false);
+  const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const authHeaders = useMemo(
     () => ({
@@ -676,8 +753,17 @@ export function App() {
   }, [chatIndex, selectedChatId]);
 
   const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
+  const selectedLocalCommands = useMemo(
+    () => (selectedChatId ? localCommandQueue.filter((command) => command.chatId === selectedChatId) : []),
+    [localCommandQueue, selectedChatId]
+  );
+  const selectedQueuedJobs = useMemo(() => selectedJobs.filter((job) => job.status === "queued"), [selectedJobs]);
+  const selectedQueuedLocalCommands = useMemo(
+    () => selectedLocalCommands.filter((command) => command.status === "pending" || command.status === "sending"),
+    [selectedLocalCommands]
+  );
   const selectedJob = selectedJobs.find(isActiveJob);
-  const selectedActiveJobCount = activeJobCount(selectedJobs);
+  const selectedQueueCount = selectedQueuedJobs.length + selectedQueuedLocalCommands.length;
   const transcriptMessages = useMemo<ChatTranscriptMessage[]>(() => {
     if (!selectedChat) {
       return [];
@@ -709,21 +795,7 @@ export function App() {
 
     return fallback;
   }, [selectedChat]);
-  const visibleMessages = useMemo<ChatTranscriptMessage[]>(() => {
-    if (!selectedJob) {
-      return transcriptMessages;
-    }
-
-    return [
-      ...transcriptMessages,
-      {
-        id: `job-${selectedJob.id}`,
-        role: "assistant",
-        text: formattedJobHeartbeat(selectedJob),
-        createdAt: selectedJob.heartbeatAt ?? selectedJob.startedAt ?? selectedJob.createdAt
-      }
-    ];
-  }, [selectedJob, transcriptMessages]);
+  const visibleMessages = transcriptMessages;
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
 
   const apiFetch = useCallback(
@@ -975,8 +1047,62 @@ export function App() {
   }, [menuOpen]);
 
   useEffect(() => {
+    if (!authenticated) {
+      return;
+    }
+
+    function onTouchStart(event: TouchEvent) {
+      const touch = event.touches[0];
+
+      if (!touch || menuOpen || touch.clientX > 24) {
+        edgeSwipeStartRef.current = null;
+        return;
+      }
+
+      edgeSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+    }
+
+    function onTouchMove(event: TouchEvent) {
+      const start = edgeSwipeStartRef.current;
+      const touch = event.touches[0];
+
+      if (!start || !touch) {
+        return;
+      }
+
+      const deltaX = touch.clientX - start.x;
+      const deltaY = Math.abs(touch.clientY - start.y);
+
+      if (deltaX > 72 && deltaY < 48) {
+        setMenuOpen(true);
+        edgeSwipeStartRef.current = null;
+      }
+    }
+
+    function onTouchEnd() {
+      edgeSwipeStartRef.current = null;
+    }
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [authenticated, menuOpen]);
+
+  useEffect(() => {
     localStorage.setItem(collapsedProjectsKey, JSON.stringify([...collapsedProjects]));
   }, [collapsedProjects]);
+
+  useEffect(() => {
+    localStorage.setItem(localCommandQueueKey, JSON.stringify(localCommandQueue));
+  }, [localCommandQueue]);
 
   useEffect(() => {
     if (!selectedProjectPath) {
@@ -1013,6 +1139,12 @@ export function App() {
   }, [lastVisibleMessageId, loadingDetail, selectedChatId]);
 
   useEffect(() => {
+    if (composerTextareaRef.current) {
+      setComposerExpanded(resizeTextareaElement(composerTextareaRef.current));
+    }
+  }, [draft]);
+
+  useEffect(() => {
     if (!state?.runner.recentJobs.length) {
       return;
     }
@@ -1037,24 +1169,82 @@ export function App() {
     const encodedToken = token ? `?token=${encodeURIComponent(token)}` : "";
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
+    let watchdogTimer: number | undefined;
+    let lastSocketActivity = 0;
     let stopped = false;
 
-    const connect = () => {
-      socket = new WebSocket(`${protocol}://${window.location.host}/ws${encodedToken}`);
+    const scheduleReconnect = (delay = socketReconnectMs) => {
+      if (stopped || reconnectTimer !== undefined) {
+        return;
+      }
 
-      socket.addEventListener("open", () => setSocketLive(true));
-      socket.addEventListener("close", () => {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined;
+        connect();
+      }, delay);
+    };
+
+    const reviveSocket = () => {
+      if (stopped) {
+        return;
+      }
+
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        setSocketLive(false);
+        scheduleReconnect(0);
+        return;
+      }
+
+      const staleFor = Date.now() - lastSocketActivity;
+      const staleLimit = socket.readyState === WebSocket.CONNECTING ? socketConnectTimeoutMs : socketStaleMs;
+
+      if (staleFor > staleLimit) {
+        setSocketLive(false);
+        socket.close();
+        scheduleReconnect(250);
+      }
+    };
+
+    const connect = () => {
+      const nextSocket = new WebSocket(`${protocol}://${window.location.host}/ws${encodedToken}`);
+
+      socket = nextSocket;
+      lastSocketActivity = Date.now();
+
+      nextSocket.addEventListener("open", () => {
+        if (socket !== nextSocket) {
+          return;
+        }
+
+        lastSocketActivity = Date.now();
+        setSocketLive(true);
+        void loadState();
+      });
+      nextSocket.addEventListener("close", () => {
+        if (socket !== nextSocket) {
+          return;
+        }
+
         setSocketLive(false);
 
         if (!stopped) {
-          reconnectTimer = window.setTimeout(connect, 1500);
+          scheduleReconnect();
         }
       });
-      socket.addEventListener("error", () => {
+      nextSocket.addEventListener("error", () => {
+        if (socket !== nextSocket) {
+          return;
+        }
+
         setSocketLive(false);
-        socket?.close();
+        nextSocket.close();
       });
-      socket.addEventListener("message", (event) => {
+      nextSocket.addEventListener("message", (event) => {
+        if (socket !== nextSocket) {
+          return;
+        }
+
+        lastSocketActivity = Date.now();
         let payload: { state?: BridgeState; event?: BridgeEvent };
 
         try {
@@ -1082,13 +1272,108 @@ export function App() {
     };
 
     connect();
+    watchdogTimer = window.setInterval(reviveSocket, socketWatchdogMs);
+    window.addEventListener("focus", reviveSocket);
+    window.addEventListener("online", reviveSocket);
+    document.addEventListener("visibilitychange", reviveSocket);
 
     return () => {
       stopped = true;
       window.clearTimeout(reconnectTimer);
+      window.clearInterval(watchdogTimer);
+      window.removeEventListener("focus", reviveSocket);
+      window.removeEventListener("online", reviveSocket);
+      document.removeEventListener("visibilitychange", reviveSocket);
       socket?.close();
     };
-  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, rememberJob, token]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, rememberJob, token]);
+
+  useEffect(() => {
+    if (!authenticated) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void loadState();
+
+      const chatId = selectedChatIdRef.current;
+      if (chatId) {
+        void loadChatJobs(chatId);
+        void loadChatDetail(chatId, true);
+      }
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadState]);
+
+  useEffect(() => {
+    if (!authenticated || !state || localQueueSendingRef.current) {
+      return;
+    }
+
+    if (state.runner.activeJobs > 0 || state.runner.queuedJobs > 0) {
+      return;
+    }
+
+    const nextCommand = localCommandQueue.find(isLocalCommandDue);
+    if (!nextCommand) {
+      return;
+    }
+
+    localQueueSendingRef.current = true;
+    setLocalCommandQueue((current) =>
+      current.map((command) =>
+      command.id === nextCommand.id
+          ? { ...command, status: "sending", retryAfter: undefined, message: "Sending to target laptop" }
+          : command
+      )
+    );
+
+    void apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(nextCommand.chatId)}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({ text: nextCommand.text })
+    })
+      .then(async (result) => {
+        if (result.job) {
+          rememberJob(result.job);
+        }
+
+        setLocalCommandQueue((current) => current.filter((command) => command.id !== nextCommand.id));
+        setNotice(result.message ?? "Prompt queued on target laptop");
+        await Promise.all([
+          loadState(),
+          loadChatJobs(nextCommand.chatId),
+          selectedChatIdRef.current === nextCommand.chatId ? loadChatDetail(nextCommand.chatId, true) : Promise.resolve()
+        ]);
+      })
+      .catch((error: unknown) => {
+        const attempts = (nextCommand.attempts ?? 0) + 1;
+        const retryDelayMs = localCommandRetryDelay(nextCommand.attempts ?? 0);
+        const retryAfter = new Date(Date.now() + retryDelayMs).toISOString();
+        const message =
+          error instanceof Error
+            ? `${error.message}; retrying in ${Math.round(retryDelayMs / 1000)}s`
+            : `Could not send queued command; retrying in ${Math.round(retryDelayMs / 1000)}s`;
+
+        setLocalCommandQueue((current) =>
+          current.map((command) =>
+            command.id === nextCommand.id
+              ? {
+                  ...command,
+                  status: "pending",
+                  attempts,
+                  retryAfter,
+                  message
+                }
+              : command
+          )
+        );
+        setNotice(message);
+      })
+      .finally(() => {
+        localQueueSendingRef.current = false;
+      });
+  }, [apiFetch, authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue, rememberJob, state]);
 
   useEffect(() => {
     if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
@@ -1098,10 +1383,11 @@ export function App() {
     const interval = window.setInterval(() => {
       void loadChats();
       void loadChatJobs(selectedChatId);
+      void loadChatDetail(selectedChatId, true);
     }, 4000);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatJobs, loadChats, selectedChatId, selectedJob]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, selectedChatId, selectedJob]);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1182,19 +1468,22 @@ export function App() {
       const promptText = promptWithUploadedFiles(draft, uploadedFiles);
 
       applyOptimisticPrompt(selectedChatId, promptText, optimisticAt);
-
-      const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
-        method: "POST",
-        body: JSON.stringify({ text: promptText })
-      });
-
-      if (result.job) {
-        rememberJob(result.job);
-      }
+      setLocalCommandQueue((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          chatId: selectedChatId,
+          text: promptText,
+          createdAt: optimisticAt,
+          status: "pending",
+          message: "Waiting for previous task to finish"
+        }
+      ]);
 
       setDraft("");
       setPendingAttachments([]);
-      setNotice(result.message ?? "Prompt sent");
+      setNotice("Queued locally; it will send after the previous task is done");
+      void loadState();
       window.setTimeout(() => {
         void loadChats();
         void loadChatJobs(selectedChatId);
@@ -1405,7 +1694,7 @@ export function App() {
           )}
         </div>
 
-        {selectedChat ? (
+        {selectedChat && selectedQueueCount ? (
           <section className="command-queue" aria-labelledby="command-queue-title">
             <div className="queue-header">
               <div className="queue-title">
@@ -1413,33 +1702,38 @@ export function App() {
                 <h3 id="command-queue-title">Command queue</h3>
               </div>
               <span className="queue-count">
-                {selectedActiveJobCount
-                  ? `${selectedActiveJobCount} active / ${selectedJobs.length} recent`
-                  : selectedJobs.length
-                    ? `${selectedJobs.length} recent`
-                    : "No commands"}
+                {selectedQueueCount ? `${selectedQueueCount} queued` : "No commands"}
               </span>
             </div>
 
-            {selectedJobs.length ? (
-              <div className="queue-list" aria-label="Commands for this chat">
-                {selectedJobs.map((job) => (
-                  <article key={job.id} className={`queue-item is-${job.status}`}>
-                    <div className="queue-status-row">
-                      <span className="queue-status">
-                        <JobStatusIcon job={job} />
-                        {jobStatusLabel(job)}
-                      </span>
-                      <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
-                    </div>
-                    <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
-                    <p className="queue-detail">{jobDetailText(job)}</p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="queue-empty">No commands queued for this chat yet.</p>
-            )}
+            <div className="queue-list" aria-label="Commands for this chat">
+              {selectedQueuedLocalCommands.map((command) => (
+                <article key={command.id} className="queue-item is-queued">
+                  <div className="queue-status-row">
+                    <span className="queue-status">
+                      {command.status === "sending" ? <Loader2 className="spin" size={15} /> : <Clock3 size={15} />}
+                      {localCommandStatusText(command)}
+                    </span>
+                    <time>{formatRelative(command.createdAt)}</time>
+                  </div>
+                  <p className="queue-preview">{previewText(command.text, "Prompt")}</p>
+                  <p className="queue-detail">{localCommandDetailText(command)}</p>
+                </article>
+              ))}
+              {selectedQueuedJobs.map((job) => (
+                <article key={job.id} className={`queue-item is-${job.status}`}>
+                  <div className="queue-status-row">
+                    <span className="queue-status">
+                      <JobStatusIcon job={job} />
+                      {jobStatusLabel(job)}
+                    </span>
+                    <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
+                  </div>
+                  <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
+                  <p className="queue-detail">{jobDetailText(job)}</p>
+                </article>
+              ))}
+            </div>
           </section>
         ) : null}
 
@@ -1451,14 +1745,43 @@ export function App() {
           </div>
         ) : null}
 
-        <form className="composer" onSubmit={sendPrompt}>
+        <form className={`composer ${composerExpanded ? "is-expanded" : ""}`} onSubmit={sendPrompt}>
+          <input
+            ref={fileInputRef}
+            className="file-input"
+            type="file"
+            multiple
+            onChange={(event) => {
+              addAttachments(event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
           <div className="composer-field">
+            <button
+              className="attach-button"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!selectedChatId || sending || pendingAttachments.length >= maxAttachmentFiles}
+              aria-label="Attach files"
+              title="Attach files"
+            >
+              <Paperclip size={18} />
+            </button>
             <textarea
+              ref={composerTextareaRef}
+              rows={1}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setComposerExpanded(resizeTextareaElement(event.currentTarget));
+              }}
               placeholder="New prompt"
               spellCheck={false}
             />
+            <button type="submit" disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}>
+              {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              Send
+            </button>
             {pendingAttachments.length ? (
               <div className="attachment-list" aria-label="Files to send">
                 {pendingAttachments.map((attachment) => (
@@ -1480,35 +1803,8 @@ export function App() {
               </div>
             ) : null}
           </div>
-          <div className="composer-actions">
-            <input
-              ref={fileInputRef}
-              className="file-input"
-              type="file"
-              multiple
-              onChange={(event) => {
-                addAttachments(event.currentTarget.files);
-                event.currentTarget.value = "";
-              }}
-            />
-            <button
-              className="attach-button"
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={!selectedChatId || sending || pendingAttachments.length >= maxAttachmentFiles}
-              aria-label="Attach files"
-              title="Attach files"
-            >
-              <Paperclip size={18} />
-            </button>
-            <button type="submit" disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}>
-              {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-              Send
-            </button>
-          </div>
         </form>
 
-        {notice ? <p className="notice">{notice}</p> : null}
       </section>
     </main>
   );

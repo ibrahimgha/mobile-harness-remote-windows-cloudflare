@@ -38,7 +38,7 @@ export type BridgeState = {
 };
 
 export type CodexRunMode = "codex-cli" | "simulation";
-export type PromptDeliveryMode = "cli" | "window" | "hybrid";
+export type PromptDeliveryMode = "cli";
 
 export type CodexRunStatus = "queued" | "running" | "completed" | "failed";
 

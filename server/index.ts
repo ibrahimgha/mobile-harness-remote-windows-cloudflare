@@ -12,7 +12,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import type { BridgeEvent, BridgeState, PromptDeliveryMode, UploadedPromptFile } from "./types.js";
+import type { BridgeEvent, BridgeState, UploadedPromptFile } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const clientOrigin = process.env.CLIENT_ORIGIN;
@@ -20,11 +20,12 @@ const controlToken = process.env.CONTROL_TOKEN?.trim() ?? "";
 const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
 const targetTitle = process.env.CODEX_WINDOW_TITLE?.trim() || "Codex";
 const tokenRequired = controlEnabled || controlToken.length > 0;
-const promptDelivery = resolvePromptDelivery(controlEnabled);
+const promptDelivery = "cli" as const;
 const maxPromptLength = Number(process.env.REMOTE_PROMPT_MAX_CHARS ?? 12000);
 const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
 const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024);
 const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 20 * 1024 * 1024);
+const socketHeartbeatMs = Math.max(5000, Number(process.env.SOCKET_HEARTBEAT_MS ?? 25000) || 25000);
 
 const app = express();
 const server = createServer(app);
@@ -49,6 +50,7 @@ const imageContentTypes = new Map([
   [".webp", "image/webp"],
   [".bmp", "image/bmp"]
 ]);
+type LiveWebSocket = WebSocket & { isAlive?: boolean };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,16 +67,6 @@ if (clientOrigin) {
 }
 
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "32mb" }));
-
-function resolvePromptDelivery(windowControlEnabled: boolean): PromptDeliveryMode {
-  const configured = process.env.CODEX_PROMPT_DELIVERY?.trim().toLowerCase();
-
-  if (configured === "cli" || configured === "window" || configured === "hybrid") {
-    return configured;
-  }
-
-  return "cli";
-}
 
 function safeSegment(value: string): string {
   return value.replace(/[^a-z0-9_.-]/gi, "-").slice(0, 120) || "item";
@@ -181,9 +173,48 @@ function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<s
 
   const payload = JSON.stringify({ kind: "event", event, state: getState() });
   for (const client of wss.clients) {
-    if (client.readyState === client.OPEN) {
-      client.send(payload);
+    sendSocketPayload(client, payload);
+  }
+}
+
+function pushState() {
+  const payload = JSON.stringify({ kind: "state", state: getState() });
+
+  for (const client of wss.clients) {
+    sendSocketPayload(client, payload);
+  }
+}
+
+function maintainSockets() {
+  for (const client of wss.clients) {
+    const socket = client as LiveWebSocket;
+
+    if (socket.isAlive === false) {
+      socket.terminate();
+      continue;
     }
+
+    socket.isAlive = false;
+
+    try {
+      socket.ping();
+    } catch {
+      socket.terminate();
+    }
+  }
+
+  pushState();
+}
+
+function sendSocketPayload(client: WebSocket, payload: string) {
+  if (client.readyState !== client.OPEN) {
+    return;
+  }
+
+  try {
+    client.send(payload);
+  } catch {
+    client.terminate();
   }
 }
 
@@ -270,8 +301,43 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
   next();
 }
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+app.get("/api/health", async (_req, res) => {
+  const checks = {
+    chatIndex: {
+      ok: false,
+      totalChats: 0,
+      error: undefined as string | undefined
+    },
+    auditLog: {
+      ok: false,
+      error: undefined as string | undefined
+    }
+  };
+
+  try {
+    const chats = await listChats();
+
+    checks.chatIndex.ok = true;
+    checks.chatIndex.totalChats = chats.totalChats;
+  } catch (error) {
+    checks.chatIndex.error = error instanceof Error ? error.message : String(error);
+  }
+
+  try {
+    await readAuditEvents(1);
+    checks.auditLog.ok = true;
+  } catch (error) {
+    checks.auditLog.error = error instanceof Error ? error.message : String(error);
+  }
+
+  const ok = checks.chatIndex.ok && checks.auditLog.ok;
+
+  res.status(ok ? 200 : 503).json({
+    ok,
+    uptimeSeconds: Math.round(process.uptime()),
+    clients: wss.clients.size,
+    checks
+  });
 });
 
 app.get("/api/auth/status", (_req, res) => {
@@ -540,43 +606,6 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
 
     const promptSummary = summarizePrompt(text);
 
-    if (promptDelivery === "window" || (promptDelivery === "hybrid" && bridge.isEnabled)) {
-      if (!bridge.isEnabled) {
-        res.status(400).json({
-          ok: false,
-          message: "Window prompt delivery requires ENABLE_WINDOW_CONTROL=true"
-        });
-        return;
-      }
-
-      const result = await bridge.sendText(text.trimEnd(), true);
-
-      pushEvent(result.ok ? "action" : "error", result.message, {
-        action: "chat-prompt-window-sent",
-        chatId,
-        route: "POST /api/chats/:id/prompt",
-        delivery: "window",
-        request: requestContext(req),
-        ...promptSummary,
-        diagnostics: result.diagnostics
-      });
-
-      if (!result.ok && promptDelivery === "window") {
-        res.status(400).json(result);
-        return;
-      }
-
-      if (result.ok) {
-        res.status(200).json({
-          ok: true,
-          message: "Prompt sent to the open Codex window",
-          delivery: "window",
-          result
-        });
-        return;
-      }
-    }
-
     const job = runner.enqueue({
       chatId,
       projectPath: chat.projectPath,
@@ -597,7 +626,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
 
     res.status(202).json({
       ok: true,
-      message: "Prompt queued on target laptop",
+      message: "Prompt queued on target laptop; it will start after earlier commands finish",
       job
     });
   } catch (error) {
@@ -699,8 +728,21 @@ if (fs.existsSync(path.join(staticDir, "index.html"))) {
 }
 
 wss.on("connection", (socket: WebSocket) => {
-  socket.send(JSON.stringify({ kind: "state", state: getState() }));
+  const liveSocket = socket as LiveWebSocket;
+
+  liveSocket.isAlive = true;
+  liveSocket.on("pong", () => {
+    liveSocket.isAlive = true;
+  });
+  socket.on("error", () => {
+    socket.terminate();
+  });
+
+  sendSocketPayload(socket, JSON.stringify({ kind: "state", state: getState() }));
 });
+
+const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
+server.on("close", () => clearInterval(socketHeartbeat));
 
 server.on("upgrade", (request, socket, head) => {
   const host = request.headers.host ?? `localhost:${port}`;

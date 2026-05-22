@@ -661,25 +661,22 @@ p {
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 14px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
+  display: block;
+  padding: 10px 14px;
+  border-top: 0;
+  background: transparent;
 }
 
 .composer-field {
   display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 46px;
+  align-items: end;
+  gap: 6px;
   min-width: 0;
-  gap: 8px;
-}
-
-.composer-actions {
-  display: grid;
-  grid-template-columns: 46px minmax(104px, auto);
-  gap: 8px;
-  align-self: end;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: var(--surface);
 }
 
 .file-input {
@@ -687,11 +684,13 @@ p {
 }
 
 .attach-button {
-  width: 46px;
+  width: 42px;
+  min-height: 42px;
+  height: 42px;
   padding: 0;
   color: var(--teal-strong);
-  border-color: var(--line);
-  background: var(--surface-soft);
+  border-color: transparent;
+  background: transparent;
 }
 
 .attach-button:hover:not(:disabled) {
@@ -700,6 +699,7 @@ p {
 }
 
 .attachment-list {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
@@ -904,22 +904,34 @@ p {
 }
 
 .composer textarea {
-  min-height: 72px;
+  min-height: 42px;
   max-height: 180px;
-  resize: vertical;
-  padding: 12px;
-  line-height: 1.5;
+  border-color: transparent;
+  background: transparent;
+  resize: none;
+  overflow-y: hidden;
+  padding: 10px 4px;
+  line-height: 20px;
 }
 
-.composer-actions > button[type="submit"] {
+.composer textarea:focus-visible {
+  outline: 0;
+}
+
+.composer.is-expanded .composer-field {
+  border-radius: 16px;
+}
+
+.composer-field > button[type="submit"] {
   align-self: end;
-  min-width: 104px;
-  padding: 0 14px;
-}
-
-.composer .attach-button {
+  width: 46px;
   min-width: 46px;
+  min-height: 42px;
+  height: 42px;
   padding: 0;
+  border-radius: 999px;
+  font-size: 0;
+  gap: 0;
 }
 
 .composer .attachment-chip button {
@@ -953,6 +965,12 @@ p {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .spin {
+    animation: spin 1200ms linear infinite !important;
+    animation-duration: 1200ms !important;
+    animation-iteration-count: infinite !important;
   }
 }
 
@@ -1124,30 +1142,117 @@ p {
   }
 
   .composer {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 10px;
+    padding: 4px 10px calc(4px + env(safe-area-inset-bottom));
   }
 
   .command-queue {
-    max-height: 178px;
-    min-height: 82px;
-    padding: 9px 10px 10px;
+    gap: 4px;
+    max-height: 118px;
+    min-height: 0;
+    padding: 7px 10px 6px;
+  }
+
+  .queue-header {
+    min-height: 30px;
+  }
+
+  .queue-title {
+    gap: 7px;
+  }
+
+  .queue-title h3 {
+    font-size: 0.9rem;
+  }
+
+  .queue-count {
+    font-size: 0.76rem;
   }
 
   .queue-list {
     grid-auto-columns: minmax(220px, 82vw);
   }
 
+  .queue-item {
+    grid-template-rows: auto auto;
+    gap: 3px;
+    min-height: 76px;
+    padding: 8px;
+  }
+
+  .queue-status {
+    font-size: 0.72rem;
+  }
+
+  .queue-preview {
+    font-size: 0.8rem;
+    line-height: 1.25;
+  }
+
+  .queue-detail {
+    font-size: 0.76rem;
+    line-height: 1.25;
+    -webkit-line-clamp: 1;
+  }
+
+  .queue-empty {
+    display: none;
+  }
+
+  .job-strip {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 0.8rem;
+  }
+
+  .job-strip small {
+    font-size: 0.76rem;
+  }
+
+  .composer-field {
+    grid-template-columns: 38px minmax(0, 1fr) 40px;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 24px;
+  }
+
   .composer textarea {
-    min-height: 58px;
+    height: auto;
+    min-height: 34px;
+    max-height: 132px;
+    resize: none;
+    padding: 5px 2px;
+    line-height: 20px;
   }
 
-  .composer-actions {
-    grid-template-columns: 46px minmax(0, 1fr);
+  .composer textarea:focus-visible {
+    outline: 0;
   }
 
-  .composer-actions > button[type="submit"] {
-    width: 100%;
+  .composer.is-expanded .composer-field {
+    border-radius: 16px;
+  }
+
+  .composer .attach-button {
+    width: 38px;
+    min-width: 38px;
+    min-height: 36px;
+    height: 36px;
+    border-radius: 18px;
+  }
+
+  .composer-field > button[type="submit"] {
+    width: 40px;
+    min-width: 40px;
+    min-height: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 999px;
+    font-size: 0;
+    gap: 0;
+  }
+
+  .composer-field > button[type="submit"] svg {
+    width: 20px;
+    height: 20px;
   }
 }

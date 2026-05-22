@@ -1,8 +1,6 @@
 import fs from "node:fs/promises";
-import { createReadStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import type { ChatDetail, ChatMessageExcerpt, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
@@ -10,6 +8,7 @@ const sessionIndexPath = process.env.CODEX_SESSION_INDEX ?? path.join(os.homedir
 const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? 300);
 const cacheMs = Number(process.env.CODEX_SESSION_CACHE_MS ?? 5000);
 const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024);
+const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTES ?? 256 * 1024) || 256 * 1024);
 
 let sessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
 
@@ -68,6 +67,10 @@ function isPromptText(text: string): boolean {
   return !trimmed.startsWith("<environment_context>");
 }
 
+function isHeartbeatText(text: string): boolean {
+  return /^(\*\*)?heartbeat(\*\*)?\s*:/i.test(text.trim());
+}
+
 function transcriptId(role: ChatTranscriptMessage["role"], createdAt: string, index: number): string {
   return `${role}-${Date.parse(createdAt) || 0}-${index}`;
 }
@@ -113,36 +116,55 @@ async function collectJsonlFiles(root: string): Promise<string[]> {
       return;
     }
 
-    await Promise.all(
-      entries.map(async (entry) => {
-        const entryPath = path.join(dir, entry.name);
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
 
-        if (entry.isDirectory()) {
-          await visit(entryPath);
-          return;
-        }
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
 
-        if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-          files.push(entryPath);
-        }
-      })
-    );
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(entryPath);
+      }
+    }
   }
 
   await visit(root);
 
-  const withStats = await Promise.all(
-    files.map(async (filePath) => {
+  const withStats: Array<{ filePath: string; mtimeMs: number }> = [];
+
+  for (const filePath of files) {
+    try {
       const stat = await fs.stat(filePath);
 
-      return { filePath, mtimeMs: stat.mtimeMs };
-    })
-  );
+      withStats.push({ filePath, mtimeMs: stat.mtimeMs });
+    } catch {
+      continue;
+    }
+  }
 
   return withStats
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
     .slice(0, maxSessionFiles)
     .map((entry) => entry.filePath);
+}
+
+async function readFileSlice(filePath: string, start: number, length: number): Promise<Buffer> {
+  if (length <= 0) {
+    return Buffer.alloc(0);
+  }
+
+  const handle = await fs.open(filePath, "r");
+  const buffer = Buffer.alloc(length);
+
+  try {
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+
+    return bytesRead === length ? buffer : buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
 }
 
 async function readSessionIndex(): Promise<Map<string, IndexedSession>> {
@@ -196,12 +218,9 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
   const userMessages: ChatTranscriptMessage[] = [];
   const assistantMessages: ChatTranscriptMessage[] = [];
 
-  const metaLines = createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Infinity
-  });
+  const headBuffer = await readFileSlice(filePath, 0, Math.min(stat.size, headBytes));
 
-  for await (const line of metaLines) {
+  for (const line of headBuffer.toString("utf8").split(/\r?\n/)) {
     if (!line.includes('"type":"session_meta"')) {
       continue;
     }
@@ -229,21 +248,12 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
       }
     } catch {
       break;
-    } finally {
-      metaLines.close();
     }
   }
 
   const bytesToRead = Math.min(stat.size, tailBytes);
   const start = Math.max(0, stat.size - bytesToRead);
-  const handle = await fs.open(filePath, "r");
-  const buffer = Buffer.alloc(bytesToRead);
-
-  try {
-    await handle.read(buffer, 0, bytesToRead, start);
-  } finally {
-    await handle.close();
-  }
+  const buffer = await readFileSlice(filePath, start, bytesToRead);
 
   for (const line of buffer.toString("utf8").split(/\r?\n/)) {
     if (!line.includes('"type":"message"')) {
@@ -282,21 +292,27 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
       }
 
       if (record.payload.role === "assistant" && text) {
-        lastAssistant = { text, createdAt: timestamp };
-        const assistantMessage: ChatTranscriptMessage = {
-          id: transcriptId("assistant", timestamp, assistantMessages.length),
-          role: "assistant",
-          text,
-          createdAt: timestamp
-        };
+        const isFinalAnswer = record.payload.phase === "final_answer" || !record.payload.phase;
+        const isDisplayableAssistant = isFinalAnswer || !isHeartbeatText(text);
 
-        assistantMessages.push(assistantMessage);
+        if (!isDisplayableAssistant) {
+          continue;
+        }
+
+        lastAssistant = { text, createdAt: timestamp };
 
         if (lastPrompt) {
           lastAssistantAfterPrompt = lastAssistant;
         }
 
-        if (record.payload.phase === "final_answer") {
+        assistantMessages.push({
+          id: transcriptId("assistant", timestamp, assistantMessages.length),
+          role: "assistant",
+          text,
+          createdAt: timestamp
+        });
+
+        if (isFinalAnswer) {
           lastFinalAssistant = lastAssistant;
 
           if (lastPrompt) {
@@ -359,7 +375,8 @@ async function readSessions(): Promise<ParsedSession[]> {
     return sessionsCache.sessions;
   }
 
-  const [index, files] = await Promise.all([readSessionIndex(), collectJsonlFiles(sessionsRoot)]);
+  const index = await readSessionIndex();
+  const files = await collectJsonlFiles(sessionsRoot);
   const parsed: Array<ParsedSession | null> = [];
 
   for (const filePath of files) {

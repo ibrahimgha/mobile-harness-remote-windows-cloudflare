@@ -99,6 +99,10 @@ function clampHeartbeat(text: string): string {
   return normalized.length > maxHeartbeatLength ? `${normalized.slice(0, maxHeartbeatLength)}...` : normalized;
 }
 
+function isHeartbeatText(text: string): boolean {
+  return /^(\*\*)?heartbeat(\*\*)?\s*:/i.test(text.trim());
+}
+
 function heartbeatFromRecord(record: unknown): string | null {
   if (!record || typeof record !== "object") {
     return null;
@@ -404,6 +408,7 @@ export class CodexRunner {
             payload?: {
               type?: string;
               role?: string;
+              phase?: string;
               content?: unknown;
             };
           };
@@ -420,7 +425,10 @@ export class CodexRunner {
             continue;
           }
 
-          if (promptVisible && record.payload.role === "assistant" && contentText) {
+          const isFinalAssistant = record.payload.phase === "final_answer" || !record.payload.phase;
+          const isDisplayableAssistant = isFinalAssistant || !isHeartbeatText(contentText);
+
+          if (promptVisible && record.payload.role === "assistant" && contentText && isDisplayableAssistant) {
             responseVisible = true;
           }
         } catch {
