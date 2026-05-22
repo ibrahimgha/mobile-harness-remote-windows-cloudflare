@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } from "./auditLog.js";
 import { CodexBridge } from "./codexBridge.js";
 import { getChat, listChats } from "./codexSessions.js";
 import type { BridgeEvent, BridgeState } from "./types.js";
@@ -39,6 +40,40 @@ if (clientOrigin) {
 
 app.use(express.json({ limit: "64kb" }));
 
+function sanitizedPath(rawPath: string): string {
+  const url = new URL(rawPath, "http://local");
+
+  for (const key of [...url.searchParams.keys()]) {
+    if (/token|secret|password|key/i.test(key)) {
+      url.searchParams.set(key, "[redacted]");
+    }
+  }
+
+  return `${url.pathname}${url.search}`;
+}
+
+function requestContext(req: express.Request): Record<string, unknown> {
+  return {
+    method: req.method,
+    path: sanitizedPath(req.originalUrl),
+    ip: req.ip,
+    forwardedFor: req.header("x-forwarded-for")?.split(",")[0]?.trim(),
+    userAgent: req.header("user-agent")?.slice(0, 240)
+  };
+}
+
+function describeError(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) {
+    return { message: String(error) };
+  }
+
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack?.slice(0, 3000)
+  };
+}
+
 function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<string, unknown>) {
   const event: BridgeEvent = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -50,6 +85,10 @@ function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<s
 
   events.unshift(event);
   events.splice(80);
+
+  void appendAuditEvent(event).catch((error: unknown) => {
+    console.error("Could not write audit event", error);
+  });
 
   const payload = JSON.stringify({ kind: "event", event, state: getState() });
   for (const client of wss.clients) {
@@ -78,6 +117,21 @@ function getState(): BridgeState {
   };
 }
 
+process.on("unhandledRejection", (reason) => {
+  pushEvent("error", "Unhandled promise rejection", {
+    action: "process-unhandled-rejection",
+    error: describeError(reason)
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  pushEvent("error", "Uncaught process exception", {
+    action: "process-uncaught-exception",
+    error: describeError(error)
+  });
+  setTimeout(() => process.exit(1), 250);
+});
+
 function hasValidToken(value: unknown): boolean {
   return typeof value === "string" && controlToken.length > 0 && value === controlToken;
 }
@@ -89,6 +143,11 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
   }
 
   if (!controlToken) {
+    pushEvent("error", "Control request rejected because CONTROL_TOKEN is empty", {
+      action: "auth-rejected",
+      reason: "missing-server-token",
+      request: requestContext(req)
+    });
     res.status(403).json({
       ok: false,
       message: "Set CONTROL_TOKEN before enabling real window control"
@@ -97,6 +156,11 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
   }
 
   if (!hasValidToken(req.header("x-control-token"))) {
+    pushEvent("error", "Control request rejected because the token was missing or invalid", {
+      action: "auth-rejected",
+      reason: "invalid-token",
+      request: requestContext(req)
+    });
     res.status(401).json({
       ok: false,
       message: "Missing or invalid control token"
@@ -127,12 +191,37 @@ app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
 });
 
-app.get("/api/chats", requireControlAuth, async (_req, res) => {
+app.get("/api/debug/events", requireControlAuth, async (req, res) => {
+  const limit = Number.parseInt(String(req.query.limit ?? "80"), 10);
+
+  try {
+    res.json({
+      ok: true,
+      logPath: getAuditLogPath(),
+      events: await readAuditEvents(limit)
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not read audit events";
+    pushEvent("error", message, {
+      action: "debug-events",
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
     res.json(await listChats());
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load Codex chats";
 
+    pushEvent("error", message, {
+      action: "list-chats",
+      request: requestContext(req),
+      error: describeError(error)
+    });
     res.status(500).json({ ok: false, message });
   }
 });
@@ -152,6 +241,12 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load Codex chat";
 
+    pushEvent("error", message, {
+      action: "get-chat",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
     res.status(500).json({ ok: false, message });
   }
 });
@@ -164,16 +259,25 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
   pushEvent(result.ok ? "action" : "error", result.message, {
     action: "chat-prompt",
     chatId,
+    route: "POST /api/chats/:id/prompt",
+    submit: true,
     simulated: result.simulated,
-    textLength: text.trimEnd().length
+    request: requestContext(req),
+    ...summarizePrompt(text),
+    diagnostics: result.diagnostics
   });
 
   res.status(result.ok ? 200 : 400).json(result);
 });
 
-app.post("/api/actions/focus", requireControlAuth, async (_req, res) => {
+app.post("/api/actions/focus", requireControlAuth, async (req, res) => {
   const result = await bridge.focus();
-  pushEvent(result.ok ? "action" : "error", result.message, { action: "focus", simulated: result.simulated });
+  pushEvent(result.ok ? "action" : "error", result.message, {
+    action: "focus",
+    simulated: result.simulated,
+    request: requestContext(req),
+    diagnostics: result.diagnostics
+  });
   res.status(result.ok ? 200 : 400).json(result);
 });
 
@@ -184,8 +288,12 @@ app.post("/api/actions/send-text", requireControlAuth, async (req, res) => {
 
   pushEvent(result.ok ? "action" : "error", result.message, {
     action: submit ? "send-submit" : "send-text",
+    route: "POST /api/actions/send-text",
+    submit,
     simulated: result.simulated,
-    textLength: text.trimEnd().length
+    request: requestContext(req),
+    ...summarizePrompt(text),
+    diagnostics: result.diagnostics
   });
   res.status(result.ok ? 200 : 400).json(result);
 });
@@ -194,14 +302,44 @@ app.post("/api/actions/hotkey", requireControlAuth, async (req, res) => {
   const key = typeof req.body?.key === "string" ? req.body.key : "";
   const result = await bridge.hotkey(key);
 
-  pushEvent(result.ok ? "action" : "error", result.message, { action: "hotkey", key, simulated: result.simulated });
+  pushEvent(result.ok ? "action" : "error", result.message, {
+    action: "hotkey",
+    key,
+    simulated: result.simulated,
+    request: requestContext(req),
+    diagnostics: result.diagnostics
+  });
   res.status(result.ok ? 200 : 400).json(result);
 });
 
 app.post("/api/events/status", requireControlAuth, (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.slice(0, 200) : "Manual status";
-  pushEvent("status", message);
+  pushEvent("status", message, { action: "manual-status", request: requestContext(req) });
   res.json({ ok: true });
+});
+
+app.use((error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+
+  const statusCode =
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+      ? error.status
+      : 500;
+  const message = error instanceof Error ? error.message : "Unhandled request error";
+
+  pushEvent("error", message, {
+    action: "request-error",
+    request: requestContext(req),
+    error: describeError(error)
+  });
+
+  res.status(statusCode).json({ ok: false, message });
 });
 
 if (fs.existsSync(path.join(staticDir, "index.html"))) {

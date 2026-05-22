@@ -31,6 +31,20 @@ export type ControlResult = {
   ok: boolean;
   simulated: boolean;
   message: string;
+  diagnostics?: ControlDiagnostics;
+};
+
+export type ControlDiagnostics = {
+  label: string;
+  elapsedMs: number;
+  targetTitle: string;
+  platform: NodeJS.Platform;
+  enabled: boolean;
+  stdout?: string;
+  stderr?: string;
+  errorName?: string;
+  exitCode?: number | string;
+  signal?: string;
 };
 
 export type ChatMessageExcerpt = {

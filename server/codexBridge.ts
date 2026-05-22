@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { BridgeMode, ControlResult } from "./types.js";
+import type { BridgeMode, ControlDiagnostics, ControlResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const maxDiagnosticTextLength = 4000;
 
 const hotkeyMap = new Map<string, string>([
   ["enter", "{ENTER}"],
@@ -19,6 +20,30 @@ type BridgeOptions = {
   enabled: boolean;
   targetTitle: string;
 };
+
+type ExecFailure = Error & {
+  stdout?: string;
+  stderr?: string;
+  code?: number | string;
+  signal?: string;
+};
+
+function clampDiagnosticText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized.length <= maxDiagnosticTextLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxDiagnosticTextLength)}... [truncated]`;
+}
 
 export class CodexBridge {
   private readonly enabled: boolean;
@@ -52,7 +77,8 @@ export class CodexBridge {
       return {
         ok: false,
         simulated: !this.enabled,
-        message: "Text is empty"
+        message: "Text is empty",
+        diagnostics: this.makeDiagnostics("Validate text", Date.now())
       };
     }
 
@@ -60,12 +86,19 @@ export class CodexBridge {
       return {
         ok: false,
         simulated: !this.enabled,
-        message: "Text is longer than the 8000 character safety limit"
+        message: "Text is longer than the 8000 character safety limit",
+        diagnostics: this.makeDiagnostics("Validate text", Date.now())
       };
     }
 
     const encodedText = Buffer.from(trimmed, "utf8").toString("base64");
-    const submitLine = submit ? "Start-Sleep -Milliseconds 80; $shell.SendKeys('{ENTER}')" : "";
+    const submitLine = submit
+      ? `
+Start-Sleep -Milliseconds 80
+$shell.SendKeys('{ENTER}')
+Write-Output 'sendkeys=enter'
+`
+      : "";
 
     return this.run(
       submit ? "Paste text and press Enter" : "Paste text",
@@ -73,8 +106,10 @@ export class CodexBridge {
 ${this.focusScript()}
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedText}'))
 Set-Clipboard -Value $text
+Write-Output ("clipboard=set chars=" + $text.Length)
 Start-Sleep -Milliseconds 80
 $shell.SendKeys('^v')
+Write-Output 'sendkeys=paste'
 ${submitLine}
 `
     );
@@ -88,7 +123,8 @@ ${submitLine}
       return {
         ok: false,
         simulated: !this.enabled,
-        message: `Unsupported hotkey: ${key}`
+        message: `Unsupported hotkey: ${key}`,
+        diagnostics: this.makeDiagnostics("Validate hotkey", Date.now())
       };
     }
 
@@ -103,11 +139,14 @@ $shell.SendKeys('${sendKeysValue}')
   }
 
   private async run(label: string, script: string): Promise<ControlResult> {
+    const startedAt = Date.now();
+
     if (!this.enabled) {
       return {
         ok: true,
         simulated: true,
-        message: `${label} queued in simulation mode`
+        message: `${label} queued in simulation mode`,
+        diagnostics: this.makeDiagnostics(label, startedAt)
       };
     }
 
@@ -115,14 +154,15 @@ $shell.SendKeys('${sendKeysValue}')
       return {
         ok: false,
         simulated: false,
-        message: "Window control is only implemented for Windows"
+        message: "Window control is only implemented for Windows",
+        diagnostics: this.makeDiagnostics(label, startedAt)
       };
     }
 
     const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
 
     try {
-      await execFileAsync(
+      const { stdout, stderr } = await execFileAsync(
         "powershell.exe",
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand],
         { timeout: 5000, windowsHide: true }
@@ -131,17 +171,40 @@ $shell.SendKeys('${sendKeysValue}')
       return {
         ok: true,
         simulated: false,
-        message: `${label} sent to Codex`
+        message: `${label} sent to Codex`,
+        diagnostics: this.makeDiagnostics(label, startedAt, {
+          stdout: clampDiagnosticText(stdout),
+          stderr: clampDiagnosticText(stderr)
+        })
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown PowerShell failure";
+      const failure = error as ExecFailure;
 
       return {
         ok: false,
         simulated: false,
-        message
+        message,
+        diagnostics: this.makeDiagnostics(label, startedAt, {
+          stdout: clampDiagnosticText(failure.stdout),
+          stderr: clampDiagnosticText(failure.stderr),
+          errorName: error instanceof Error ? error.name : undefined,
+          exitCode: failure.code,
+          signal: failure.signal
+        })
       };
     }
+  }
+
+  private makeDiagnostics(label: string, startedAt: number, extras: Partial<ControlDiagnostics> = {}): ControlDiagnostics {
+    return {
+      label,
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+      targetTitle: this.targetTitle,
+      platform: process.platform,
+      enabled: this.enabled,
+      ...extras
+    };
   }
 
   private focusScript(): string {
@@ -150,11 +213,14 @@ $shell.SendKeys('${sendKeysValue}')
     return `
 $title = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedTitle}'))
 $shell = New-Object -ComObject WScript.Shell
+Write-Output ("target-title=" + $title)
 $activated = $shell.AppActivate($title)
+Write-Output ("appactivate=" + $activated)
 if (-not $activated) {
   throw "Could not find a window matching '$title'"
 }
 Start-Sleep -Milliseconds 120
+Write-Output 'focus=ready'
 `;
   }
 }

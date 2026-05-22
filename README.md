@@ -75,6 +75,7 @@ The UI stores the token in browser local storage and sends it with control actio
 
 ```http
 GET /api/state
+GET /api/debug/events
 POST /api/actions/focus
 POST /api/actions/send-text
 POST /api/actions/hotkey
@@ -87,6 +88,17 @@ x-control-token: your-token
 ```
 
 Supported hotkeys: `enter`, `escape`, `ctrl-c`, `ctrl-v`, `ctrl-a`, `ctrl-l`, `page-up`, `page-down`.
+
+## Debugging Logs
+
+The service writes process logs and structured bridge events under `logs/`:
+
+```powershell
+Get-Content logs\bridge-events.jsonl -Tail 20
+Get-Content logs\app.stderr.log -Tail 80
+```
+
+Prompt audit events include prompt length, a short whitespace-normalized preview, a SHA-256 hash, request metadata, and PowerShell focus/clipboard/send-key diagnostics. Full prompt text is not logged unless `LOG_FULL_PROMPTS=true` is set.
 
 ## Safety Notes
 
