@@ -6,8 +6,10 @@ import path from "node:path";
 import type { CodexRunJob } from "./types.js";
 
 type CodexRunnerOptions = {
-  onJobChange?: (job: CodexRunJob, event: "queued" | "started" | "completed" | "failed") => void;
+  onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
 };
+
+type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed";
 
 type EnqueueOptions = {
   chatId: string;
@@ -19,6 +21,8 @@ type EnqueueOptions = {
 };
 
 const maxRecentJobs = 40;
+const maxHeartbeatLength = 1200;
+const maxHeartbeatHistory = 8;
 
 function resolveCliPath(): string {
   const configured = process.env.CODEX_CLI_PATH?.trim();
@@ -51,6 +55,74 @@ function shouldSkipGitRepoCheck(): boolean {
 
 function isSimulationMode(): boolean {
   return process.env.CODEX_RUN_MODE === "simulation" || process.env.CODEX_RUN_ENABLED === "false";
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+
+      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+        return part.text;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function clampHeartbeat(text: string): string {
+  const normalized = text.trim();
+  return normalized.length > maxHeartbeatLength ? `${normalized.slice(0, maxHeartbeatLength)}...` : normalized;
+}
+
+function heartbeatFromRecord(record: unknown): string | null {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const candidate = record as {
+    type?: string;
+    message?: unknown;
+    payload?: {
+      type?: string;
+      message?: unknown;
+      role?: string;
+      phase?: string;
+      content?: unknown;
+    };
+  };
+
+  if (candidate.type === "agent_message" && typeof candidate.message === "string") {
+    return clampHeartbeat(candidate.message);
+  }
+
+  if (candidate.payload?.type === "agent_message" && typeof candidate.payload.message === "string") {
+    return clampHeartbeat(candidate.payload.message);
+  }
+
+  if (
+    candidate.payload?.type === "message" &&
+    candidate.payload.role === "assistant" &&
+    candidate.payload.phase === "commentary"
+  ) {
+    const text = textFromContent(candidate.payload.content);
+    return text ? clampHeartbeat(text) : null;
+  }
+
+  return null;
 }
 
 export class CodexRunner {
@@ -172,6 +244,7 @@ export class CodexRunner {
       await fs.writeFile(job.logPaths.stdout, `simulation prompt for ${job.chatId}\n`, "utf8");
       await fs.writeFile(job.logPaths.stderr, "", "utf8");
       await fs.writeFile(job.logPaths.lastMessage, "Simulation mode: no Codex command was run.", "utf8");
+      this.updateHeartbeat(job, "Simulation heartbeat: prompt accepted by the target laptop queue.");
       job.status = "completed";
       job.exitCode = 0;
       job.signal = null;
@@ -184,13 +257,24 @@ export class CodexRunner {
     await new Promise<void>((resolve) => {
       const stdout = createWriteStream(job.logPaths.stdout, { flags: "a" });
       const stderr = createWriteStream(job.logPaths.stderr, { flags: "a" });
+      let stdoutBuffer = "";
       const child = spawn(this.cliPath, this.argsForJob(job), {
         cwd: existsSync(job.projectPath) ? job.projectPath : os.homedir(),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
 
-      child.stdout.pipe(stdout);
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout.write(chunk);
+        stdoutBuffer += chunk.toString("utf8");
+
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          this.handleStdoutLine(job, line);
+        }
+      });
       child.stderr.pipe(stderr);
       child.stdin.end(text);
 
@@ -199,6 +283,10 @@ export class CodexRunner {
       });
 
       child.on("close", (code, signal) => {
+        if (stdoutBuffer.trim()) {
+          this.handleStdoutLine(job, stdoutBuffer);
+        }
+
         stdout.end();
         stderr.end();
         job.exitCode = code;
@@ -212,7 +300,31 @@ export class CodexRunner {
     });
   }
 
-  private emit(job: CodexRunJob, event: "queued" | "started" | "completed" | "failed") {
+  private handleStdoutLine(job: CodexRunJob, line: string) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    try {
+      const heartbeat = heartbeatFromRecord(JSON.parse(trimmed));
+      if (heartbeat) {
+        this.updateHeartbeat(job, heartbeat);
+      }
+    } catch {
+      return;
+    }
+  }
+
+  private updateHeartbeat(job: CodexRunJob, text: string) {
+    job.heartbeat = text;
+    job.heartbeatAt = new Date().toISOString();
+    job.heartbeatHistory = [...(job.heartbeatHistory ?? []), text].slice(-maxHeartbeatHistory);
+    job.message = text;
+    this.emit(job, "heartbeat");
+  }
+
+  private emit(job: CodexRunJob, event: JobEvent) {
     this.onJobChange?.({ ...job, logPaths: { ...job.logPaths }, command: [...job.command] }, event);
   }
 }

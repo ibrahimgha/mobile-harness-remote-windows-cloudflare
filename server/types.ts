@@ -60,6 +60,9 @@ export type CodexRunJob = {
   exitCode?: number | null;
   signal?: string | null;
   message?: string;
+  heartbeat?: string;
+  heartbeatAt?: string;
+  heartbeatHistory?: string[];
 };
 
 export type ControlResult = {

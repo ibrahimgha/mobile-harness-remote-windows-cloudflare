@@ -16,6 +16,8 @@ import {
   WifiOff
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type BridgeState = {
   bridge: {
@@ -58,6 +60,9 @@ type CodexRunJob = {
   finishedAt?: string;
   exitCode?: number | null;
   message?: string;
+  heartbeat?: string;
+  heartbeatAt?: string;
+  heartbeatHistory?: string[];
 };
 
 type ChatMessageExcerpt = {
@@ -152,6 +157,50 @@ function firstChatId(index: ChatIndex | null) {
   return index?.projects[0]?.chats[0]?.id ?? null;
 }
 
+function previewText(text: string, fallback: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return fallback;
+  }
+
+  return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
+}
+
+function isActiveJob(job: CodexRunJob | undefined) {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function formattedJobHeartbeat(job: CodexRunJob) {
+  const heartbeat = job.heartbeat ?? job.message ?? "Waiting for the target laptop to start the Codex run.";
+  const status = job.status === "running" ? "Running on target laptop" : "Queued on target laptop";
+
+  return `**Heartbeat:** ${heartbeat}\n\n**Status:** ${status}`;
+}
+
+function FormattedMessage({ text, emptyText }: { text: string | undefined; emptyText: string }) {
+  if (!text?.trim()) {
+    return <div className="message-empty">{emptyText}</div>;
+  }
+
+  return (
+    <div className="message-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ children, href }) => (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          )
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export function App() {
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
@@ -208,6 +257,9 @@ export function App() {
   }, [chatIndex, selectedChatId]);
 
   const selectedJob = selectedChatId ? chatJobs[selectedChatId] : undefined;
+  const responseIsHeartbeat = isActiveJob(selectedJob);
+  const responseText =
+    responseIsHeartbeat && selectedJob ? formattedJobHeartbeat(selectedJob) : selectedChat?.lastResponse?.text;
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -307,6 +359,47 @@ export function App() {
     }));
   }, []);
 
+  const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string) => {
+    setSelectedChat((current) => {
+      if (!current || current.id !== chatId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        updatedAt: createdAt,
+        lastPrompt: { text, createdAt },
+        lastResponse: null,
+        hasResponse: false
+      };
+    });
+
+    setChatIndex((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        projects: current.projects.map((project) => ({
+          ...project,
+          updatedAt: project.chats.some((chat) => chat.id === chatId) ? createdAt : project.updatedAt,
+          chats: project.chats.map((chat) =>
+            chat.id === chatId
+              ? {
+                  ...chat,
+                  updatedAt: createdAt,
+                  lastPromptPreview: previewText(text, "No prompt yet"),
+                  lastResponsePreview: "Waiting for response...",
+                  hasResponse: false
+                }
+              : chat
+          )
+        }))
+      };
+    });
+  }, []);
+
   useEffect(() => {
     async function bootstrap() {
       try {
@@ -367,6 +460,22 @@ export function App() {
   }, [authenticated, loadChatDetail, selectedChatId]);
 
   useEffect(() => {
+    if (!state?.runner.recentJobs.length) {
+      return;
+    }
+
+    setChatJobs((current) => {
+      const next = { ...current };
+
+      for (const job of state.runner.recentJobs) {
+        next[job.chatId] = job;
+      }
+
+      return next;
+    });
+  }, [state]);
+
+  useEffect(() => {
     if (!authenticated) {
       return;
     }
@@ -424,13 +533,19 @@ export function App() {
       return;
     }
 
+    const promptText = draft.trimEnd();
+    const optimisticAt = new Date().toISOString();
+    const previousSelectedChat = selectedChat;
+    const previousChatIndex = chatIndex;
+
+    applyOptimisticPrompt(selectedChatId, promptText, optimisticAt);
     setSending(true);
     setNotice("");
 
     try {
       const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
         method: "POST",
-        body: JSON.stringify({ text: draft })
+        body: JSON.stringify({ text: promptText })
       });
 
       if (result.job) {
@@ -444,6 +559,8 @@ export function App() {
         void loadChatDetail(selectedChatId, true);
       }, 1600);
     } catch (error) {
+      setSelectedChat(previousSelectedChat);
+      setChatIndex(previousChatIndex);
       setNotice(error instanceof Error ? error.message : "Prompt failed");
     } finally {
       setSending(false);
@@ -609,16 +726,19 @@ export function App() {
                   <h3>Last prompt</h3>
                   {selectedChat.lastPrompt ? <time>{formatDate(selectedChat.lastPrompt.createdAt)}</time> : null}
                 </div>
-                <pre>{selectedChat.lastPrompt?.text ?? "No prompt found."}</pre>
+                <FormattedMessage text={selectedChat.lastPrompt?.text} emptyText="No prompt found." />
               </section>
 
               <section className="message-block response-block">
                 <div className="message-heading">
                   <MessageSquareText size={17} />
-                  <h3>Last response</h3>
-                  {selectedChat.lastResponse ? <time>{formatDate(selectedChat.lastResponse.createdAt)}</time> : null}
+                  <h3>{responseIsHeartbeat ? "Heartbeat" : "Last response"}</h3>
+                  {responseIsHeartbeat && selectedJob?.heartbeatAt ? <time>{formatDate(selectedJob.heartbeatAt)}</time> : null}
+                  {!responseIsHeartbeat && selectedChat.lastResponse ? (
+                    <time>{formatDate(selectedChat.lastResponse.createdAt)}</time>
+                  ) : null}
                 </div>
-                <pre>{selectedChat.lastResponse?.text ?? "No response found yet."}</pre>
+                <FormattedMessage text={responseText} emptyText="No response found yet." />
               </section>
             </>
           ) : (
