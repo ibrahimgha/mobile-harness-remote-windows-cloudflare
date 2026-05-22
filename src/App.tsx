@@ -11,6 +11,7 @@ import {
   LogOut,
   Menu,
   MonitorUp,
+  Paperclip,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -131,8 +132,30 @@ type ChatJobsResult = {
   jobs: CodexRunJob[];
 };
 
+type PendingAttachment = {
+  id: string;
+  file: File;
+};
+
+type UploadedPromptFile = {
+  name: string;
+  originalName: string;
+  type: string;
+  size: number;
+  path: string;
+  relativePath: string;
+  uploadedAt: string;
+};
+
+type FileUploadResult = {
+  ok: boolean;
+  files: UploadedPromptFile[];
+};
+
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
+const maxAttachmentFiles = 5;
+const maxAttachmentBytes = 10 * 1024 * 1024;
 
 function formatRelative(value: string) {
   const ms = Date.parse(value);
@@ -183,6 +206,49 @@ function previewText(text: string, fallback: string) {
   }
 
   return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const kilobytes = bytes / 1024;
+  if (kilobytes < 1024) {
+    return `${kilobytes.toFixed(kilobytes >= 100 ? 0 : 1)} KB`;
+  }
+
+  const megabytes = kilobytes / 1024;
+  return `${megabytes.toFixed(megabytes >= 10 ? 1 : 2)} MB`;
+}
+
+function readFileAsBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener("load", () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read file")));
+    reader.readAsDataURL(file);
+  });
+}
+
+function promptWithUploadedFiles(text: string, files: UploadedPromptFile[]) {
+  const baseText = text.trimEnd() || "Please review the attached file(s).";
+
+  if (!files.length) {
+    return baseText;
+  }
+
+  const fileLines = files
+    .map((file, index) => `${index + 1}. ${file.originalName} (${formatBytes(file.size)})\n   ${file.path}`)
+    .join("\n");
+
+  return `${baseText}\n\nAttached files saved on the target laptop:\n${fileLines}\n\nUse these local file paths when working on this request.`;
 }
 
 async function readJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T & { message?: string }> {
@@ -564,9 +630,11 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const selectedChatIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const authHeaders = useMemo(
     () => ({
@@ -870,6 +938,7 @@ export function App() {
     }
 
     setMenuOpen(false);
+    setPendingAttachments([]);
   }, [selectedChatId]);
 
   useEffect(() => {
@@ -1022,23 +1091,81 @@ export function App() {
     await verifyToken(loginToken.trim());
   }
 
-  async function sendPrompt(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!selectedChatId || !draft.trim()) {
+  function addAttachments(files: FileList | null) {
+    if (!files?.length) {
       return;
     }
 
-    const promptText = draft.trimEnd();
+    const availableSlots = Math.max(0, maxAttachmentFiles - pendingAttachments.length);
+    const accepted = Array.from(files).slice(0, availableSlots);
+    const rejectedCount = files.length - accepted.length;
+    const tooLarge = accepted.filter((file) => file.size > maxAttachmentBytes);
+    const valid = accepted.filter((file) => file.size <= maxAttachmentBytes);
+
+    if (tooLarge.length > 0) {
+      setNotice(`Files must be ${formatBytes(maxAttachmentBytes)} or smaller.`);
+    } else if (rejectedCount > 0) {
+      setNotice(`Attach up to ${maxAttachmentFiles} files at a time.`);
+    } else {
+      setNotice("");
+    }
+
+    setPendingAttachments((current) => [
+      ...current,
+      ...valid.map((file) => ({
+        id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
+        file
+      }))
+    ]);
+  }
+
+  function removeAttachment(id: string) {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }
+
+  async function uploadAttachments(chatId: string) {
+    if (!pendingAttachments.length) {
+      return [];
+    }
+
+    const files = await Promise.all(
+      pendingAttachments.map(async ({ file }) => ({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+        data: await readFileAsBase64(file)
+      }))
+    );
+
+    const result = await apiFetch<FileUploadResult>(`/api/chats/${encodeURIComponent(chatId)}/files`, {
+      method: "POST",
+      body: JSON.stringify({ files })
+    });
+
+    return result.files;
+  }
+
+  async function sendPrompt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+      return;
+    }
+
     const optimisticAt = new Date().toISOString();
     const previousSelectedChat = selectedChat;
     const previousChatIndex = chatIndex;
+    const previousAttachments = pendingAttachments;
 
-    applyOptimisticPrompt(selectedChatId, promptText, optimisticAt);
     setSending(true);
-    setNotice("");
+    setNotice(pendingAttachments.length ? "Uploading files..." : "");
 
     try {
+      const uploadedFiles = await uploadAttachments(selectedChatId);
+      const promptText = promptWithUploadedFiles(draft, uploadedFiles);
+
+      applyOptimisticPrompt(selectedChatId, promptText, optimisticAt);
+
       const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
         method: "POST",
         body: JSON.stringify({ text: promptText })
@@ -1049,6 +1176,7 @@ export function App() {
       }
 
       setDraft("");
+      setPendingAttachments([]);
       setNotice(result.message ?? "Prompt sent");
       window.setTimeout(() => {
         void loadChats();
@@ -1058,6 +1186,7 @@ export function App() {
     } catch (error) {
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
+      setPendingAttachments(previousAttachments);
       setNotice(error instanceof Error ? error.message : "Prompt failed");
     } finally {
       setSending(false);
@@ -1072,6 +1201,7 @@ export function App() {
     setChatIndex(null);
     setSelectedChat(null);
     setSelectedChatId(null);
+    setPendingAttachments([]);
   }
 
   function toggleProject(projectPath: string) {
@@ -1305,16 +1435,60 @@ export function App() {
         ) : null}
 
         <form className="composer" onSubmit={sendPrompt}>
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="New prompt"
-            spellCheck={false}
-          />
-          <button type="submit" disabled={!selectedChatId || !draft.trim() || sending}>
-            {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-            Send
-          </button>
+          <div className="composer-field">
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="New prompt"
+              spellCheck={false}
+            />
+            {pendingAttachments.length ? (
+              <div className="attachment-list" aria-label="Files to send">
+                {pendingAttachments.map((attachment) => (
+                  <span key={attachment.id} className="attachment-chip">
+                    <span className="attachment-copy">
+                      <strong>{attachment.file.name}</strong>
+                      <small>{formatBytes(attachment.file.size)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(attachment.id)}
+                      aria-label={`Remove ${attachment.file.name}`}
+                      disabled={sending}
+                    >
+                      <X size={14} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="composer-actions">
+            <input
+              ref={fileInputRef}
+              className="file-input"
+              type="file"
+              multiple
+              onChange={(event) => {
+                addAttachments(event.currentTarget.files);
+                event.currentTarget.value = "";
+              }}
+            />
+            <button
+              className="attach-button"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!selectedChatId || sending || pendingAttachments.length >= maxAttachmentFiles}
+              aria-label="Attach files"
+              title="Attach files"
+            >
+              <Paperclip size={18} />
+            </button>
+            <button type="submit" disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}>
+              {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              Send
+            </button>
+          </div>
         </form>
 
         {notice ? <p className="notice">{notice}</p> : null}

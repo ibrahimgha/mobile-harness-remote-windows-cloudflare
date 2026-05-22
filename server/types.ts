@@ -129,3 +129,13 @@ export type ChatProjectGroup = {
   updatedAt: string;
   chats: ChatSummary[];
 };
+
+export type UploadedPromptFile = {
+  name: string;
+  originalName: string;
+  type: string;
+  size: number;
+  path: string;
+  relativePath: string;
+  uploadedAt: string;
+};

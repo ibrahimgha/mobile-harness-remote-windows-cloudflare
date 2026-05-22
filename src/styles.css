@@ -669,6 +669,95 @@ p {
   background: var(--surface);
 }
 
+.composer-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.composer-actions {
+  display: grid;
+  grid-template-columns: 46px minmax(104px, auto);
+  gap: 8px;
+  align-self: end;
+}
+
+.file-input {
+  display: none;
+}
+
+.attach-button {
+  width: 46px;
+  padding: 0;
+  color: var(--teal-strong);
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+
+.attach-button:hover:not(:disabled) {
+  border-color: #a8b4ad;
+  background: var(--surface-strong);
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.attachment-chip {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 7px;
+  align-items: center;
+  max-width: min(320px, 100%);
+  min-height: 40px;
+  padding: 5px 5px 5px 10px;
+  border: 1px solid #a8d8cd;
+  border-radius: 8px;
+  color: var(--teal-strong);
+  background: var(--mint);
+}
+
+.attachment-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.attachment-copy strong,
+.attachment-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-copy strong {
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.attachment-copy small {
+  color: #3e6560;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.attachment-chip button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  color: var(--teal-strong);
+  border-color: transparent;
+  background: transparent;
+}
+
+.attachment-chip button:hover:not(:disabled) {
+  background: rgba(15, 118, 110, 0.1);
+}
+
 .command-queue {
   display: grid;
   grid-template-rows: auto minmax(0, auto);
@@ -822,10 +911,22 @@ p {
   line-height: 1.5;
 }
 
-.composer button {
+.composer-actions > button[type="submit"] {
   align-self: end;
   min-width: 104px;
   padding: 0 14px;
+}
+
+.composer .attach-button {
+  min-width: 46px;
+  padding: 0;
+}
+
+.composer .attachment-chip button {
+  align-self: center;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
 }
 
 .notice {
@@ -1042,7 +1143,11 @@ p {
     min-height: 58px;
   }
 
-  .composer button {
+  .composer-actions {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
+  .composer-actions > button[type="submit"] {
     width: 100%;
   }
 }

@@ -3,6 +3,7 @@ import cors from "cors";
 import express from "express";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -11,7 +12,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import type { BridgeEvent, BridgeState, PromptDeliveryMode } from "./types.js";
+import type { BridgeEvent, BridgeState, PromptDeliveryMode, UploadedPromptFile } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const clientOrigin = process.env.CLIENT_ORIGIN;
@@ -20,6 +21,10 @@ const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
 const targetTitle = process.env.CODEX_WINDOW_TITLE?.trim() || "Codex";
 const tokenRequired = controlEnabled || controlToken.length > 0;
 const promptDelivery = resolvePromptDelivery(controlEnabled);
+const maxPromptLength = Number(process.env.REMOTE_PROMPT_MAX_CHARS ?? 12000);
+const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
+const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024);
+const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 20 * 1024 * 1024);
 
 const app = express();
 const server = createServer(app);
@@ -59,7 +64,7 @@ if (clientOrigin) {
   app.use(cors({ origin: clientOrigin }));
 }
 
-app.use(express.json({ limit: "64kb" }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "32mb" }));
 
 function resolvePromptDelivery(windowControlEnabled: boolean): PromptDeliveryMode {
   const configured = process.env.CODEX_PROMPT_DELIVERY?.trim().toLowerCase();
@@ -69,6 +74,22 @@ function resolvePromptDelivery(windowControlEnabled: boolean): PromptDeliveryMod
   }
 
   return "cli";
+}
+
+function safeSegment(value: string): string {
+  return value.replace(/[^a-z0-9_.-]/gi, "-").slice(0, 120) || "item";
+}
+
+function safeUploadName(name: unknown, index: number): string {
+  const rawName = typeof name === "string" && name.trim() ? name.trim() : `file-${index + 1}`;
+  const basename = path.win32.basename(path.posix.basename(rawName));
+  const sanitized = basename
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+
+  return sanitized || `file-${index + 1}`;
 }
 
 function sanitizedPath(rawPath: string): string {
@@ -133,6 +154,13 @@ function resolveLocalImagePath(rawPath: unknown): { ok: true; path: string; cont
   }
 
   return { ok: true, path: resolved, contentType };
+}
+
+function uploadRootForProject(projectPath: string, chatId: string, createdAt: Date): string {
+  const basePath = fs.existsSync(projectPath) ? projectPath : path.join(os.homedir(), "codex-remote-uploads");
+  const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
+
+  return path.join(basePath, ".codex-remote", "uploads", safeSegment(chatId), timestamp);
 }
 
 function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<string, unknown>) {
@@ -374,6 +402,120 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   }
 });
 
+app.post("/api/chats/:id/files", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const files = Array.isArray(req.body?.files) ? req.body.files : [];
+
+  if (!files.length) {
+    res.status(400).json({ ok: false, message: "No files were provided" });
+    return;
+  }
+
+  if (files.length > maxUploadFiles) {
+    res.status(400).json({ ok: false, message: `Upload at most ${maxUploadFiles} files at a time` });
+    return;
+  }
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    const uploadedAt = new Date();
+    const uploadRoot = uploadRootForProject(chat.projectPath, chatId, uploadedAt);
+    const savedFiles: UploadedPromptFile[] = [];
+    let totalBytes = 0;
+
+    await fsp.mkdir(uploadRoot, { recursive: true });
+
+    for (const [index, file] of files.entries()) {
+      const input = file as { name?: unknown; type?: unknown; data?: unknown; size?: unknown };
+      const base64 = typeof input.data === "string" ? input.data.replace(/^data:[^,]*,/, "") : "";
+
+      if (!base64) {
+        res.status(400).json({ ok: false, message: "Each file must include base64 data" });
+        return;
+      }
+
+      let bytes: Buffer;
+
+      try {
+        bytes = Buffer.from(base64, "base64");
+      } catch {
+        res.status(400).json({ ok: false, message: "One of the files could not be decoded" });
+        return;
+      }
+
+      totalBytes += bytes.byteLength;
+
+      if (!bytes.byteLength) {
+        res.status(400).json({ ok: false, message: "Empty files are not supported yet" });
+        return;
+      }
+
+      if (bytes.byteLength > maxUploadBytes) {
+        res.status(400).json({ ok: false, message: `Each file must be ${Math.round(maxUploadBytes / 1024 / 1024)} MB or smaller` });
+        return;
+      }
+
+      if (totalBytes > maxUploadTotalBytes) {
+        res.status(400).json({ ok: false, message: `Total upload size must be ${Math.round(maxUploadTotalBytes / 1024 / 1024)} MB or smaller` });
+        return;
+      }
+
+      const originalName = safeUploadName(input.name, index);
+      const storedName = `${String(index + 1).padStart(2, "0")}-${originalName}`;
+      const absolutePath = path.join(uploadRoot, storedName);
+      const relativePath = fs.existsSync(chat.projectPath)
+        ? path.relative(chat.projectPath, absolutePath)
+        : path.relative(path.join(os.homedir(), "codex-remote-uploads"), absolutePath);
+
+      await fsp.writeFile(absolutePath, bytes, { flag: "wx" });
+
+      savedFiles.push({
+        name: storedName,
+        originalName,
+        type: typeof input.type === "string" ? input.type.slice(0, 120) : "application/octet-stream",
+        size: bytes.byteLength,
+        path: absolutePath,
+        relativePath,
+        uploadedAt: uploadedAt.toISOString()
+      });
+    }
+
+    pushEvent("action", `${savedFiles.length} file${savedFiles.length === 1 ? "" : "s"} uploaded for chat`, {
+      action: "chat-files-uploaded",
+      chatId,
+      route: "POST /api/chats/:id/files",
+      request: requestContext(req),
+      files: savedFiles.map((file) => ({
+        name: file.originalName,
+        size: file.size,
+        type: file.type,
+        path: file.path
+      }))
+    });
+
+    res.json({
+      ok: true,
+      files: savedFiles
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not upload files";
+
+    pushEvent("error", message, {
+      action: "chat-files-upload-failed",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
 app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const text = typeof req.body?.text === "string" ? req.body.text : "";
@@ -383,8 +525,8 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     return;
   }
 
-  if (text.trimEnd().length > 8000) {
-    res.status(400).json({ ok: false, message: "Text is longer than the 8000 character safety limit" });
+  if (text.trimEnd().length > maxPromptLength) {
+    res.status(400).json({ ok: false, message: `Text is longer than the ${maxPromptLength} character safety limit` });
     return;
   }
 
