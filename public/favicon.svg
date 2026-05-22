@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="8" x2="58" y1="6" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172126"/>
+      <stop offset="0.58" stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#5c4aae"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="19" x2="50" y1="33" y2="33" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dff8ef"/>
+      <stop offset="1" stop-color="#a7f3d0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path d="M13 21a8 8 0 0 1 8-8h22a8 8 0 0 1 8 8v22a8 8 0 0 1-8 8H21a8 8 0 0 1-8-8V21Z" fill="#071114" opacity=".82"/>
+  <path d="M22 25 31 32l-9 7" fill="none" stroke="#f7fffb" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
+  <path d="M34 39h11" fill="none" stroke="url(#beam)" stroke-linecap="round" stroke-width="5"/>
+  <circle cx="49" cy="16" r="5" fill="#a7f3d0"/>
+  <path d="M49 7a9 9 0 0 1 0 18" fill="none" stroke="#f1effd" stroke-linecap="round" stroke-width="3" opacity=".9"/>
+  <path d="M49 2a14 14 0 0 1 0 28" fill="none" stroke="#f1effd" stroke-linecap="round" stroke-width="2" opacity=".45"/>
+</svg>
