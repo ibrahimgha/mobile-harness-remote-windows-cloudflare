@@ -9,15 +9,17 @@ import {
   ListChecks,
   Loader2,
   LogOut,
+  Menu,
   MessageSquareText,
   MonitorUp,
   RefreshCw,
   Send,
   ShieldCheck,
   Wifi,
-  WifiOff
+  WifiOff,
+  X
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -176,6 +178,22 @@ function previewText(text: string, fallback: string) {
   return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
 }
 
+async function readJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T & { message?: string }> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const text = await response.text();
+
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const htmlHint = text.trimStart().startsWith("<") ? " The server returned an HTML page instead of API JSON." : "";
+    throw new Error(`${fallbackMessage}.${htmlHint}`);
+  }
+
+  try {
+    return JSON.parse(text) as T & { message?: string };
+  } catch {
+    throw new Error(`${fallbackMessage}. The API response was not valid JSON.`);
+  }
+}
+
 function isActiveJob(job: CodexRunJob | undefined) {
   return job?.status === "queued" || job?.status === "running";
 }
@@ -297,6 +315,36 @@ function JobStatusIcon({ job }: { job: CodexRunJob }) {
   return <Clock3 size={15} />;
 }
 
+function StatusControls({
+  socketLive,
+  state,
+  onLogout
+}: {
+  socketLive: boolean;
+  state: BridgeState | null;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="status-row">
+      <span className={`status-pill ${socketLive ? "is-live" : "is-offline"}`}>
+        {socketLive ? <Wifi size={15} /> : <WifiOff size={15} />}
+        {socketLive ? "Live" : "Offline"}
+      </span>
+      <span className="status-pill is-muted">
+        <CheckCircle2 size={15} />
+        {state?.runner.mode ?? state?.bridge.mode ?? "ready"}
+      </span>
+      <span className="status-pill is-muted">
+        <MonitorUp size={15} />
+        {state ? `${state.runner.activeJobs}/${state.runner.queuedJobs}` : "0/0"}
+      </span>
+      <button className="icon-button" type="button" onClick={onLogout} aria-label="Sign out">
+        <LogOut size={18} />
+      </button>
+    </div>
+  );
+}
+
 export function App() {
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
@@ -329,6 +377,8 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
+  const [menuOpen, setMenuOpen] = useState(false);
+  const selectedChatIdRef = useRef<string | null>(null);
 
   const authHeaders = useMemo(
     () => ({
@@ -368,7 +418,7 @@ export function App() {
           ...(init?.headers ?? {})
         }
       });
-      const payload = (await response.json()) as T & { message?: string };
+      const payload = await readJsonResponse<T>(response, "API request failed");
 
       if (!response.ok) {
         throw new Error(payload.message ?? "Request failed");
@@ -378,6 +428,18 @@ export function App() {
     },
     [authHeaders]
   );
+
+  const loadState = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    try {
+      setState(await apiFetch<BridgeState>("/api/state"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load bridge state");
+    }
+  }, [apiFetch, authenticated]);
 
   const verifyToken = useCallback(
     async (value: string) => {
@@ -392,7 +454,7 @@ export function App() {
             ...(value ? { "x-control-token": value } : {})
           }
         });
-        const payload = (await response.json()) as ApiResult;
+        const payload = await readJsonResponse<ApiResult>(response, "Could not verify control token");
 
         if (!response.ok || !payload.ok) {
           throw new Error(payload.message ?? "Invalid token");
@@ -456,7 +518,7 @@ export function App() {
         const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`);
         setChatJobs((current) => ({
           ...current,
-          [chatId]: mergeJobsForChat(current[chatId] ?? [], result.jobs)
+          [chatId]: sortJobsForChat(result.jobs).slice(0, 40)
         }));
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not load command queue");
@@ -471,6 +533,20 @@ export function App() {
       [job.chatId]: mergeJobsForChat(current[job.chatId] ?? [], [job])
     }));
   }, []);
+
+  const refreshWorkspace = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    setNotice("");
+    await Promise.all([
+      loadChats(),
+      loadState(),
+      selectedChatId ? loadChatDetail(selectedChatId, true) : Promise.resolve(),
+      selectedChatId ? loadChatJobs(selectedChatId) : Promise.resolve()
+    ]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, selectedChatId]);
 
   const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string) => {
     setSelectedChat((current) => {
@@ -517,7 +593,7 @@ export function App() {
     async function bootstrap() {
       try {
         const response = await fetch("/api/auth/status");
-        const status = (await response.json()) as { tokenRequired: boolean };
+        const status = await readJsonResponse<{ tokenRequired: boolean }>(response, "Bridge unavailable");
 
         if (!status.tokenRequired) {
           await verifyToken("");
@@ -542,6 +618,34 @@ export function App() {
   useEffect(() => {
     void loadChats();
   }, [loadChats]);
+
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!selectedChatId) {
+      return;
+    }
+
+    setMenuOpen(false);
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [menuOpen]);
 
   useEffect(() => {
     localStorage.setItem(collapsedProjectsKey, JSON.stringify([...collapsedProjects]));
@@ -596,32 +700,60 @@ export function App() {
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const encodedToken = token ? `?token=${encodeURIComponent(token)}` : "";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws${encodedToken}`);
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let stopped = false;
 
-    socket.addEventListener("open", () => setSocketLive(true));
-    socket.addEventListener("close", () => setSocketLive(false));
-    socket.addEventListener("error", () => setSocketLive(false));
-    socket.addEventListener("message", (event) => {
-      const payload = JSON.parse(event.data as string) as { state?: BridgeState; event?: BridgeEvent };
+    const connect = () => {
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws${encodedToken}`);
 
-      if (payload.state) {
-        setState(payload.state);
-      }
+      socket.addEventListener("open", () => setSocketLive(true));
+      socket.addEventListener("close", () => {
+        setSocketLive(false);
 
-      const job = payload.event?.detail?.job;
-      if (job) {
-        rememberJob(job);
-
-        if (job.chatId === selectedChatId && (job.status === "completed" || job.status === "failed")) {
-          void loadChats();
-          void loadChatJobs(job.chatId);
-          void loadChatDetail(job.chatId, true);
+        if (!stopped) {
+          reconnectTimer = window.setTimeout(connect, 1500);
         }
-      }
-    });
+      });
+      socket.addEventListener("error", () => {
+        setSocketLive(false);
+        socket?.close();
+      });
+      socket.addEventListener("message", (event) => {
+        let payload: { state?: BridgeState; event?: BridgeEvent };
 
-    return () => socket.close();
-  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, rememberJob, selectedChatId, token]);
+        try {
+          payload = JSON.parse(event.data as string) as { state?: BridgeState; event?: BridgeEvent };
+        } catch {
+          setNotice("Received an invalid socket message");
+          return;
+        }
+
+        if (payload.state) {
+          setState(payload.state);
+        }
+
+        const job = payload.event?.detail?.job;
+        if (job) {
+          rememberJob(job);
+
+          if (job.chatId === selectedChatIdRef.current && (job.status === "completed" || job.status === "failed")) {
+            void loadChats();
+            void loadChatJobs(job.chatId);
+            void loadChatDetail(job.chatId, true);
+          }
+        }
+      });
+    };
+
+    connect();
+
+    return () => {
+      stopped = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, rememberJob, token]);
 
   useEffect(() => {
     if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
@@ -743,16 +875,25 @@ export function App() {
   }
 
   return (
-    <main className="remote-shell">
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
           <div>
             <h1>Codex Remote</h1>
             <span>{chatIndex?.totalChats ?? 0} chats</span>
           </div>
-          <button className="icon-button" type="button" onClick={loadChats} aria-label="Refresh chats">
-            {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-          </button>
+          <div className="sidebar-actions">
+            <button className="icon-button" type="button" onClick={refreshWorkspace} aria-label="Refresh chats">
+              {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            </button>
+            <button className="icon-button mobile-close-button" type="button" onClick={() => setMenuOpen(false)} aria-label="Close menu">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="mobile-menu-controls">
+          <StatusControls socketLive={socketLive} state={state} onLogout={logout} />
         </div>
 
         <div className="project-list">
@@ -793,6 +934,7 @@ export function App() {
                           onClick={() => {
                             setSelectedChat(null);
                             setSelectedChatId(chat.id);
+                            setMenuOpen(false);
                           }}
                         >
                           <span>{chat.title}</span>
@@ -810,29 +952,25 @@ export function App() {
           })}
         </div>
       </aside>
+      <button className="menu-backdrop" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
 
       <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">
-          <div>
+          <button
+            className="icon-button mobile-menu-button"
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Open menu"
+            aria-expanded={menuOpen}
+          >
+            <Menu size={18} />
+          </button>
+          <div className="chat-title-copy">
             <p className="overline">{selectedChat?.projectName ?? "Project"}</p>
             <h2>{selectedChat?.title ?? "Select a chat"}</h2>
           </div>
-          <div className="status-row">
-            <span className={`status-pill ${socketLive ? "is-live" : "is-offline"}`}>
-              {socketLive ? <Wifi size={15} /> : <WifiOff size={15} />}
-              {socketLive ? "Live" : "Offline"}
-            </span>
-            <span className="status-pill is-muted">
-              <CheckCircle2 size={15} />
-              {state?.runner.mode ?? state?.bridge.mode ?? "ready"}
-            </span>
-            <span className="status-pill is-muted">
-              <MonitorUp size={15} />
-              {state ? `${state.runner.activeJobs}/${state.runner.queuedJobs}` : "0/0"}
-            </span>
-            <button className="icon-button" type="button" onClick={logout} aria-label="Sign out">
-              <LogOut size={18} />
-            </button>
+          <div className="desktop-status-controls">
+            <StatusControls socketLive={socketLive} state={state} onLogout={logout} />
           </div>
         </header>
 

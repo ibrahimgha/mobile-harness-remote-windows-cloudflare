@@ -397,6 +397,13 @@ app.post("/api/events/status", requireControlAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    ok: false,
+    message: `API route not found: ${sanitizedPath(req.originalUrl)}`
+  });
+});
+
 app.use((error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (res.headersSent) {
     next(error);
