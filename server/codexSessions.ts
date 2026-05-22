@@ -22,6 +22,10 @@ type ParsedSession = ChatDetail & {
   sortTime: number;
 };
 
+export function clearSessionCache() {
+  sessionsCache = null;
+}
+
 function textFromContent(content: unknown): string {
   if (typeof content === "string") {
     return content;

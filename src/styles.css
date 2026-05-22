@@ -458,6 +458,29 @@ p {
   background: var(--surface);
 }
 
+.job-strip {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 14px;
+  border-top: 1px solid #cfe9de;
+  color: var(--teal-strong);
+  background: var(--mint);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.job-strip small {
+  overflow: hidden;
+  color: #3e6560;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer textarea {
   min-height: 72px;
   max-height: 180px;

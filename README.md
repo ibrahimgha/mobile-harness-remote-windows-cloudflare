@@ -8,6 +8,7 @@ A local web control surface for a running Codex desktop window. It is designed t
 - Express bridge API at `http://localhost:8787`
 - WebSocket event stream at `/ws`
 - Codex session browser grouped by project folder
+- Exact-session prompt routing through `codex exec resume <session-id>`
 - Windows-focused Codex window control through PowerShell and `WScript.Shell`
 - Simulation mode by default
 - Token-gated control actions for tunneled use
@@ -59,23 +60,36 @@ npm run start
 npm run tunnel:prod
 ```
 
-## Enabling Real Window Control
+## Enabling Remote Control
 
 Edit `.env` before exposing the app:
 
 ```dotenv
-ENABLE_WINDOW_CONTROL=true
 CONTROL_TOKEN=use-a-long-random-secret
+```
+
+Chat prompts are routed by session id through the local Codex CLI, so they do not depend on whichever Codex window has focus. The UI stores the token in browser local storage and sends it with control actions.
+
+Optional knobs:
+
+```dotenv
+CODEX_CLI_PATH=C:\Users\ibrah\AppData\Local\OpenAI\Codex\bin\codex.exe
+CODEX_RUN_BYPASS_SANDBOX=true
+CODEX_RUN_SKIP_GIT_REPO_CHECK=true
+CODEX_RUN_MODE=simulation
+ENABLE_WINDOW_CONTROL=false
 CODEX_WINDOW_TITLE=Codex
 ```
 
-The UI stores the token in browser local storage and sends it with control actions.
+`ENABLE_WINDOW_CONTROL` only affects the lower-level focus/hotkey endpoints. Leave it off for normal exact-session prompt routing.
 
 ## API
 
 ```http
 GET /api/state
 GET /api/debug/events
+GET /api/jobs
+POST /api/chats/:id/prompt
 POST /api/actions/focus
 POST /api/actions/send-text
 POST /api/actions/hotkey
@@ -91,14 +105,15 @@ Supported hotkeys: `enter`, `escape`, `ctrl-c`, `ctrl-v`, `ctrl-a`, `ctrl-l`, `p
 
 ## Debugging Logs
 
-The service writes process logs and structured bridge events under `logs/`:
+The service writes process logs, structured bridge events, and Codex CLI run logs under `logs/`:
 
 ```powershell
 Get-Content logs\bridge-events.jsonl -Tail 20
 Get-Content logs\app.stderr.log -Tail 80
+Get-ChildItem logs\codex-runs | Sort-Object LastWriteTime -Descending | Select-Object -First 10
 ```
 
-Prompt audit events include prompt length, a short whitespace-normalized preview, a SHA-256 hash, request metadata, and PowerShell focus/clipboard/send-key diagnostics. Full prompt text is not logged unless `LOG_FULL_PROMPTS=true` is set.
+Prompt audit events include prompt length, a short whitespace-normalized preview, a SHA-256 hash, request metadata, and the exact Codex CLI job/log paths. Full prompt text is not logged unless `LOG_FULL_PROMPTS=true` is set.
 
 ## Safety Notes
 

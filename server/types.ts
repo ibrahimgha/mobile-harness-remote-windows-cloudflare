@@ -24,7 +24,42 @@ export type BridgeState = {
     port: number;
     clients: number;
   };
+  runner: {
+    mode: CodexRunMode;
+    cliPath: string;
+    bypassSandbox: boolean;
+    skipGitRepoCheck: boolean;
+    activeJobs: number;
+    queuedJobs: number;
+    recentJobs: CodexRunJob[];
+  };
   recentEvents: BridgeEvent[];
+};
+
+export type CodexRunMode = "codex-cli" | "simulation";
+
+export type CodexRunStatus = "queued" | "running" | "completed" | "failed";
+
+export type CodexRunJob = {
+  id: string;
+  chatId: string;
+  projectPath: string;
+  status: CodexRunStatus;
+  createdAt: string;
+  promptPreview: string;
+  promptHash: string;
+  textLength: number;
+  command: string[];
+  logPaths: {
+    stdout: string;
+    stderr: string;
+    lastMessage: string;
+  };
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  message?: string;
 };
 
 export type ControlResult = {

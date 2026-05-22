@@ -8,7 +8,8 @@ import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } from "./auditLog.js";
 import { CodexBridge } from "./codexBridge.js";
-import { getChat, listChats } from "./codexSessions.js";
+import { CodexRunner } from "./codexRunner.js";
+import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import type { BridgeEvent, BridgeState } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -22,6 +23,16 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const bridge = new CodexBridge({ enabled: controlEnabled, targetTitle });
+const runner = new CodexRunner({
+  onJobChange(job, event) {
+    clearSessionCache();
+    pushEvent(event === "failed" ? "error" : "action", job.message ?? `Codex run ${event}`, {
+      action: `codex-run-${event}`,
+      chatId: job.chatId,
+      job
+    });
+  }
+});
 const events: BridgeEvent[] = [];
 
 const __filename = fileURLToPath(import.meta.url);
@@ -112,6 +123,15 @@ function getState(): BridgeState {
       uptimeSeconds: Math.round(process.uptime()),
       port,
       clients: wss.clients.size
+    },
+    runner: {
+      mode: runner.mode,
+      cliPath: runner.cliPath,
+      bypassSandbox: runner.bypassSandbox,
+      skipGitRepoCheck: runner.skipGitRepoCheck,
+      activeJobs: runner.activeJobs,
+      queuedJobs: runner.queuedJobs,
+      recentJobs: runner.recentJobs
     },
     recentEvents: events
   };
@@ -211,6 +231,16 @@ app.get("/api/debug/events", requireControlAuth, async (req, res) => {
   }
 });
 
+app.get("/api/jobs", requireControlAuth, (_req, res) => {
+  res.json({
+    ok: true,
+    mode: runner.mode,
+    activeJobs: runner.activeJobs,
+    queuedJobs: runner.queuedJobs,
+    jobs: runner.recentJobs
+  });
+});
+
 app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
     res.json(await listChats());
@@ -254,20 +284,59 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
 app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const result = await bridge.sendText(text, true);
 
-  pushEvent(result.ok ? "action" : "error", result.message, {
-    action: "chat-prompt",
-    chatId,
-    route: "POST /api/chats/:id/prompt",
-    submit: true,
-    simulated: result.simulated,
-    request: requestContext(req),
-    ...summarizePrompt(text),
-    diagnostics: result.diagnostics
-  });
+  if (!text.trim()) {
+    res.status(400).json({ ok: false, message: "Text is empty" });
+    return;
+  }
 
-  res.status(result.ok ? 200 : 400).json(result);
+  if (text.trimEnd().length > 8000) {
+    res.status(400).json({ ok: false, message: "Text is longer than the 8000 character safety limit" });
+    return;
+  }
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    const promptSummary = summarizePrompt(text);
+    const job = runner.enqueue({
+      chatId,
+      projectPath: chat.projectPath,
+      text: text.trimEnd(),
+      promptPreview: String(promptSummary.promptPreview ?? ""),
+      promptHash: String(promptSummary.promptHash ?? ""),
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
+    });
+
+    pushEvent("action", "Prompt queued for exact Codex session on target laptop", {
+      action: "chat-prompt-queued",
+      chatId,
+      route: "POST /api/chats/:id/prompt",
+      request: requestContext(req),
+      ...promptSummary,
+      job
+    });
+
+    res.status(202).json({
+      ok: true,
+      message: "Prompt queued on target laptop",
+      job
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not queue prompt";
+    pushEvent("error", message, {
+      action: "chat-prompt-queue-failed",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
 });
 
 app.post("/api/actions/focus", requireControlAuth, async (req, res) => {

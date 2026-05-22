@@ -8,6 +8,7 @@ import {
   Loader2,
   LogOut,
   MessageSquareText,
+  MonitorUp,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -27,6 +28,36 @@ type BridgeState = {
     uptimeSeconds: number;
     clients: number;
   };
+  runner: {
+    mode: "codex-cli" | "simulation";
+    activeJobs: number;
+    queuedJobs: number;
+    recentJobs: CodexRunJob[];
+  };
+};
+
+type BridgeEvent = {
+  type: "action" | "error" | "status";
+  message: string;
+  detail?: {
+    action?: string;
+    chatId?: string;
+    job?: CodexRunJob;
+  };
+};
+
+type CodexRunJob = {
+  id: string;
+  chatId: string;
+  projectPath: string;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: string;
+  promptPreview: string;
+  textLength: number;
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  message?: string;
 };
 
 type ChatMessageExcerpt = {
@@ -74,6 +105,7 @@ type ApiResult = {
   ok: boolean;
   message?: string;
   state?: BridgeState;
+  job?: CodexRunJob;
 };
 
 const tokenKey = "control-token";
@@ -151,6 +183,7 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
+  const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob>>({});
 
   const authHeaders = useMemo(
     () => ({
@@ -173,6 +206,8 @@ export function App() {
 
     return null;
   }, [chatIndex, selectedChatId]);
+
+  const selectedJob = selectedChatId ? chatJobs[selectedChatId] : undefined;
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -246,19 +281,31 @@ export function App() {
   }, [apiFetch, authenticated]);
 
   const loadChatDetail = useCallback(
-    async (chatId: string) => {
-      setLoadingDetail(true);
+    async (chatId: string, quiet = false) => {
+      if (!quiet) {
+        setLoadingDetail(true);
+      }
+
       try {
         const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}`);
         setSelectedChat(detail);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not load chat");
       } finally {
-        setLoadingDetail(false);
+        if (!quiet) {
+          setLoadingDetail(false);
+        }
       }
     },
     [apiFetch]
   );
+
+  const rememberJob = useCallback((job: CodexRunJob) => {
+    setChatJobs((current) => ({
+      ...current,
+      [job.chatId]: job
+    }));
+  }, []);
 
   useEffect(() => {
     async function bootstrap() {
@@ -332,15 +379,38 @@ export function App() {
     socket.addEventListener("close", () => setSocketLive(false));
     socket.addEventListener("error", () => setSocketLive(false));
     socket.addEventListener("message", (event) => {
-      const payload = JSON.parse(event.data as string) as { state?: BridgeState };
+      const payload = JSON.parse(event.data as string) as { state?: BridgeState; event?: BridgeEvent };
 
       if (payload.state) {
         setState(payload.state);
       }
+
+      const job = payload.event?.detail?.job;
+      if (job) {
+        rememberJob(job);
+
+        if (job.chatId === selectedChatId && (job.status === "completed" || job.status === "failed")) {
+          void loadChats();
+          void loadChatDetail(job.chatId, true);
+        }
+      }
     });
 
     return () => socket.close();
-  }, [authenticated, token]);
+  }, [authenticated, loadChatDetail, loadChats, rememberJob, selectedChatId, token]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void loadChats();
+      void loadChatDetail(selectedChatId, true);
+    }, 4000);
+
+    return () => window.clearInterval(interval);
+  }, [authenticated, loadChatDetail, loadChats, selectedChatId, selectedJob]);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -363,11 +433,15 @@ export function App() {
         body: JSON.stringify({ text: draft })
       });
 
+      if (result.job) {
+        rememberJob(result.job);
+      }
+
       setDraft("");
       setNotice(result.message ?? "Prompt sent");
       window.setTimeout(() => {
         void loadChats();
-        void loadChatDetail(selectedChatId);
+        void loadChatDetail(selectedChatId, true);
       }, 1600);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Prompt failed");
@@ -510,7 +584,11 @@ export function App() {
             </span>
             <span className="status-pill is-muted">
               <CheckCircle2 size={15} />
-              {state?.bridge.mode ?? "ready"}
+              {state?.runner.mode ?? state?.bridge.mode ?? "ready"}
+            </span>
+            <span className="status-pill is-muted">
+              <MonitorUp size={15} />
+              {state ? `${state.runner.activeJobs}/${state.runner.queuedJobs}` : "0/0"}
             </span>
             <button className="icon-button" type="button" onClick={logout} aria-label="Sign out">
               <LogOut size={18} />
@@ -549,6 +627,14 @@ export function App() {
             </div>
           )}
         </div>
+
+        {selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
+          <div className="job-strip">
+            <Loader2 className={selectedJob.status === "running" ? "spin" : ""} size={16} />
+            <span>{selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}</span>
+            <small>{selectedJob.promptPreview}</small>
+          </div>
+        ) : null}
 
         <form className="composer" onSubmit={sendPrompt}>
           <textarea
