@@ -1677,7 +1677,6 @@ export function App() {
           })}
         </div>
       </aside>
-      <button className="menu-backdrop" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
 
       <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">

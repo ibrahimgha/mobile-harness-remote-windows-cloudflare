@@ -214,8 +214,7 @@ p {
 
 .mobile-menu-button,
 .mobile-close-button,
-.mobile-menu-controls,
-.menu-backdrop {
+.mobile-menu-controls {
   display: none;
 }
 
@@ -1020,36 +1019,25 @@ p {
 
   .chat-sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: 0;
     z-index: 30;
     grid-template-rows: auto auto minmax(0, 1fr);
-    width: min(380px, 88vw);
+    width: 100vw;
     min-height: 0;
     height: 100dvh;
     max-height: 100dvh;
-    border-right: 1px solid var(--line);
+    border-right: 0;
     border-bottom: 0;
-    box-shadow: var(--shadow);
-    transform: translateX(-100%);
-    transition: transform 160ms ease;
+    box-shadow: none;
+    pointer-events: none;
+    transform: translate3d(-100%, 0, 0);
+    transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
   }
 
   .remote-shell.is-menu-open .chat-sidebar {
-    transform: translateX(0);
-  }
-
-  .menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: rgba(23, 26, 31, 0.34);
-  }
-
-  .remote-shell.is-menu-open .menu-backdrop {
-    display: block;
+    pointer-events: auto;
+    transform: translate3d(0, 0, 0);
   }
 
   .mobile-menu-button,
@@ -1179,8 +1167,12 @@ p {
   }
 
   .composer {
-    padding: 4px max(12px, env(safe-area-inset-left)) calc(4px + env(safe-area-inset-bottom))
+    padding: 4px max(12px, env(safe-area-inset-left)) max(10px, calc(env(safe-area-inset-bottom) - 14px))
       max(12px, env(safe-area-inset-right));
+  }
+
+  .composer:focus-within {
+    padding-bottom: 4px;
   }
 
   .command-queue {
