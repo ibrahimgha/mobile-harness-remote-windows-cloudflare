@@ -283,6 +283,22 @@ function formattedJobHeartbeat(job: CodexRunJob) {
   return `**Heartbeat:** ${heartbeat}\n\n**Status:** ${status}`;
 }
 
+function deliveryLabel(state: BridgeState | null) {
+  if (state?.bridge.promptDelivery === "window") {
+    return "window-send";
+  }
+
+  if (state?.bridge.promptDelivery === "hybrid") {
+    return "hybrid-send";
+  }
+
+  if (state?.bridge.promptDelivery === "cli") {
+    return "session-send";
+  }
+
+  return state?.runner.mode ?? state?.bridge.mode ?? "ready";
+}
+
 const localImageExtensions = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 const localImageLinePattern = /^((?:[a-zA-Z]:[\\/]|\\\\|\/).+\.(?:png|jpe?g|gif|webp|bmp))$/i;
 const windowsImageInLinePattern = /((?:[a-zA-Z]:[\\/]|\\\\)[^\n\r]*?\.(?:png|jpe?g|gif|webp|bmp))/i;
@@ -503,7 +519,7 @@ function StatusControls({
       </span>
       <span className="status-pill is-muted">
         <CheckCircle2 size={15} />
-        {state?.bridge.promptDelivery === "window" ? "window-send" : state?.runner.mode ?? state?.bridge.mode ?? "ready"}
+        {deliveryLabel(state)}
       </span>
       <span className="status-pill is-muted">
         <MonitorUp size={15} />

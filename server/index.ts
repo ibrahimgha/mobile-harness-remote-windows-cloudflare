@@ -68,7 +68,7 @@ function resolvePromptDelivery(windowControlEnabled: boolean): PromptDeliveryMod
     return configured;
   }
 
-  return windowControlEnabled ? "window" : "cli";
+  return "cli";
 }
 
 function sanitizedPath(rawPath: string): string {
