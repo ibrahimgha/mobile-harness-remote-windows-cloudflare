@@ -93,6 +93,11 @@ export type ChatMessageExcerpt = {
   createdAt: string;
 };
 
+export type ChatTranscriptMessage = ChatMessageExcerpt & {
+  id: string;
+  role: "user" | "assistant";
+};
+
 export type ChatSummary = {
   id: string;
   title: string;
@@ -114,6 +119,7 @@ export type ChatDetail = {
   updatedAt: string;
   lastPrompt: ChatMessageExcerpt | null;
   lastResponse: ChatMessageExcerpt | null;
+  messages: ChatTranscriptMessage[];
   hasResponse: boolean;
 };
 

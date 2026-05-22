@@ -10,7 +10,6 @@ import {
   Loader2,
   LogOut,
   Menu,
-  MessageSquareText,
   MonitorUp,
   RefreshCw,
   Send,
@@ -76,6 +75,11 @@ type ChatMessageExcerpt = {
   createdAt: string;
 };
 
+type ChatTranscriptMessage = ChatMessageExcerpt & {
+  id: string;
+  role: "user" | "assistant";
+};
+
 type ChatSummary = {
   id: string;
   title: string;
@@ -97,6 +101,7 @@ type ChatDetail = {
   updatedAt: string;
   lastPrompt: ChatMessageExcerpt | null;
   lastResponse: ChatMessageExcerpt | null;
+  messages: ChatTranscriptMessage[];
   hasResponse: boolean;
 };
 
@@ -278,7 +283,170 @@ function formattedJobHeartbeat(job: CodexRunJob) {
   return `**Heartbeat:** ${heartbeat}\n\n**Status:** ${status}`;
 }
 
-function FormattedMessage({ text, emptyText }: { text: string | undefined; emptyText: string }) {
+const localImageExtensions = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+const localImageLinePattern = /^((?:[a-zA-Z]:[\\/]|\\\\|\/).+\.(?:png|jpe?g|gif|webp|bmp))$/i;
+const windowsImageInLinePattern = /((?:[a-zA-Z]:[\\/]|\\\\)[^\n\r]*?\.(?:png|jpe?g|gif|webp|bmp))/i;
+const markdownWindowsImagePattern = /(!\[[^\]]*\]\()([a-zA-Z]:\\[^)\n]+\.(?:png|jpe?g|gif|webp|bmp))(\))/gi;
+
+function normalizeImagePathForMarkdown(value: string) {
+  return value.replace(/\\/g, "/");
+}
+
+function normalizeScreenshotMarkdown(value: string) {
+  const withNormalizedImageLinks = value.replace(markdownWindowsImagePattern, (_match, open: string, imagePath: string, close: string) => {
+    return `${open}${normalizeImagePathForMarkdown(imagePath)}${close}`;
+  });
+
+  return withNormalizedImageLinks
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+
+      if (!trimmed || trimmed.startsWith("![")) {
+        return line;
+      }
+
+      const exactPath = trimmed.match(localImageLinePattern)?.[1];
+      const inlinePath = trimmed.match(windowsImageInLinePattern)?.[1];
+      const imagePath = exactPath ?? inlinePath;
+
+      if (!imagePath) {
+        return line;
+      }
+
+      const indent = line.slice(0, line.indexOf(trimmed));
+
+      return `${indent}![Screenshot](${normalizeImagePathForMarkdown(imagePath)})`;
+    })
+    .join("\n");
+}
+
+function localImagePathFromSrc(src: string | undefined) {
+  if (!src) {
+    return null;
+  }
+
+  let value = src.trim();
+
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    try {
+      value = decodeURI(value);
+    } catch {
+      return null;
+    }
+  }
+
+  if (value.startsWith("file://")) {
+    try {
+      const url = new URL(value);
+      value = url.pathname;
+    } catch {
+      value = value.replace(/^file:\/+/i, "");
+    }
+  }
+
+  value = value.replace(/\\/g, "/");
+
+  if (/^\/[a-zA-Z]:\//.test(value)) {
+    value = value.slice(1);
+  }
+
+  if (!localImageExtensions.test(value)) {
+    return null;
+  }
+
+  return /^(?:[a-zA-Z]:\/|\/\/|\/)/.test(value) ? value : null;
+}
+
+function AuthenticatedImage({ src, alt, token }: { src: string | undefined; alt: string | undefined; token: string }) {
+  const localPath = useMemo(() => localImagePathFromSrc(src), [src]);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!localPath) {
+      setFailed(false);
+      setObjectUrl((previous) => {
+        if (previous) {
+          URL.revokeObjectURL(previous);
+        }
+
+        return null;
+      });
+      return;
+    }
+
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    const controller = new AbortController();
+    const imagePath = localPath;
+
+    setFailed(false);
+    setObjectUrl((previous) => {
+      if (previous) {
+        URL.revokeObjectURL(previous);
+      }
+
+      return null;
+    });
+
+    async function loadImage() {
+      try {
+        const response = await fetch(`/api/local-image?path=${encodeURIComponent(imagePath)}`, {
+          headers: token ? { "x-control-token": token } : {},
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          throw new Error("Screenshot unavailable");
+        }
+
+        const blob = await response.blob();
+        createdUrl = URL.createObjectURL(blob);
+
+        if (cancelled) {
+          URL.revokeObjectURL(createdUrl);
+          return;
+        }
+
+        setObjectUrl(createdUrl);
+      } catch {
+        if (!cancelled) {
+          setFailed(true);
+        }
+      }
+    }
+
+    void loadImage();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [localPath, token]);
+
+  if (!localPath) {
+    return <img className="chat-image" src={src} alt={alt || "Image"} loading="lazy" />;
+  }
+
+  if (failed) {
+    return <span className="image-placeholder">Screenshot unavailable</span>;
+  }
+
+  if (!objectUrl) {
+    return <span className="image-placeholder">Loading screenshot...</span>;
+  }
+
+  return <img className="chat-image" src={objectUrl} alt={alt || "Screenshot"} loading="lazy" />;
+}
+
+function FormattedMessage({ text, emptyText, token }: { text: string | undefined; emptyText: string; token: string }) {
   if (!text?.trim()) {
     return <div className="message-empty">{emptyText}</div>;
   }
@@ -292,10 +460,11 @@ function FormattedMessage({ text, emptyText }: { text: string | undefined; empty
             <a href={href} target="_blank" rel="noreferrer">
               {children}
             </a>
-          )
+          ),
+          img: ({ src, alt }) => <AuthenticatedImage src={src} alt={alt} token={token} />
         }}
       >
-        {text}
+        {normalizeScreenshotMarkdown(text)}
       </ReactMarkdown>
     </div>
   );
@@ -381,6 +550,7 @@ export function App() {
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
   const [menuOpen, setMenuOpen] = useState(false);
   const selectedChatIdRef = useRef<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const authHeaders = useMemo(
     () => ({
@@ -407,9 +577,53 @@ export function App() {
   const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedActiveJobCount = activeJobCount(selectedJobs);
-  const responseIsHeartbeat = Boolean(selectedJob);
-  const responseText =
-    responseIsHeartbeat && selectedJob ? formattedJobHeartbeat(selectedJob) : selectedChat?.lastResponse?.text;
+  const transcriptMessages = useMemo<ChatTranscriptMessage[]>(() => {
+    if (!selectedChat) {
+      return [];
+    }
+
+    if ((selectedChat.messages ?? []).length) {
+      return selectedChat.messages ?? [];
+    }
+
+    const fallback: ChatTranscriptMessage[] = [];
+
+    if (selectedChat.lastPrompt) {
+      fallback.push({
+        id: "last-prompt",
+        role: "user",
+        text: selectedChat.lastPrompt.text,
+        createdAt: selectedChat.lastPrompt.createdAt
+      });
+    }
+
+    if (selectedChat.lastResponse) {
+      fallback.push({
+        id: "last-response",
+        role: "assistant",
+        text: selectedChat.lastResponse.text,
+        createdAt: selectedChat.lastResponse.createdAt
+      });
+    }
+
+    return fallback;
+  }, [selectedChat]);
+  const visibleMessages = useMemo<ChatTranscriptMessage[]>(() => {
+    if (!selectedJob) {
+      return transcriptMessages;
+    }
+
+    return [
+      ...transcriptMessages,
+      {
+        id: `job-${selectedJob.id}`,
+        role: "assistant",
+        text: formattedJobHeartbeat(selectedJob),
+        createdAt: selectedJob.heartbeatAt ?? selectedJob.startedAt ?? selectedJob.createdAt
+      }
+    ];
+  }, [selectedJob, transcriptMessages]);
+  const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -561,6 +775,15 @@ export function App() {
         updatedAt: createdAt,
         lastPrompt: { text, createdAt },
         lastResponse: null,
+        messages: [
+          ...(current.messages ?? []),
+          {
+            id: `optimistic-user-${Date.parse(createdAt) || Date.now()}`,
+            role: "user" as const,
+            text,
+            createdAt
+          }
+        ].slice(-20),
         hasResponse: false
       };
     });
@@ -678,6 +901,14 @@ export function App() {
     void loadChatDetail(selectedChatId);
     void loadChatJobs(selectedChatId);
   }, [authenticated, loadChatDetail, loadChatJobs, selectedChatId]);
+
+  useEffect(() => {
+    if (!selectedChatId || loadingDetail) {
+      return;
+    }
+
+    chatEndRef.current?.scrollIntoView({ block: "end" });
+  }, [lastVisibleMessageId, loadingDetail, selectedChatId]);
 
   useEffect(() => {
     if (!state?.runner.recentJobs.length) {
@@ -982,28 +1213,28 @@ export function App() {
               <Loader2 className="spin" size={24} />
             </div>
           ) : selectedChat ? (
-            <>
-              <section className="message-block prompt-block">
-                <div className="message-heading">
-                  <MessageSquareText size={17} />
-                  <h3>Last prompt</h3>
-                  {selectedChat.lastPrompt ? <time>{formatDate(selectedChat.lastPrompt.createdAt)}</time> : null}
+            <div className="chat-thread" aria-label="Recent chat messages">
+              {visibleMessages.length ? (
+                visibleMessages.map((message) => (
+                  <article key={message.id} className={`chat-bubble is-${message.role}`}>
+                    <div className="bubble-meta">
+                      <span>{message.role === "user" ? "You" : "Codex"}</span>
+                      <time>{formatDate(message.createdAt)}</time>
+                    </div>
+                    <FormattedMessage
+                      text={message.text}
+                      emptyText={message.role === "user" ? "No prompt text." : "No response text."}
+                      token={token}
+                    />
+                  </article>
+                ))
+              ) : (
+                <div className="empty-chat">
+                  <Clock3 size={26} />
                 </div>
-                <FormattedMessage text={selectedChat.lastPrompt?.text} emptyText="No prompt found." />
-              </section>
-
-              <section className="message-block response-block">
-                <div className="message-heading">
-                  <MessageSquareText size={17} />
-                  <h3>{responseIsHeartbeat ? "Heartbeat" : "Last response"}</h3>
-                  {responseIsHeartbeat && selectedJob?.heartbeatAt ? <time>{formatDate(selectedJob.heartbeatAt)}</time> : null}
-                  {!responseIsHeartbeat && selectedChat.lastResponse ? (
-                    <time>{formatDate(selectedChat.lastResponse.createdAt)}</time>
-                  ) : null}
-                </div>
-                <FormattedMessage text={responseText} emptyText="No response found yet." />
-              </section>
-            </>
+              )}
+              <div ref={chatEndRef} aria-hidden="true" />
+            </div>
           ) : (
             <div className="empty-chat">
               <Clock3 size={26} />

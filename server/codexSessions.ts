@@ -3,13 +3,13 @@ import { createReadStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import type { ChatDetail, ChatMessageExcerpt, ChatProjectGroup, ChatSummary } from "./types.js";
+import type { ChatDetail, ChatMessageExcerpt, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
 const sessionIndexPath = process.env.CODEX_SESSION_INDEX ?? path.join(os.homedir(), ".codex", "session_index.jsonl");
 const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? 300);
 const cacheMs = Number(process.env.CODEX_SESSION_CACHE_MS ?? 5000);
-const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 1024 * 1024);
+const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024);
 
 let sessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
 
@@ -66,6 +66,10 @@ function isPromptText(text: string): boolean {
   }
 
   return !trimmed.startsWith("<environment_context>");
+}
+
+function transcriptId(role: ChatTranscriptMessage["role"], createdAt: string, index: number): string {
+  return `${role}-${Date.parse(createdAt) || 0}-${index}`;
 }
 
 function projectNameFromPath(projectPath: string): string {
@@ -189,6 +193,8 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
   let lastFinalAssistant: ChatMessageExcerpt | null = null;
   let lastAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let lastFinalAssistantAfterPrompt: ChatMessageExcerpt | null = null;
+  const userMessages: ChatTranscriptMessage[] = [];
+  const assistantMessages: ChatTranscriptMessage[] = [];
 
   const metaLines = createInterface({
     input: createReadStream(filePath, { encoding: "utf8" }),
@@ -267,10 +273,24 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
         lastPrompt = { text, createdAt: timestamp };
         lastAssistantAfterPrompt = null;
         lastFinalAssistantAfterPrompt = null;
+        userMessages.push({
+          id: transcriptId("user", timestamp, userMessages.length),
+          role: "user",
+          text,
+          createdAt: timestamp
+        });
       }
 
       if (record.payload.role === "assistant" && text) {
         lastAssistant = { text, createdAt: timestamp };
+        const assistantMessage: ChatTranscriptMessage = {
+          id: transcriptId("assistant", timestamp, assistantMessages.length),
+          role: "assistant",
+          text,
+          createdAt: timestamp
+        };
+
+        assistantMessages.push(assistantMessage);
 
         if (lastPrompt) {
           lastAssistantAfterPrompt = lastAssistant;
@@ -295,6 +315,15 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
   const updated = { iso: new Date(updatedMs).toISOString(), ms: updatedMs };
   const response = lastFinalAssistantAfterPrompt ?? lastAssistantAfterPrompt ?? lastFinalAssistant ?? lastAssistant;
   const title = indexed?.threadName ?? previewText(lastPrompt?.text ?? "", id);
+  const messages = [...userMessages.slice(-10), ...assistantMessages.slice(-10)].sort((a, b) => {
+    const byTime = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+
+    if (byTime !== 0) {
+      return byTime;
+    }
+
+    return a.id.localeCompare(b.id);
+  });
 
   return {
     id,
@@ -305,6 +334,7 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
     updatedAt: updated.iso,
     lastPrompt,
     lastResponse: response,
+    messages,
     hasResponse: Boolean(response),
     sortTime: updated.ms
   };

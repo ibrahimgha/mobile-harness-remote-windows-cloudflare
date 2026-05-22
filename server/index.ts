@@ -2,6 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -35,6 +36,14 @@ const runner = new CodexRunner({
   }
 });
 const events: BridgeEvent[] = [];
+const imageContentTypes = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".bmp", "image/bmp"]
+]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,6 +103,36 @@ function describeError(error: unknown): Record<string, unknown> {
     message: error.message,
     stack: error.stack?.slice(0, 3000)
   };
+}
+
+function resolveLocalImagePath(rawPath: unknown): { ok: true; path: string; contentType: string } | { ok: false; message: string } {
+  if (typeof rawPath !== "string" || !rawPath.trim()) {
+    return { ok: false, message: "Image path is required" };
+  }
+
+  let decoded = rawPath.trim();
+
+  if (decoded.startsWith("file://")) {
+    try {
+      decoded = fileURLToPath(decoded);
+    } catch {
+      decoded = decoded.replace(/^file:\/+/i, "");
+    }
+  }
+
+  if (/^\/[a-zA-Z]:\//.test(decoded)) {
+    decoded = decoded.slice(1);
+  }
+
+  const resolved = path.resolve(decoded);
+  const extension = path.extname(resolved).toLowerCase();
+  const contentType = imageContentTypes.get(extension);
+
+  if (!contentType) {
+    return { ok: false, message: "Only local screenshot image files can be displayed" };
+  }
+
+  return { ok: true, path: resolved, contentType };
 }
 
 function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<string, unknown>) {
@@ -221,6 +260,38 @@ app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
+});
+
+app.get("/api/local-image", requireControlAuth, async (req, res) => {
+  const resolved = resolveLocalImagePath(req.query.path);
+
+  if (!resolved.ok) {
+    res.status(400).json({ ok: false, message: resolved.message });
+    return;
+  }
+
+  try {
+    const stat = await fsp.stat(resolved.path);
+
+    if (!stat.isFile()) {
+      res.status(404).json({ ok: false, message: "Screenshot not found" });
+      return;
+    }
+
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.type(resolved.contentType);
+    res.sendFile(resolved.path);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not read screenshot";
+
+    pushEvent("error", "Local screenshot could not be served", {
+      action: "local-image",
+      request: requestContext(req),
+      path: resolved.path,
+      error: describeError(error)
+    });
+    res.status(404).json({ ok: false, message });
+  }
 });
 
 app.get("/api/debug/events", requireControlAuth, async (req, res) => {
