@@ -3,8 +3,10 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleX,
   Clock3,
   Folder,
+  ListChecks,
   Loader2,
   LogOut,
   MessageSquareText,
@@ -53,6 +55,7 @@ type CodexRunJob = {
   chatId: string;
   projectPath: string;
   status: "queued" | "running" | "completed" | "failed";
+  queuePosition?: number;
   createdAt: string;
   promptPreview: string;
   textLength: number;
@@ -113,6 +116,12 @@ type ApiResult = {
   job?: CodexRunJob;
 };
 
+type ChatJobsResult = {
+  ok: boolean;
+  chatId: string;
+  jobs: CodexRunJob[];
+};
+
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
 
@@ -171,6 +180,77 @@ function isActiveJob(job: CodexRunJob | undefined) {
   return job?.status === "queued" || job?.status === "running";
 }
 
+function sortJobsForChat(jobs: CodexRunJob[]) {
+  const activeRank: Record<CodexRunJob["status"], number> = {
+    running: 0,
+    queued: 1,
+    failed: 2,
+    completed: 3
+  };
+
+  return [...jobs].sort((a, b) => {
+    const aActive = isActiveJob(a);
+    const bActive = isActiveJob(b);
+
+    if (aActive !== bActive) {
+      return aActive ? -1 : 1;
+    }
+
+    if (aActive && bActive) {
+      const statusDelta = activeRank[a.status] - activeRank[b.status];
+      if (statusDelta !== 0) {
+        return statusDelta;
+      }
+
+      return (a.queuePosition ?? 0) - (b.queuePosition ?? 0) || Date.parse(a.createdAt) - Date.parse(b.createdAt);
+    }
+
+    return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+  });
+}
+
+function mergeJobsForChat(current: CodexRunJob[], incoming: CodexRunJob[]) {
+  const merged = new Map(current.map((job) => [job.id, job]));
+
+  for (const job of incoming) {
+    merged.set(job.id, { ...merged.get(job.id), ...job });
+  }
+
+  return sortJobsForChat([...merged.values()]).slice(0, 40);
+}
+
+function activeJobCount(jobs: CodexRunJob[] | undefined) {
+  return jobs?.filter(isActiveJob).length ?? 0;
+}
+
+function jobStatusLabel(job: CodexRunJob) {
+  if (job.status === "queued") {
+    return job.queuePosition ? `Queued #${job.queuePosition}` : "Queued";
+  }
+
+  if (job.status === "running") {
+    return "Running";
+  }
+
+  if (job.status === "failed") {
+    return "Failed";
+  }
+
+  return "Completed";
+}
+
+function jobDetailText(job: CodexRunJob) {
+  if (job.heartbeat) {
+    return job.heartbeat;
+  }
+
+  if (job.message) {
+    return job.message;
+  }
+
+  return job.status === "queued" ? "Waiting for the target laptop." : "No status details yet.";
+}
+
 function formattedJobHeartbeat(job: CodexRunJob) {
   const heartbeat = job.heartbeat ?? job.message ?? "Waiting for the target laptop to start the Codex run.";
   const status = job.status === "running" ? "Running on target laptop" : "Queued on target laptop";
@@ -199,6 +279,22 @@ function FormattedMessage({ text, emptyText }: { text: string | undefined; empty
       </ReactMarkdown>
     </div>
   );
+}
+
+function JobStatusIcon({ job }: { job: CodexRunJob }) {
+  if (job.status === "running") {
+    return <Loader2 className="spin" size={15} />;
+  }
+
+  if (job.status === "completed") {
+    return <CheckCircle2 size={15} />;
+  }
+
+  if (job.status === "failed") {
+    return <CircleX size={15} />;
+  }
+
+  return <Clock3 size={15} />;
 }
 
 export function App() {
@@ -232,7 +328,7 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
-  const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob>>({});
+  const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
 
   const authHeaders = useMemo(
     () => ({
@@ -256,8 +352,10 @@ export function App() {
     return null;
   }, [chatIndex, selectedChatId]);
 
-  const selectedJob = selectedChatId ? chatJobs[selectedChatId] : undefined;
-  const responseIsHeartbeat = isActiveJob(selectedJob);
+  const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
+  const selectedJob = selectedJobs.find(isActiveJob);
+  const selectedActiveJobCount = activeJobCount(selectedJobs);
+  const responseIsHeartbeat = Boolean(selectedJob);
   const responseText =
     responseIsHeartbeat && selectedJob ? formattedJobHeartbeat(selectedJob) : selectedChat?.lastResponse?.text;
 
@@ -352,10 +450,25 @@ export function App() {
     [apiFetch]
   );
 
+  const loadChatJobs = useCallback(
+    async (chatId: string) => {
+      try {
+        const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`);
+        setChatJobs((current) => ({
+          ...current,
+          [chatId]: mergeJobsForChat(current[chatId] ?? [], result.jobs)
+        }));
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Could not load command queue");
+      }
+    },
+    [apiFetch]
+  );
+
   const rememberJob = useCallback((job: CodexRunJob) => {
     setChatJobs((current) => ({
       ...current,
-      [job.chatId]: job
+      [job.chatId]: mergeJobsForChat(current[job.chatId] ?? [], [job])
     }));
   }, []);
 
@@ -457,7 +570,8 @@ export function App() {
     }
 
     void loadChatDetail(selectedChatId);
-  }, [authenticated, loadChatDetail, selectedChatId]);
+    void loadChatJobs(selectedChatId);
+  }, [authenticated, loadChatDetail, loadChatJobs, selectedChatId]);
 
   useEffect(() => {
     if (!state?.runner.recentJobs.length) {
@@ -468,7 +582,7 @@ export function App() {
       const next = { ...current };
 
       for (const job of state.runner.recentJobs) {
-        next[job.chatId] = job;
+        next[job.chatId] = mergeJobsForChat(next[job.chatId] ?? [], [job]);
       }
 
       return next;
@@ -500,13 +614,14 @@ export function App() {
 
         if (job.chatId === selectedChatId && (job.status === "completed" || job.status === "failed")) {
           void loadChats();
+          void loadChatJobs(job.chatId);
           void loadChatDetail(job.chatId, true);
         }
       }
     });
 
     return () => socket.close();
-  }, [authenticated, loadChatDetail, loadChats, rememberJob, selectedChatId, token]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, rememberJob, selectedChatId, token]);
 
   useEffect(() => {
     if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
@@ -515,11 +630,11 @@ export function App() {
 
     const interval = window.setInterval(() => {
       void loadChats();
-      void loadChatDetail(selectedChatId, true);
+      void loadChatJobs(selectedChatId);
     }, 4000);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChats, selectedChatId, selectedJob]);
+  }, [authenticated, loadChatJobs, loadChats, selectedChatId, selectedJob]);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -556,6 +671,7 @@ export function App() {
       setNotice(result.message ?? "Prompt sent");
       window.setTimeout(() => {
         void loadChats();
+        void loadChatJobs(selectedChatId);
         void loadChatDetail(selectedChatId, true);
       }, 1600);
     } catch (error) {
@@ -666,20 +782,27 @@ export function App() {
                 </button>
                 {!isCollapsed ? (
                   <div id={listId} className="chat-list">
-                    {project.chats.map((chat) => (
-                      <button
-                        key={chat.id}
-                        type="button"
-                        className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
-                        onClick={() => {
-                          setSelectedChat(null);
-                          setSelectedChatId(chat.id);
-                        }}
-                      >
-                        <span>{chat.title}</span>
-                        <small>{formatRelative(chat.updatedAt)}</small>
-                      </button>
-                    ))}
+                    {project.chats.map((chat) => {
+                      const queuedCommands = activeJobCount(chatJobs[chat.id]);
+
+                      return (
+                        <button
+                          key={chat.id}
+                          type="button"
+                          className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
+                          onClick={() => {
+                            setSelectedChat(null);
+                            setSelectedChatId(chat.id);
+                          }}
+                        >
+                          <span>{chat.title}</span>
+                          <span className="chat-meta">
+                            <small>{formatRelative(chat.updatedAt)}</small>
+                            {queuedCommands ? <span className="chat-queue-badge">{queuedCommands}</span> : null}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 ) : null}
               </section>
@@ -747,6 +870,44 @@ export function App() {
             </div>
           )}
         </div>
+
+        {selectedChat ? (
+          <section className="command-queue" aria-labelledby="command-queue-title">
+            <div className="queue-header">
+              <div className="queue-title">
+                <ListChecks size={17} />
+                <h3 id="command-queue-title">Command queue</h3>
+              </div>
+              <span className="queue-count">
+                {selectedActiveJobCount
+                  ? `${selectedActiveJobCount} active / ${selectedJobs.length} recent`
+                  : selectedJobs.length
+                    ? `${selectedJobs.length} recent`
+                    : "No commands"}
+              </span>
+            </div>
+
+            {selectedJobs.length ? (
+              <div className="queue-list" aria-label="Commands for this chat">
+                {selectedJobs.map((job) => (
+                  <article key={job.id} className={`queue-item is-${job.status}`}>
+                    <div className="queue-status-row">
+                      <span className="queue-status">
+                        <JobStatusIcon job={job} />
+                        {jobStatusLabel(job)}
+                      </span>
+                      <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
+                    </div>
+                    <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
+                    <p className="queue-detail">{jobDetailText(job)}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="queue-empty">No commands queued for this chat yet.</p>
+            )}
+          </section>
+        ) : null}
 
         {selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
           <div className="job-strip">

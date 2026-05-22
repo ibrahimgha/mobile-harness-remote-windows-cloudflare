@@ -241,6 +241,16 @@ app.get("/api/jobs", requireControlAuth, (_req, res) => {
   });
 });
 
+app.get("/api/chats/:id/jobs", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+  res.json({
+    ok: true,
+    chatId,
+    jobs: runner.jobsForChat(chatId)
+  });
+});
+
 app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
     res.json(await listChats());

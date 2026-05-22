@@ -20,7 +20,7 @@ type EnqueueOptions = {
   textLength: number;
 };
 
-const maxRecentJobs = 40;
+const maxRecentJobs = 160;
 const maxHeartbeatLength = 1200;
 const maxHeartbeatHistory = 8;
 
@@ -153,9 +153,15 @@ export class CodexRunner {
   }
 
   get recentJobs(): CodexRunJob[] {
-    return [...this.jobs.values()]
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .slice(0, maxRecentJobs);
+    return this.sortedJobs.slice(0, maxRecentJobs);
+  }
+
+  jobsForChat(chatId: string): CodexRunJob[] {
+    return this.sortedJobs.filter((job) => job.chatId === chatId);
+  }
+
+  private get sortedJobs(): CodexRunJob[] {
+    return [...this.jobs.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   }
 
   enqueue(options: EnqueueOptions): CodexRunJob {
@@ -184,6 +190,7 @@ export class CodexRunner {
     job.command = [this.cliPath, ...this.argsForJob(job)];
     this.jobs.set(id, job);
     this.queue.push({ job, text: options.text });
+    this.refreshQueuePositions();
     this.emit(job, "queued");
     void this.processNext();
 
@@ -222,6 +229,8 @@ export class CodexRunner {
       return;
     }
 
+    next.job.queuePosition = undefined;
+    this.refreshQueuePositions(true);
     this.processing = true;
 
     try {
@@ -322,6 +331,20 @@ export class CodexRunner {
     job.heartbeatHistory = [...(job.heartbeatHistory ?? []), text].slice(-maxHeartbeatHistory);
     job.message = text;
     this.emit(job, "heartbeat");
+  }
+
+  private refreshQueuePositions(emitChanges = false) {
+    for (const [index, item] of this.queue.entries()) {
+      const queuePosition = index + 1;
+
+      if (item.job.queuePosition !== queuePosition) {
+        item.job.queuePosition = queuePosition;
+
+        if (emitChanges) {
+          this.emit(item.job, "queued");
+        }
+      }
+    }
   }
 
   private emit(job: CodexRunJob, event: JobEvent) {

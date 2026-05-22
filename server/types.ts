@@ -45,6 +45,7 @@ export type CodexRunJob = {
   chatId: string;
   projectPath: string;
   status: CodexRunStatus;
+  queuePosition?: number;
   createdAt: string;
   promptPreview: string;
   promptHash: string;
