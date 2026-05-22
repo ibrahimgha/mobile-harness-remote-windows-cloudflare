@@ -1018,7 +1018,7 @@ p {
   }
 
   .chat-sidebar {
-    position: fixed;
+    position: absolute;
     inset: 0;
     z-index: 30;
     grid-template-rows: auto auto minmax(0, 1fr);
@@ -1088,8 +1088,8 @@ p {
   }
 
   .chat-topbar {
-    min-height: 52px;
-    padding: 6px 10px;
+    min-height: calc(52px + env(safe-area-inset-top));
+    padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
   }
 
   .chat-title-copy {
@@ -1135,8 +1135,8 @@ p {
 
 @media (max-width: 640px) {
   .sidebar-header {
-    min-height: 60px;
-    padding: 10px 12px;
+    min-height: calc(60px + env(safe-area-inset-top));
+    padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
   }
 
   .chat-topbar {

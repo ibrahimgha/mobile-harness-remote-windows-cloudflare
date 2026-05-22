@@ -1657,8 +1657,10 @@ export function App() {
                           type="button"
                           className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
                           onClick={() => {
-                            setSelectedChat(null);
-                            setSelectedChatId(chat.id);
+                            if (selectedChatId !== chat.id) {
+                              setSelectedChat(null);
+                              setSelectedChatId(chat.id);
+                            }
                             setMenuOpen(false);
                           }}
                         >
