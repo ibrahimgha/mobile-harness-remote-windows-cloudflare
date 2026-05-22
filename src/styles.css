@@ -220,19 +220,45 @@ p {
 
 .project-heading {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 18px 22px minmax(0, 1fr) auto;
   gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
   padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  text-align: left;
+}
+
+.project-heading:hover {
+  background: var(--surface-soft);
+}
+
+.project-heading[aria-expanded="true"] {
+  color: var(--teal-strong);
+}
+
+.project-chevron {
   color: var(--muted);
 }
 
-.project-heading h2 {
+.project-copy {
+  min-width: 0;
+}
+
+.project-title {
+  display: block;
   color: var(--ink);
   font-size: 0.92rem;
+  font-weight: 700;
   line-height: 1.25;
 }
 
-.project-heading p {
+.project-path {
+  display: block;
   overflow: hidden;
   color: var(--muted);
   font-size: 0.78rem;
@@ -241,9 +267,24 @@ p {
   white-space: nowrap;
 }
 
+.project-count {
+  display: inline-flex;
+  min-width: 28px;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .chat-list {
   display: grid;
   gap: 6px;
+  margin-top: 4px;
 }
 
 .chat-link {

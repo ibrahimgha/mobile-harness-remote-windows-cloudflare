@@ -1,6 +1,8 @@
 import {
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Folder,
   KeyRound,
@@ -76,6 +78,7 @@ type ApiResult = {
 };
 
 const tokenKey = "control-token";
+const collapsedProjectsKey = "collapsed-projects";
 
 function formatRelative(value: string) {
   const ms = Date.parse(value);
@@ -121,6 +124,21 @@ function firstChatId(index: ChatIndex | null) {
 export function App() {
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
+    const saved = localStorage.getItem(collapsedProjectsKey);
+
+    if (!saved) {
+      return new Set();
+    }
+
+    try {
+      const parsed = JSON.parse(saved) as unknown;
+
+      return Array.isArray(parsed) ? new Set(parsed.filter((value): value is string => typeof value === "string")) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const [authenticated, setAuthenticated] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -142,6 +160,20 @@ export function App() {
     }),
     [token]
   );
+
+  const selectedProjectPath = useMemo(() => {
+    if (!chatIndex || !selectedChatId) {
+      return null;
+    }
+
+    for (const project of chatIndex.projects) {
+      if (project.chats.some((chat) => chat.id === selectedChatId)) {
+        return project.projectPath;
+      }
+    }
+
+    return null;
+  }, [chatIndex, selectedChatId]);
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -260,6 +292,27 @@ export function App() {
   }, [loadChats]);
 
   useEffect(() => {
+    localStorage.setItem(collapsedProjectsKey, JSON.stringify([...collapsedProjects]));
+  }, [collapsedProjects]);
+
+  useEffect(() => {
+    if (!selectedProjectPath) {
+      return;
+    }
+
+    setCollapsedProjects((current) => {
+      if (!current.has(selectedProjectPath)) {
+        return current;
+      }
+
+      const next = new Set(current);
+      next.delete(selectedProjectPath);
+
+      return next;
+    });
+  }, [selectedProjectPath]);
+
+  useEffect(() => {
     if (!authenticated || !selectedChatId) {
       return;
     }
@@ -347,6 +400,20 @@ export function App() {
     setSelectedChatId(null);
   }
 
+  function toggleProject(projectPath: string) {
+    setCollapsedProjects((current) => {
+      const next = new Set(current);
+
+      if (next.has(projectPath)) {
+        next.delete(projectPath);
+      } else {
+        next.add(projectPath);
+      }
+
+      return next;
+    });
+  }
+
   if (checkingAuth) {
     return (
       <main className="auth-shell">
@@ -396,30 +463,48 @@ export function App() {
         </div>
 
         <div className="project-list">
-          {chatIndex?.projects.map((project) => (
-            <section key={project.projectPath} className="project-group">
-              <div className="project-heading">
-                <Folder size={16} />
-                <div>
-                  <h2>{project.projectName}</h2>
-                  <p title={project.projectPath}>{project.projectPath}</p>
-                </div>
-              </div>
-              <div className="chat-list">
-                {project.chats.map((chat) => (
-                  <button
-                    key={chat.id}
-                    type="button"
-                    className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
-                    onClick={() => setSelectedChatId(chat.id)}
-                  >
-                    <span>{chat.title}</span>
-                    <small>{formatRelative(chat.updatedAt)}</small>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
+          {chatIndex?.projects.map((project) => {
+            const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
+            const isCollapsed = collapsedProjects.has(project.projectPath) && selectedProjectPath !== project.projectPath;
+            const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
+
+            return (
+              <section key={project.projectPath} className="project-group">
+                <button
+                  type="button"
+                  className="project-heading"
+                  aria-expanded={!isCollapsed}
+                  aria-controls={listId}
+                  onClick={() => toggleProject(project.projectPath)}
+                >
+                  <ChevronIcon className="project-chevron" size={16} />
+                  <Folder size={16} />
+                  <span className="project-copy">
+                    <span className="project-title">{project.projectName}</span>
+                    <span className="project-path" title={project.projectPath}>
+                      {project.projectPath}
+                    </span>
+                  </span>
+                  <span className="project-count">{project.chats.length}</span>
+                </button>
+                {!isCollapsed ? (
+                  <div id={listId} className="chat-list">
+                    {project.chats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        type="button"
+                        className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
+                        onClick={() => setSelectedChatId(chat.id)}
+                      >
+                        <span>{chat.title}</span>
+                        <small>{formatRelative(chat.updatedAt)}</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            );
+          })}
         </div>
       </aside>
 
