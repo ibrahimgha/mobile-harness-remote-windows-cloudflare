@@ -804,10 +804,11 @@ p {
   grid-auto-flow: column;
   grid-auto-columns: minmax(240px, 360px);
   gap: 8px;
+  align-items: stretch;
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 2px;
+  padding: 0 1px 4px;
 }
 
 .queue-item {
@@ -892,6 +893,28 @@ p {
   background: var(--mint);
   font-size: 0.88rem;
   font-weight: 700;
+}
+
+.job-strip-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.job-duration {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--teal-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
 .job-strip small {
@@ -1147,9 +1170,9 @@ p {
 
   .command-queue {
     gap: 4px;
-    max-height: 118px;
+    max-height: none;
     min-height: 0;
-    padding: 7px 10px 6px;
+    padding: 7px 10px 10px;
   }
 
   .queue-header {
@@ -1170,12 +1193,13 @@ p {
 
   .queue-list {
     grid-auto-columns: minmax(220px, 82vw);
+    padding-bottom: 2px;
   }
 
   .queue-item {
     grid-template-rows: auto auto;
     gap: 3px;
-    min-height: 76px;
+    min-height: 82px;
     padding: 8px;
   }
 
@@ -1202,6 +1226,16 @@ p {
     min-height: 34px;
     padding: 0 10px;
     font-size: 0.8rem;
+  }
+
+  .job-strip-status {
+    gap: 6px;
+  }
+
+  .job-duration {
+    min-height: 22px;
+    padding: 0 6px;
+    font-size: 0.74rem;
   }
 
   .job-strip small {

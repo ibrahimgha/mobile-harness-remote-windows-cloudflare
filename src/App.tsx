@@ -208,6 +208,27 @@ function formatRelative(value: string) {
   return `${days}d ago`;
 }
 
+function formatElapsedSeconds(startValue: string | undefined, endValue: string | undefined, nowMs: number) {
+  const startMs = Date.parse(startValue ?? "");
+  const endMs = endValue ? Date.parse(endValue) : nowMs;
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return "0:00";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const paddedSeconds = String(seconds).padStart(2, "0");
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+
+  return `${minutes}:${paddedSeconds}`;
+}
+
 function formatDate(value: string) {
   const date = new Date(value);
 
@@ -723,6 +744,7 @@ export function App() {
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [menuOpen, setMenuOpen] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -764,6 +786,10 @@ export function App() {
   );
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedQueueCount = selectedQueuedJobs.length + selectedQueuedLocalCommands.length;
+  const selectedJobDuration =
+    selectedJob?.status === "running"
+      ? formatElapsedSeconds(selectedJob.startedAt ?? selectedJob.createdAt, selectedJob.finishedAt, durationNow)
+      : "";
   const transcriptMessages = useMemo<ChatTranscriptMessage[]>(() => {
     if (!selectedChat) {
       return [];
@@ -1103,6 +1129,20 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(localCommandQueueKey, JSON.stringify(localCommandQueue));
   }, [localCommandQueue]);
+
+  useEffect(() => {
+    if (selectedJob?.status !== "running") {
+      return;
+    }
+
+    setDurationNow(Date.now());
+
+    const interval = window.setInterval(() => {
+      setDurationNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
     if (!selectedProjectPath) {
@@ -1740,7 +1780,15 @@ export function App() {
         {selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
           <div className="job-strip">
             <Loader2 className={selectedJob.status === "running" ? "spin" : ""} size={16} />
-            <span>{selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}</span>
+            <span className="job-strip-status">
+              {selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}
+              {selectedJob.status === "running" ? (
+                <span className="job-duration" aria-label={`Elapsed ${selectedJobDuration}`}>
+                  <Clock3 size={13} />
+                  {selectedJobDuration}
+                </span>
+              ) : null}
+            </span>
             <small>{selectedJob.promptPreview}</small>
           </div>
         ) : null}
