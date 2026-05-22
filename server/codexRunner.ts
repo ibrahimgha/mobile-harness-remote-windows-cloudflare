@@ -3,7 +3,7 @@ import { createWriteStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { CodexRunJob } from "./types.js";
+import type { CodexRunJob, CodexTranscriptStatus } from "./types.js";
 
 type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
@@ -23,6 +23,9 @@ type EnqueueOptions = {
 const maxRecentJobs = 160;
 const maxHeartbeatLength = 1200;
 const maxHeartbeatHistory = 8;
+const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
+const transcriptVerifyAttempts = Number(process.env.CODEX_TRANSCRIPT_VERIFY_ATTEMPTS ?? 5);
+const transcriptVerifyDelayMs = Number(process.env.CODEX_TRANSCRIPT_VERIFY_DELAY_MS ?? 350);
 
 function resolveCliPath(): string {
   const configured = process.env.CODEX_CLI_PATH?.trim();
@@ -81,6 +84,14 @@ function textFromContent(content: unknown): string {
     .filter(Boolean)
     .join("\n")
     .trim();
+}
+
+function normalizeTranscriptText(text: string): string {
+  return text.replace(/\r\n/g, "\n").trimEnd();
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function clampHeartbeat(text: string): string {
@@ -292,21 +303,163 @@ export class CodexRunner {
       });
 
       child.on("close", (code, signal) => {
-        if (stdoutBuffer.trim()) {
-          this.handleStdoutLine(job, stdoutBuffer);
-        }
+        void (async () => {
+          if (stdoutBuffer.trim()) {
+            this.handleStdoutLine(job, stdoutBuffer);
+          }
 
-        stdout.end();
-        stderr.end();
-        job.exitCode = code;
-        job.signal = signal;
-        job.finishedAt = new Date().toISOString();
-        job.status = code === 0 ? "completed" : "failed";
-        job.message = code === 0 ? "Codex CLI completed" : `Codex CLI failed with exit code ${code ?? "unknown"}`;
-        this.emit(job, job.status === "completed" ? "completed" : "failed");
-        resolve();
+          stdout.end();
+          stderr.end();
+          job.exitCode = code;
+          job.signal = signal;
+          job.finishedAt = new Date().toISOString();
+          job.status = code === 0 ? "completed" : "failed";
+
+          if (code === 0) {
+            job.codexTranscript = await this.verifyCodexTranscript(job, text);
+            job.message = job.codexTranscript.responseVisible
+              ? "Codex CLI completed and saved to Codex transcript"
+              : "Codex CLI completed; Codex transcript visibility was not fully confirmed";
+          } else {
+            job.codexTranscript = await this.verifyCodexTranscript(job, text);
+            job.message = `Codex CLI failed with exit code ${code ?? "unknown"}`;
+          }
+
+          this.emit(job, job.status === "completed" ? "completed" : "failed");
+          resolve();
+        })().catch((error: unknown) => {
+          stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+          stderr.end();
+          stdout.end();
+          job.exitCode = code;
+          job.signal = signal;
+          job.finishedAt = new Date().toISOString();
+          job.status = "failed";
+          job.message = error instanceof Error ? error.message : "Codex CLI transcript verification failed";
+          this.emit(job, "failed");
+          resolve();
+        });
       });
     });
+  }
+
+  private async findSessionPath(chatId: string): Promise<string | null> {
+    async function visit(dir: string): Promise<string | null> {
+      let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return null;
+      }
+
+      for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+
+        if (entry.isFile() && entry.name.endsWith(`${chatId}.jsonl`)) {
+          return entryPath;
+        }
+
+        if (entry.isDirectory()) {
+          const found = await visit(entryPath);
+          if (found) {
+            return found;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    return visit(sessionsRoot);
+  }
+
+  private async readTranscriptStatus(job: CodexRunJob, text: string): Promise<CodexTranscriptStatus> {
+    const sessionPath = await this.findSessionPath(job.chatId);
+    const checkedAt = new Date().toISOString();
+
+    if (!sessionPath) {
+      return {
+        checkedAt,
+        promptVisible: false,
+        responseVisible: false,
+        message: "Codex session file was not found"
+      };
+    }
+
+    const expectedPrompt = normalizeTranscriptText(text);
+    let promptVisible = false;
+    let responseVisible = false;
+
+    try {
+      const raw = await fs.readFile(sessionPath, "utf8");
+
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.includes('"type":"message"')) {
+          continue;
+        }
+
+        try {
+          const record = JSON.parse(line) as {
+            payload?: {
+              type?: string;
+              role?: string;
+              content?: unknown;
+            };
+          };
+
+          if (record.payload?.type !== "message") {
+            continue;
+          }
+
+          const contentText = normalizeTranscriptText(textFromContent(record.payload.content));
+
+          if (record.payload.role === "user" && contentText === expectedPrompt) {
+            promptVisible = true;
+            responseVisible = false;
+            continue;
+          }
+
+          if (promptVisible && record.payload.role === "assistant" && contentText) {
+            responseVisible = true;
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      return {
+        checkedAt,
+        promptVisible: false,
+        responseVisible: false,
+        sessionPath,
+        message: "Codex session file could not be read"
+      };
+    }
+
+    return {
+      checkedAt,
+      promptVisible,
+      responseVisible,
+      sessionPath,
+      message:
+        promptVisible && responseVisible
+          ? "Prompt and response are visible in Codex"
+          : promptVisible
+            ? "Prompt is visible in Codex; response was not found yet"
+            : "Prompt was not found in the Codex transcript"
+    };
+  }
+
+  private async verifyCodexTranscript(job: CodexRunJob, text: string): Promise<CodexTranscriptStatus> {
+    let status = await this.readTranscriptStatus(job, text);
+
+    for (let attempt = 1; attempt < transcriptVerifyAttempts && !(status.promptVisible && status.responseVisible); attempt += 1) {
+      await delay(transcriptVerifyDelayMs);
+      status = await this.readTranscriptStatus(job, text);
+    }
+
+    return status;
   }
 
   private handleStdoutLine(job: CodexRunJob, line: string) {

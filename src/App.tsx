@@ -69,6 +69,15 @@ type CodexRunJob = {
   heartbeat?: string;
   heartbeatAt?: string;
   heartbeatHistory?: string[];
+  codexTranscript?: CodexTranscriptStatus;
+};
+
+type CodexTranscriptStatus = {
+  checkedAt: string;
+  promptVisible: boolean;
+  responseVisible: boolean;
+  sessionPath?: string;
+  message: string;
 };
 
 type ChatMessageExcerpt = {
@@ -331,8 +340,16 @@ function jobStatusLabel(job: CodexRunJob) {
 }
 
 function jobDetailText(job: CodexRunJob) {
+  if (job.status === "completed" && job.codexTranscript?.message) {
+    return job.codexTranscript.message;
+  }
+
   if (job.heartbeat) {
     return job.heartbeat;
+  }
+
+  if (job.codexTranscript?.message) {
+    return job.codexTranscript.message;
   }
 
   if (job.message) {

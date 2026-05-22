@@ -66,6 +66,15 @@ export type CodexRunJob = {
   heartbeat?: string;
   heartbeatAt?: string;
   heartbeatHistory?: string[];
+  codexTranscript?: CodexTranscriptStatus;
+};
+
+export type CodexTranscriptStatus = {
+  checkedAt: string;
+  promptVisible: boolean;
+  responseVisible: boolean;
+  sessionPath?: string;
+  message: string;
 };
 
 export type ControlResult = {

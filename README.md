@@ -70,6 +70,8 @@ CONTROL_TOKEN=use-a-long-random-secret
 
 Chat prompts are routed by session id through the local Codex CLI, so they do not depend on whichever Codex window has focus. The UI stores the token in browser local storage and sends it with control actions.
 
+Remote prompts use `codex exec resume <session-id>`, which appends the prompt and assistant response to the same native Codex session files read by the desktop app. Completed jobs verify that the prompt and response are present in the Codex transcript; the command queue shows that visibility status.
+
 Optional knobs:
 
 ```dotenv
