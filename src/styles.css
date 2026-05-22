@@ -694,8 +694,8 @@ p {
 }
 
 .attach-button:hover:not(:disabled) {
-  border-color: #a8b4ad;
-  background: var(--surface-strong);
+  border-color: transparent;
+  background: transparent;
 }
 
 .attachment-list {
@@ -952,9 +952,18 @@ p {
   min-height: 42px;
   height: 42px;
   padding: 0;
+  color: var(--teal-strong);
+  border-color: transparent;
   border-radius: 999px;
+  background: transparent;
   font-size: 0;
   gap: 0;
+}
+
+.composer-field > button[type="submit"]:hover:not(:disabled) {
+  color: #074f4a;
+  border-color: transparent;
+  background: transparent;
 }
 
 .composer .attachment-chip button {
@@ -1165,7 +1174,8 @@ p {
   }
 
   .composer {
-    padding: 4px 10px calc(4px + env(safe-area-inset-bottom));
+    padding: 4px max(20px, env(safe-area-inset-left)) calc(4px + env(safe-area-inset-bottom))
+      max(20px, env(safe-area-inset-right));
   }
 
   .command-queue {
@@ -1243,7 +1253,7 @@ p {
   }
 
   .composer-field {
-    grid-template-columns: 38px minmax(0, 1fr) 40px;
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
     gap: 4px;
     padding: 3px;
     border-radius: 24px;
@@ -1267,16 +1277,16 @@ p {
   }
 
   .composer .attach-button {
-    width: 38px;
-    min-width: 38px;
+    width: 34px;
+    min-width: 34px;
     min-height: 36px;
     height: 36px;
     border-radius: 18px;
   }
 
   .composer-field > button[type="submit"] {
-    width: 40px;
-    min-width: 40px;
+    width: 34px;
+    min-width: 34px;
     min-height: 36px;
     height: 36px;
     padding: 0;
