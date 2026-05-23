@@ -5,6 +5,8 @@ import {
   ChevronRight,
   CircleX,
   Clock3,
+  Copy,
+  FileText,
   Folder,
   ListChecks,
   Loader2,
@@ -171,6 +173,22 @@ type FileUploadResult = {
   files: UploadedPromptFile[];
 };
 
+type ShortcutInstructionFile = {
+  name: string;
+  path: string;
+  relativePath: string;
+  size: number;
+  updatedAt: string;
+  content: string;
+};
+
+type ShortcutInstructionsResult = {
+  ok: boolean;
+  root: string;
+  files: ShortcutInstructionFile[];
+  loadedAt: string;
+};
+
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
 const localCommandQueueKey = "local-command-queue";
@@ -312,6 +330,12 @@ function localCommandDetailText(command: LocalQueuedCommand) {
   }
 
   return command.status === "sending" ? "Sending to target laptop" : "Waiting for previous task to finish";
+}
+
+function formatShortcutInstructions(files: ShortcutInstructionFile[]) {
+  return files
+    .map((file) => `# ${file.relativePath}\n${file.content.trimEnd()}`)
+    .join("\n\n---\n\n");
 }
 
 function readLocalCommandQueue(): LocalQueuedCommand[] {
@@ -743,12 +767,17 @@ export function App() {
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [instructionsLoading, setInstructionsLoading] = useState(false);
+  const [instructionsError, setInstructionsError] = useState("");
+  const [shortcutInstructions, setShortcutInstructions] = useState<ShortcutInstructionsResult | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatDetailRequestRef = useRef(0);
   const localQueueSendingRef = useRef(false);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -774,18 +803,43 @@ export function App() {
     return null;
   }, [chatIndex, selectedChatId]);
 
+  const chatLabelById = useMemo(() => {
+    const labels = new Map<string, string>();
+
+    for (const project of chatIndex?.projects ?? []) {
+      for (const chat of project.chats) {
+        labels.set(chat.id, `${project.projectName} / ${chat.title}`);
+      }
+    }
+
+    return labels;
+  }, [chatIndex]);
   const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
-  const selectedLocalCommands = useMemo(
-    () => (selectedChatId ? localCommandQueue.filter((command) => command.chatId === selectedChatId) : []),
-    [localCommandQueue, selectedChatId]
+  const queuedLocalCommands = useMemo(
+    () => localCommandQueue.filter((command) => command.status === "pending" || command.status === "sending"),
+    [localCommandQueue]
   );
-  const selectedQueuedJobs = useMemo(() => selectedJobs.filter((job) => job.status === "queued"), [selectedJobs]);
-  const selectedQueuedLocalCommands = useMemo(
-    () => selectedLocalCommands.filter((command) => command.status === "pending" || command.status === "sending"),
-    [selectedLocalCommands]
-  );
+  const queuedServerJobs = useMemo(() => {
+    const jobsById = new Map<string, CodexRunJob>();
+
+    for (const job of state?.runner.recentJobs ?? []) {
+      if (job.status === "queued") {
+        jobsById.set(job.id, job);
+      }
+    }
+
+    for (const jobs of Object.values(chatJobs)) {
+      for (const job of jobs) {
+        if (job.status === "queued") {
+          jobsById.set(job.id, job);
+        }
+      }
+    }
+
+    return sortJobsForChat([...jobsById.values()]);
+  }, [chatJobs, state?.runner.recentJobs]);
   const selectedJob = selectedJobs.find(isActiveJob);
-  const selectedQueueCount = selectedQueuedJobs.length + selectedQueuedLocalCommands.length;
+  const globalQueueCount = queuedServerJobs.length + queuedLocalCommands.length;
   const selectedJobDuration =
     selectedJob?.status === "running"
       ? formatElapsedSeconds(selectedJob.startedAt ?? selectedJob.createdAt, selectedJob.finishedAt, durationNow)
@@ -909,17 +963,29 @@ export function App() {
 
   const loadChatDetail = useCallback(
     async (chatId: string, quiet = false) => {
+      const requestId = chatDetailRequestRef.current + 1;
+      chatDetailRequestRef.current = requestId;
+
       if (!quiet) {
         setLoadingDetail(true);
       }
 
       try {
         const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}`);
+
+        if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
+          return;
+        }
+
         setSelectedChat(detail);
       } catch (error) {
+        if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
+          return;
+        }
+
         setNotice(error instanceof Error ? error.message : "Could not load chat");
       } finally {
-        if (!quiet) {
+        if (requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
           setLoadingDetail(false);
         }
       }
@@ -940,6 +1006,35 @@ export function App() {
       }
     },
     [apiFetch]
+  );
+
+  const loadShortcutInstructions = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    setInstructionsLoading(true);
+    setInstructionsError("");
+
+    try {
+      setShortcutInstructions(await apiFetch<ShortcutInstructionsResult>("/api/shortcut-instructions"));
+    } catch (error) {
+      setInstructionsError(error instanceof Error ? error.message : "Could not load shortcut instructions");
+    } finally {
+      setInstructionsLoading(false);
+    }
+  }, [apiFetch, authenticated]);
+
+  const copyInstructions = useCallback(
+    async (files: ShortcutInstructionFile[]) => {
+      try {
+        await navigator.clipboard.writeText(formatShortcutInstructions(files));
+        setNotice(files.length === 1 ? "Instruction file copied" : "Shortcut instructions copied");
+      } catch {
+        setNotice("Clipboard copy is unavailable in this browser");
+      }
+    },
+    []
   );
 
   const rememberJob = useCallback((job: CodexRunJob) => {
@@ -1129,6 +1224,20 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(localCommandQueueKey, JSON.stringify(localCommandQueue));
   }, [localCommandQueue]);
+
+  useEffect(() => {
+    if (!authenticated || !instructionsOpen) {
+      return;
+    }
+
+    void loadShortcutInstructions();
+
+    const interval = window.setInterval(() => {
+      void loadShortcutInstructions();
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [authenticated, instructionsOpen, loadShortcutInstructions]);
 
   useEffect(() => {
     if (selectedJob?.status !== "running") {
@@ -1363,7 +1472,7 @@ export function App() {
     localQueueSendingRef.current = true;
     setLocalCommandQueue((current) =>
       current.map((command) =>
-      command.id === nextCommand.id
+        command.id === nextCommand.id
           ? { ...command, status: "sending", retryAfter: undefined, message: "Sending to target laptop" }
           : command
       )
@@ -1547,6 +1656,8 @@ export function App() {
     setChatIndex(null);
     setSelectedChat(null);
     setSelectedChatId(null);
+    setInstructionsOpen(false);
+    setShortcutInstructions(null);
     setPendingAttachments([]);
   }
 
@@ -1608,6 +1719,16 @@ export function App() {
             <span>{chatIndex?.totalChats ?? 0} chats</span>
           </div>
           <div className="sidebar-actions">
+            <button
+              className={`icon-button ${instructionsOpen ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setInstructionsOpen((open) => !open)}
+              aria-label="Show shortcut instructions"
+              aria-pressed={instructionsOpen}
+              title="Shortcut instructions"
+            >
+              <FileText size={18} />
+            </button>
             <button className="icon-button" type="button" onClick={refreshWorkspace} aria-label="Refresh chats">
               {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
             </button>
@@ -1621,63 +1742,112 @@ export function App() {
           <StatusControls socketLive={socketLive} state={state} onLogout={logout} />
         </div>
 
-        <div className="project-list">
-          {chatIndex?.projects.map((project) => {
-            const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
-            const isCollapsed = collapsedProjects.has(project.projectPath) && selectedProjectPath !== project.projectPath;
-            const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
-
-            return (
-              <section key={project.projectPath} className="project-group">
-                <button
-                  type="button"
-                  className="project-heading"
-                  aria-expanded={!isCollapsed}
-                  aria-controls={listId}
-                  onClick={() => toggleProject(project.projectPath)}
-                >
-                  <ChevronIcon className="project-chevron" size={16} />
-                  <Folder size={16} />
-                  <span className="project-copy">
-                    <span className="project-title">{project.projectName}</span>
-                    <span className="project-path" title={project.projectPath}>
-                      {project.projectPath}
-                    </span>
-                  </span>
-                  <span className="project-count">{project.chats.length}</span>
+        {instructionsOpen ? (
+          <div className="instructions-panel" aria-label="Shortcut instruction files">
+            <div className="instructions-header">
+              <div>
+                <h2>Shortcut instructions</h2>
+                <p>{shortcutInstructions?.root ?? "C:\\Users\\ibrah\\shortcut-instructions"}</p>
+              </div>
+              <div className="instructions-actions">
+                <button className="icon-button" type="button" onClick={loadShortcutInstructions} aria-label="Refresh shortcut instructions">
+                  {instructionsLoading ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}
                 </button>
-                {!isCollapsed ? (
-                  <div id={listId} className="chat-list">
-                    {project.chats.map((chat) => {
-                      const queuedCommands = activeJobCount(chatJobs[chat.id]);
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => copyInstructions(shortcutInstructions?.files ?? [])}
+                  disabled={!shortcutInstructions?.files.length}
+                  aria-label="Copy all shortcut instructions"
+                >
+                  <Copy size={17} />
+                </button>
+              </div>
+            </div>
 
-                      return (
-                        <button
-                          key={chat.id}
-                          type="button"
-                          className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
-                          onClick={() => {
-                            if (selectedChatId !== chat.id) {
-                              setSelectedChat(null);
-                              setSelectedChatId(chat.id);
-                            }
-                            setMenuOpen(false);
-                          }}
-                        >
-                          <span>{chat.title}</span>
-                          <span className="chat-meta">
-                            <small>{formatRelative(chat.updatedAt)}</small>
-                            {queuedCommands ? <span className="chat-queue-badge">{queuedCommands}</span> : null}
-                          </span>
-                        </button>
-                      );
-                    })}
+            {instructionsError ? <p className="instructions-error">{instructionsError}</p> : null}
+            {!instructionsError && !shortcutInstructions?.files.length && !instructionsLoading ? (
+              <p className="instructions-empty">No instruction files found.</p>
+            ) : null}
+
+            <div className="instructions-list">
+              {shortcutInstructions?.files.map((file) => (
+                <article className="instruction-file" key={file.path}>
+                  <div className="instruction-file-header">
+                    <div>
+                      <h3>{file.relativePath}</h3>
+                      <p>
+                        {formatBytes(file.size)} · updated {formatRelative(file.updatedAt)}
+                      </p>
+                    </div>
+                    <button className="icon-button" type="button" onClick={() => copyInstructions([file])} aria-label={`Copy ${file.name}`}>
+                      <Copy size={15} />
+                    </button>
                   </div>
-                ) : null}
-              </section>
-            );
-          })}
-        </div>
+                  <pre>{file.content}</pre>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="project-list">
+            {chatIndex?.projects.map((project) => {
+              const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
+              const isCollapsed = collapsedProjects.has(project.projectPath) && selectedProjectPath !== project.projectPath;
+              const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
+
+              return (
+                <section key={project.projectPath} className="project-group">
+                  <button
+                    type="button"
+                    className="project-heading"
+                    aria-expanded={!isCollapsed}
+                    aria-controls={listId}
+                    onClick={() => toggleProject(project.projectPath)}
+                  >
+                    <ChevronIcon className="project-chevron" size={16} />
+                    <Folder size={16} />
+                    <span className="project-copy">
+                      <span className="project-title">{project.projectName}</span>
+                      <span className="project-path" title={project.projectPath}>
+                        {project.projectPath}
+                      </span>
+                    </span>
+                    <span className="project-count">{project.chats.length}</span>
+                  </button>
+                  {!isCollapsed ? (
+                    <div id={listId} className="chat-list">
+                      {project.chats.map((chat) => {
+                        const queuedCommands = activeJobCount(chatJobs[chat.id]);
+
+                        return (
+                          <button
+                            key={chat.id}
+                            type="button"
+                            className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
+                            onClick={() => {
+                              if (selectedChatId !== chat.id) {
+                                setSelectedChat(null);
+                                setSelectedChatId(chat.id);
+                              }
+                              setMenuOpen(false);
+                            }}
+                          >
+                            <span>{chat.title}</span>
+                            <span className="chat-meta">
+                              <small>{formatRelative(chat.updatedAt)}</small>
+                              {queuedCommands ? <span className="chat-queue-badge">{queuedCommands}</span> : null}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })}
+          </div>
+        )}
       </aside>
 
       <section className="chat-workspace" aria-label="Selected chat">
@@ -1735,7 +1905,7 @@ export function App() {
           )}
         </div>
 
-        {selectedChat && selectedQueueCount ? (
+        {globalQueueCount ? (
           <section className="command-queue" aria-labelledby="command-queue-title">
             <div className="queue-header">
               <div className="queue-title">
@@ -1743,12 +1913,12 @@ export function App() {
                 <h3 id="command-queue-title">Command queue</h3>
               </div>
               <span className="queue-count">
-                {selectedQueueCount ? `${selectedQueueCount} queued` : "No commands"}
+                {globalQueueCount} queued
               </span>
             </div>
 
-            <div className="queue-list" aria-label="Commands for this chat">
-              {selectedQueuedLocalCommands.map((command) => (
+            <div className="queue-list" aria-label="Global command queue">
+              {queuedLocalCommands.map((command) => (
                 <article key={command.id} className="queue-item is-queued">
                   <div className="queue-status-row">
                     <span className="queue-status">
@@ -1758,10 +1928,12 @@ export function App() {
                     <time>{formatRelative(command.createdAt)}</time>
                   </div>
                   <p className="queue-preview">{previewText(command.text, "Prompt")}</p>
-                  <p className="queue-detail">{localCommandDetailText(command)}</p>
+                  <p className="queue-detail">
+                    {chatLabelById.get(command.chatId) ?? "Unknown chat"} · {localCommandDetailText(command)}
+                  </p>
                 </article>
               ))}
-              {selectedQueuedJobs.map((job) => (
+              {queuedServerJobs.map((job) => (
                 <article key={job.id} className={`queue-item is-${job.status}`}>
                   <div className="queue-status-row">
                     <span className="queue-status">
@@ -1771,7 +1943,9 @@ export function App() {
                     <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
                   </div>
                   <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
-                  <p className="queue-detail">{jobDetailText(job)}</p>
+                  <p className="queue-detail">
+                    {chatLabelById.get(job.chatId) ?? "Unknown chat"} · {jobDetailText(job)}
+                  </p>
                 </article>
               ))}
             </div>

@@ -148,3 +148,12 @@ export type UploadedPromptFile = {
   relativePath: string;
   uploadedAt: string;
 };
+
+export type ShortcutInstructionFile = {
+  name: string;
+  path: string;
+  relativePath: string;
+  size: number;
+  updatedAt: string;
+  content: string;
+};

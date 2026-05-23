@@ -212,6 +212,12 @@ p {
   background: var(--surface-strong);
 }
 
+.icon-button.is-active {
+  color: var(--teal-strong);
+  border-color: #a8d8cd;
+  background: var(--mint);
+}
+
 .mobile-menu-button,
 .mobile-close-button,
 .mobile-menu-controls {
@@ -233,6 +239,104 @@ p {
   min-height: 0;
   overflow: auto;
   padding: 12px;
+}
+
+.instructions-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.instructions-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding-bottom: 10px;
+}
+
+.instructions-header h2 {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.instructions-header p,
+.instruction-file-header p,
+.instructions-empty,
+.instructions-error {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.instructions-header p {
+  overflow: hidden;
+  margin-top: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instructions-actions {
+  display: inline-flex;
+  gap: 7px;
+}
+
+.instructions-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.instruction-file {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.instruction-file-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+  align-items: center;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.instruction-file-header h3 {
+  overflow: hidden;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instruction-file pre {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  font-family:
+    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.instructions-error {
+  margin-bottom: 10px;
+  color: var(--red);
+}
+
+.instructions-empty {
+  padding: 10px;
 }
 
 .project-group {

@@ -12,7 +12,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import type { BridgeEvent, BridgeState, UploadedPromptFile } from "./types.js";
+import type { BridgeEvent, BridgeState, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const clientOrigin = process.env.CLIENT_ORIGIN;
@@ -26,6 +26,11 @@ const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
 const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024);
 const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 20 * 1024 * 1024);
 const socketHeartbeatMs = Math.max(5000, Number(process.env.SOCKET_HEARTBEAT_MS ?? 25000) || 25000);
+const shortcutInstructionsRoot = path.resolve(
+  process.env.SHORTCUT_INSTRUCTIONS_DIR ?? path.join(os.homedir(), "shortcut-instructions")
+);
+const maxShortcutInstructionBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_BYTES ?? 128 * 1024);
+const maxShortcutInstructionTotalBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_TOTAL_BYTES ?? 768 * 1024);
 
 const app = express();
 const server = createServer(app);
@@ -153,6 +158,74 @@ function uploadRootForProject(projectPath: string, chatId: string, createdAt: Da
   const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
 
   return path.join(basePath, ".codex-remote", "uploads", safeSegment(chatId), timestamp);
+}
+
+async function listShortcutInstructionFiles(): Promise<ShortcutInstructionFile[]> {
+  const root = shortcutInstructionsRoot;
+  const files: ShortcutInstructionFile[] = [];
+  let totalBytes = 0;
+
+  async function visit(dir: string) {
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.resolve(dir, entry.name);
+      const relativePath = path.relative(root, entryPath);
+
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      try {
+        const stat = await fsp.stat(entryPath);
+        const bytesToRead = Math.min(stat.size, maxShortcutInstructionBytes);
+
+        if (totalBytes >= maxShortcutInstructionTotalBytes) {
+          continue;
+        }
+
+        const remainingBytes = Math.max(0, maxShortcutInstructionTotalBytes - totalBytes);
+        const content = await fsp.readFile(entryPath, "utf8");
+        const truncatedByFile = stat.size > maxShortcutInstructionBytes;
+        const truncatedByTotal = stat.size > remainingBytes;
+        const visibleContent = content.slice(0, Math.min(bytesToRead, remainingBytes));
+
+        totalBytes += Buffer.byteLength(visibleContent, "utf8");
+        files.push({
+          name: entry.name,
+          path: entryPath,
+          relativePath,
+          size: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+          content:
+            truncatedByFile || truncatedByTotal
+              ? `${visibleContent}\n\n[truncated: file is larger than the remote preview limit]`
+              : visibleContent
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  await visit(root);
+
+  return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
 function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<string, unknown>) {
@@ -354,6 +427,27 @@ app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
+});
+
+app.get("/api/shortcut-instructions", requireControlAuth, async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      root: shortcutInstructionsRoot,
+      files: await listShortcutInstructionFiles(),
+      loadedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load shortcut instructions";
+
+    pushEvent("error", message, {
+      action: "shortcut-instructions",
+      request: requestContext(req),
+      root: shortcutInstructionsRoot,
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
 });
 
 app.get("/api/local-image", requireControlAuth, async (req, res) => {
