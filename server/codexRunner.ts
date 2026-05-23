@@ -144,7 +144,7 @@ export class CodexRunner {
   private readonly onJobChange?: CodexRunnerOptions["onJobChange"];
   private readonly queue: Array<{ job: CodexRunJob; text: string }> = [];
   private readonly jobs = new Map<string, CodexRunJob>();
-  private processing = false;
+  private readonly runningChatIds = new Set<string>();
 
   readonly cliPath = resolveCliPath();
   readonly bypassSandbox = shouldBypassSandbox();
@@ -160,7 +160,7 @@ export class CodexRunner {
   }
 
   get activeJobs() {
-    return this.processing ? 1 : 0;
+    return this.runningChatIds.size;
   }
 
   get queuedJobs() {
@@ -234,25 +234,22 @@ export class CodexRunner {
     return args;
   }
 
-  private async processNext(): Promise<void> {
-    if (this.processing) {
-      return;
-    }
+  private processNext(): void {
+    while (true) {
+      const nextIndex = this.queue.findIndex((item) => !this.runningChatIds.has(item.job.chatId));
+      if (nextIndex < 0) {
+        return;
+      }
 
-    const next = this.queue.shift();
-    if (!next) {
-      return;
-    }
+      const [next] = this.queue.splice(nextIndex, 1);
+      next.job.queuePosition = undefined;
+      this.refreshQueuePositions(true);
+      this.runningChatIds.add(next.job.chatId);
 
-    next.job.queuePosition = undefined;
-    this.refreshQueuePositions(true);
-    this.processing = true;
-
-    try {
-      await this.runJob(next.job, next.text);
-    } finally {
-      this.processing = false;
-      void this.processNext();
+      void this.runJob(next.job, next.text).finally(() => {
+        this.runningChatIds.delete(next.job.chatId);
+        this.processNext();
+      });
     }
   }
 

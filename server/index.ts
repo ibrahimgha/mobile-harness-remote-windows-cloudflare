@@ -720,7 +720,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
 
     res.status(202).json({
       ok: true,
-      message: "Prompt queued on target laptop; it will start after earlier commands finish",
+      message: "Prompt accepted on target laptop; only earlier commands in the same chat can delay it",
       job
     });
   } catch (error) {

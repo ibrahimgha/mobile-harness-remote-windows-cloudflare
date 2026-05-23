@@ -156,6 +156,7 @@ type LocalQueuedCommand = {
   message?: string;
   attempts?: number;
   retryAfter?: string;
+  optimisticMessageId?: string;
 };
 
 type UploadedPromptFile = {
@@ -306,6 +307,10 @@ function isLocalCommandDue(command: LocalQueuedCommand) {
   return command.status === "pending" && (!Number.isFinite(retryAt) || retryAt <= Date.now());
 }
 
+function isLocalCommandBlocking(command: LocalQueuedCommand) {
+  return command.status === "pending" || command.status === "sending";
+}
+
 function localCommandRetryDelay(attempts: number) {
   return Math.min(30000, 3000 * 2 ** Math.min(attempts, 3));
 }
@@ -322,6 +327,10 @@ function localCommandStatusText(command: LocalQueuedCommand) {
   }
 
   return "Local queued";
+}
+
+function optimisticPromptId(createdAt: string) {
+  return `optimistic-user-${Date.parse(createdAt) || Date.now()}`;
 }
 
 function localCommandDetailText(command: LocalQueuedCommand) {
@@ -359,9 +368,10 @@ function readLocalCommandQueue(): LocalQueuedCommand[] {
       )
       .map((item) => ({
         ...item,
-        status: item.status === "failed" ? "pending" : item.status,
+        status: "pending",
         attempts: typeof item.attempts === "number" ? item.attempts : 0,
-        retryAfter: typeof item.retryAfter === "string" ? item.retryAfter : undefined
+        retryAfter: typeof item.retryAfter === "string" ? item.retryAfter : undefined,
+        optimisticMessageId: typeof item.optimisticMessageId === "string" ? item.optimisticMessageId : undefined
       }));
   } catch {
     return [];
@@ -815,10 +825,7 @@ export function App() {
     return labels;
   }, [chatIndex]);
   const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
-  const queuedLocalCommands = useMemo(
-    () => localCommandQueue.filter((command) => command.status === "pending" || command.status === "sending"),
-    [localCommandQueue]
-  );
+  const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
 
@@ -837,6 +844,25 @@ export function App() {
     }
 
     return sortJobsForChat([...jobsById.values()]);
+  }, [chatJobs, state?.runner.recentJobs]);
+  const busyServerChatIds = useMemo(() => {
+    const chatIds = new Set<string>();
+
+    for (const job of state?.runner.recentJobs ?? []) {
+      if (isActiveJob(job)) {
+        chatIds.add(job.chatId);
+      }
+    }
+
+    for (const jobs of Object.values(chatJobs)) {
+      for (const job of jobs) {
+        if (isActiveJob(job)) {
+          chatIds.add(job.chatId);
+        }
+      }
+    }
+
+    return chatIds;
   }, [chatJobs, state?.runner.recentJobs]);
   const selectedJob = selectedJobs.find(isActiveJob);
   const globalQueueCount = queuedServerJobs.length + queuedLocalCommands.length;
@@ -953,7 +979,15 @@ export function App() {
     try {
       const index = await apiFetch<ChatIndex>("/api/chats");
       setChatIndex(index);
-      setSelectedChatId((current) => current ?? firstChatId(index));
+      setSelectedChatId((current) => {
+        const next = current ?? firstChatId(index);
+
+        if (next) {
+          selectedChatIdRef.current = next;
+        }
+
+        return next;
+      });
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load chats");
     } finally {
@@ -1058,7 +1092,7 @@ export function App() {
     ]);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, selectedChatId]);
 
-  const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string) => {
+  const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string, messageId = optimisticPromptId(createdAt)) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
         return current;
@@ -1072,7 +1106,7 @@ export function App() {
         messages: [
           ...(current.messages ?? []),
           {
-            id: `optimistic-user-${Date.parse(createdAt) || Date.now()}`,
+            id: messageId,
             role: "user" as const,
             text,
             createdAt
@@ -1108,6 +1142,17 @@ export function App() {
     });
   }, []);
 
+  function selectChat(chatId: string) {
+    if (selectedChatIdRef.current !== chatId) {
+      chatDetailRequestRef.current += 1;
+      selectedChatIdRef.current = chatId;
+      setSelectedChat(null);
+      setSelectedChatId(chatId);
+    }
+
+    setMenuOpen(false);
+  }
+
   useEffect(() => {
     async function bootstrap() {
       try {
@@ -1141,6 +1186,12 @@ export function App() {
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+
+  useEffect(() => {
+    if (selectedChatId && selectedChat?.id && selectedChat.id !== selectedChatId) {
+      setSelectedChat(null);
+    }
+  }, [selectedChat?.id, selectedChatId]);
 
   useEffect(() => {
     if (!selectedChatId) {
@@ -1456,15 +1507,20 @@ export function App() {
   }, [authenticated, loadChatDetail, loadChatJobs, loadState]);
 
   useEffect(() => {
-    if (!authenticated || !state || localQueueSendingRef.current) {
+    if (!authenticated || localQueueSendingRef.current) {
       return;
     }
 
-    if (state.runner.activeJobs > 0 || state.runner.queuedJobs > 0) {
-      return;
-    }
+    const nextCommand = localCommandQueue.find((command, index) => {
+      if (!isLocalCommandDue(command) || busyServerChatIds.has(command.chatId)) {
+        return false;
+      }
 
-    const nextCommand = localCommandQueue.find(isLocalCommandDue);
+      return !localCommandQueue
+        .slice(0, index)
+        .some((previousCommand) => previousCommand.chatId === command.chatId && isLocalCommandBlocking(previousCommand));
+    });
+
     if (!nextCommand) {
       return;
     }
@@ -1522,7 +1578,48 @@ export function App() {
       .finally(() => {
         localQueueSendingRef.current = false;
       });
-  }, [apiFetch, authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue, rememberJob, state]);
+  }, [apiFetch, authenticated, busyServerChatIds, loadChatDetail, loadChatJobs, loadState, localCommandQueue, rememberJob]);
+
+  function restoreQueuedCommandToComposer(command: LocalQueuedCommand) {
+    if (command.status !== "pending") {
+      return;
+    }
+
+    const nextChatId = command.chatId;
+    const removedMessageId = command.optimisticMessageId ?? optimisticPromptId(command.createdAt);
+
+    setLocalCommandQueue((current) => current.filter((item) => item.id !== command.id));
+    setDraft(command.text);
+    setPendingAttachments([]);
+    setNotice("");
+    selectChat(nextChatId);
+
+    setSelectedChat((current) => {
+      if (!current || current.id !== nextChatId || !current.messages?.length) {
+        return current;
+      }
+
+      return {
+        ...current,
+        messages: current.messages.filter((message) => message.id !== removedMessageId)
+      };
+    });
+
+    void loadChats();
+    void loadChatJobs(nextChatId);
+    void loadChatDetail(nextChatId, true);
+
+    window.requestAnimationFrame(() => {
+      const textarea = composerTextareaRef.current;
+
+      if (!textarea) {
+        return;
+      }
+
+      setComposerExpanded(resizeTextareaElement(textarea));
+      textarea.focus();
+    });
+  }
 
   useEffect(() => {
     if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
@@ -1615,23 +1712,45 @@ export function App() {
     try {
       const uploadedFiles = await uploadAttachments(selectedChatId);
       const promptText = promptWithUploadedFiles(draft, uploadedFiles);
+      const optimisticMessageId = optimisticPromptId(optimisticAt);
 
-      applyOptimisticPrompt(selectedChatId, promptText, optimisticAt);
-      setLocalCommandQueue((current) => [
-        ...current,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          chatId: selectedChatId,
-          text: promptText,
-          createdAt: optimisticAt,
-          status: "pending",
-          message: "Waiting for previous task to finish"
+      applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId);
+
+      const sameChatHasLocalQueue = localCommandQueue.some(
+        (command) => command.chatId === selectedChatId && isLocalCommandBlocking(command)
+      );
+      const sameChatIsBusy = sameChatHasLocalQueue || busyServerChatIds.has(selectedChatId);
+
+      if (sameChatIsBusy) {
+        setLocalCommandQueue((current) => [
+          ...current,
+          {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            chatId: selectedChatId,
+            text: promptText,
+            createdAt: optimisticAt,
+            status: "pending",
+            message: "Waiting for this chat's previous task to finish",
+            optimisticMessageId
+          }
+        ]);
+        setNotice("Queued locally for this chat; it will send after this chat's task is done");
+      } else {
+        setNotice("Sending to target laptop...");
+        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
+          method: "POST",
+          body: JSON.stringify({ text: promptText })
+        });
+
+        if (result.job) {
+          rememberJob(result.job);
         }
-      ]);
+
+        setNotice(result.message ?? "Prompt sent to target laptop");
+      }
 
       setDraft("");
       setPendingAttachments([]);
-      setNotice("Queued locally; it will send after the previous task is done");
       void loadState();
       window.setTimeout(() => {
         void loadChats();
@@ -1655,6 +1774,8 @@ export function App() {
     setAuthenticated(false);
     setChatIndex(null);
     setSelectedChat(null);
+    selectedChatIdRef.current = null;
+    chatDetailRequestRef.current += 1;
     setSelectedChatId(null);
     setInstructionsOpen(false);
     setShortcutInstructions(null);
@@ -1825,13 +1946,7 @@ export function App() {
                             key={chat.id}
                             type="button"
                             className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
-                            onClick={() => {
-                              if (selectedChatId !== chat.id) {
-                                setSelectedChat(null);
-                                setSelectedChatId(chat.id);
-                              }
-                              setMenuOpen(false);
-                            }}
+                            onClick={() => selectChat(chat.id)}
                           >
                             <span>{chat.title}</span>
                             <span className="chat-meta">
@@ -1925,7 +2040,18 @@ export function App() {
                       {command.status === "sending" ? <Loader2 className="spin" size={15} /> : <Clock3 size={15} />}
                       {localCommandStatusText(command)}
                     </span>
-                    <time>{formatRelative(command.createdAt)}</time>
+                    <span className="queue-actions">
+                      <time>{formatRelative(command.createdAt)}</time>
+                      <button
+                        className="queue-remove"
+                        type="button"
+                        onClick={() => restoreQueuedCommandToComposer(command)}
+                        aria-label="Move queued prompt back to composer"
+                        title="Move back to composer"
+                      >
+                        <X size={14} />
+                      </button>
+                    </span>
                   </div>
                   <p className="queue-preview">{previewText(command.text, "Prompt")}</p>
                   <p className="queue-detail">
