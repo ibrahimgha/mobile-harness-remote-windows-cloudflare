@@ -20,6 +20,7 @@ $PublicHost = "mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.c
 $CloudflaredConfig = Join-Path $ProjectRoot "ops\cloudflared.yml"
 $ServerEntry = Join-Path $ProjectRoot "dist-server\server\index.js"
 $ClientEntry = Join-Path $ProjectRoot "dist\index.html"
+$WatchdogScript = Join-Path $PSScriptRoot "watchdog.vbs"
 $ServiceLog = Join-Path $LogDir "service-events.log"
 
 function Ensure-Directories {
@@ -360,10 +361,9 @@ function Show-Status {
 }
 
 function Install-StartupTask {
-  $scriptPath = Join-Path $ProjectRoot "scripts\service.ps1"
   $action = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog" `
+    -Execute "wscript.exe" `
+    -Argument "//B `"$WatchdogScript`"" `
     -WorkingDirectory $ProjectRoot
   $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
   $watchdogTrigger = New-ScheduledTaskTrigger `
@@ -402,7 +402,7 @@ function Install-StartupTask {
     Update-WatchdogTaskSettings
   } catch {
     Write-ServiceLog "Scheduled task install failed: $($_.Exception.Message)"
-    $taskRun = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog"
+    $taskRun = "wscript.exe //B `"$WatchdogScript`""
     & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO 1 /TR $taskRun /F | Out-Host
     if ($LASTEXITCODE -eq 0) {
       Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
@@ -413,7 +413,7 @@ function Install-StartupTask {
     }
 
     Write-ServiceLog "schtasks.exe install failed with exit code $LASTEXITCODE"
-    $command = "@echo off`r`npowershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog`r`n"
+    $command = "@echo off`r`nwscript.exe //B `"$WatchdogScript`"`r`n"
     Set-Content -LiteralPath $StartupCmd -Value $command -Encoding ascii
     Write-Host "Scheduled task unavailable; installed startup command: $StartupCmd"
   }
