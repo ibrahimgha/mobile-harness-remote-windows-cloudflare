@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("install", "uninstall", "start", "stop", "restart", "status")]
+  [ValidateSet("install", "uninstall", "start", "watchdog", "stop", "restart", "status")]
   [string]$Command
 )
 
@@ -12,6 +12,7 @@ $RuntimeDir = Join-Path $ProjectRoot ".runtime"
 $LogDir = Join-Path $ProjectRoot "logs"
 $AppPidFile = Join-Path $RuntimeDir "codex-window-remote-app.pid"
 $TunnelPidFile = Join-Path $RuntimeDir "codex-window-remote-tunnel.pid"
+$DisabledFlag = Join-Path $RuntimeDir "codex-window-remote.disabled"
 $TaskName = "CodexWindowRemote"
 $StartupCmd = Join-Path ([Environment]::GetFolderPath("Startup")) "CodexWindowRemote.cmd"
 $TunnelName = "mobile-harness-remote-windows-cloudflare-ibrahim-hp"
@@ -132,6 +133,47 @@ function Get-CloudflaredExe {
   return Resolve-Executable -DisplayName "cloudflared" -Candidates $candidates
 }
 
+function Test-WatchdogTaskInstalled {
+  $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if ($null -ne $task) {
+    return $true
+  }
+
+  $null = & schtasks.exe /Query /TN $TaskName 2>$null
+  return $LASTEXITCODE -eq 0
+}
+
+function Test-RemoteDisabled {
+  return Test-Path -LiteralPath $DisabledFlag
+}
+
+function Disable-Remote {
+  Ensure-Directories
+  Set-Content -LiteralPath $DisabledFlag -Value (Get-Date -Format "o") -Encoding ascii
+  Write-ServiceLog "Remote auto-start disabled"
+}
+
+function Enable-Remote {
+  Remove-Item -LiteralPath $DisabledFlag -Force -ErrorAction SilentlyContinue
+  Write-ServiceLog "Remote auto-start enabled"
+}
+
+function Update-WatchdogTaskSettings {
+  try {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $task.Settings.DisallowStartIfOnBatteries = $false
+    $task.Settings.StopIfGoingOnBatteries = $false
+    $task.Settings.StartWhenAvailable = $true
+    $task.Settings.WakeToRun = $true
+    $task.Settings.MultipleInstances = "IgnoreNew"
+    $task.Settings.ExecutionTimeLimit = "PT5M"
+    $task | Set-ScheduledTask | Out-Null
+    Write-ServiceLog "Updated watchdog scheduled task settings $TaskName"
+  } catch {
+    Write-ServiceLog "Could not update watchdog task settings: $($_.Exception.Message)"
+  }
+}
+
 function Read-Pid {
   param([string]$Path)
 
@@ -167,8 +209,14 @@ function Stop-PidFile {
   if (Test-Pid -ProcessId $processId) {
     Stop-Process -Id $processId -Force
     Write-Host "Stopped $Name (pid $processId)"
+    Write-ServiceLog "Stopped $Name pid=$processId"
   } else {
     Write-Host "$Name is not running"
+    if ($null -ne $processId) {
+      Write-ServiceLog "$Name was not running; removed stale pid=$processId"
+    } else {
+      Write-ServiceLog "$Name was not running; no pid file"
+    }
   }
 
   Remove-Item -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -222,15 +270,39 @@ function Ensure-Build {
 }
 
 function Start-Remote {
+  param([switch]$FromWatchdog)
+
   Ensure-Directories
+
+  if ($FromWatchdog -and (Test-RemoteDisabled)) {
+    Write-Host "Codex window remote is stopped; watchdog will not restart it until service:start is run."
+    return
+  }
+
+  if (-not $FromWatchdog) {
+    Enable-Remote
+  }
+
   Ensure-Build
+
+  $appPid = Read-Pid -Path $AppPidFile
+  $tunnelPid = Read-Pid -Path $TunnelPidFile
+  $appRunning = Test-Pid -ProcessId $appPid
+  $tunnelRunning = Test-Pid -ProcessId $tunnelPid
+
+  if ($appRunning -and $tunnelRunning) {
+    Write-Host "Codex window remote app is already running (pid $appPid)"
+    Write-Host "Cloudflare tunnel is already running (pid $tunnelPid)"
+    Write-Host "Public URL: https://$PublicHost"
+    return
+  }
 
   $appLog = Join-Path $LogDir "app.stdout.log"
   $appErr = Join-Path $LogDir "app.stderr.log"
   $tunnelLog = Join-Path $LogDir "cloudflared.stdout.log"
   $tunnelErr = Join-Path $LogDir "cloudflared.stderr.log"
-  $nodeExe = Get-NodeExe
-  $cloudflaredExe = Get-CloudflaredExe
+  $nodeExe = if ($appRunning) { "node.exe" } else { Get-NodeExe }
+  $cloudflaredExe = if ($tunnelRunning) { "cloudflared.exe" } else { Get-CloudflaredExe }
 
   Start-ManagedProcess `
     -Name "Codex window remote app" `
@@ -255,6 +327,7 @@ function Start-Remote {
 
 function Stop-Remote {
   Ensure-Directories
+  Disable-Remote
   Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile
   Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile
 }
@@ -265,12 +338,16 @@ function Show-Status {
   $tunnelPid = Read-Pid -Path $TunnelPidFile
   $appRunning = Test-Pid -ProcessId $appPid
   $tunnelRunning = Test-Pid -ProcessId $tunnelPid
-  $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  $watchdogInstalled = Test-WatchdogTaskInstalled
   $startupCmdExists = Test-Path -LiteralPath $StartupCmd
+  $remoteDisabled = Test-RemoteDisabled
 
   Write-Host "App running: $appRunning $(if ($appPid) { "(pid $appPid)" })"
   Write-Host "Tunnel running: $tunnelRunning $(if ($tunnelPid) { "(pid $tunnelPid)" })"
-  Write-Host "Startup installed: $(($null -ne $task) -or $startupCmdExists)"
+  Write-Host "Auto-start disabled: $remoteDisabled"
+  Write-Host "Watchdog task installed: $watchdogInstalled"
+  Write-Host "Startup command installed: $startupCmdExists"
+  Write-Host "Startup installed: $($watchdogInstalled -or $startupCmdExists)"
   Write-Host "Local URL: http://localhost:8787"
   Write-Host "Public URL: https://$PublicHost"
 
@@ -286,8 +363,14 @@ function Install-StartupTask {
   $scriptPath = Join-Path $ProjectRoot "scripts\service.ps1"
   $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" start"
-  $trigger = New-ScheduledTaskTrigger -AtLogOn
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog" `
+    -WorkingDirectory $ProjectRoot
+  $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
+  $watchdogTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
   $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" `
     -LogonType Interactive `
@@ -295,21 +378,42 @@ function Install-StartupTask {
   $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Days 0)
+    -StartWhenAvailable `
+    -WakeToRun `
+    -Hidden `
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
   try {
     Register-ScheduledTask `
       -TaskName $TaskName `
       -Action $action `
-      -Trigger $trigger `
+      -Trigger @($logonTrigger, $watchdogTrigger) `
       -Principal $principal `
       -Settings $settings `
-      -Description "Starts the Codex Window Remote app and Cloudflare tunnel at logon." `
+      -Description "Keeps the Codex Window Remote app and Cloudflare tunnel running." `
       -Force | Out-Null
 
-    Write-Host "Installed startup task: $TaskName"
+    Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
+    Write-Host "Installed watchdog task: $TaskName"
+    Write-ServiceLog "Installed watchdog scheduled task $TaskName"
+    Update-WatchdogTaskSettings
   } catch {
-    $command = "@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" start`r`n"
+    Write-ServiceLog "Scheduled task install failed: $($_.Exception.Message)"
+    $taskRun = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog"
+    & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO 1 /TR $taskRun /F | Out-Host
+    if ($LASTEXITCODE -eq 0) {
+      Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
+      Write-Host "Installed watchdog task with schtasks.exe: $TaskName"
+      Write-ServiceLog "Installed watchdog scheduled task with schtasks.exe $TaskName"
+      Update-WatchdogTaskSettings
+      return
+    }
+
+    Write-ServiceLog "schtasks.exe install failed with exit code $LASTEXITCODE"
+    $command = "@echo off`r`npowershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" watchdog`r`n"
     Set-Content -LiteralPath $StartupCmd -Value $command -Encoding ascii
     Write-Host "Scheduled task unavailable; installed startup command: $StartupCmd"
   }
@@ -317,8 +421,10 @@ function Install-StartupTask {
 
 function Uninstall-StartupTask {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
   Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
-  Write-Host "Removed startup task: $TaskName"
+  Write-Host "Removed startup task/watchdog: $TaskName"
+  Write-ServiceLog "Removed startup task/watchdog $TaskName"
 }
 
 switch ($Command) {
@@ -331,10 +437,14 @@ switch ($Command) {
   "start" {
     Start-Remote
   }
+  "watchdog" {
+    Start-Remote -FromWatchdog
+  }
   "stop" {
     Stop-Remote
   }
   "restart" {
+    Enable-Remote
     Stop-Remote
     Start-Remote
   }
