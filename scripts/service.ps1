@@ -19,9 +19,117 @@ $PublicHost = "mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.c
 $CloudflaredConfig = Join-Path $ProjectRoot "ops\cloudflared.yml"
 $ServerEntry = Join-Path $ProjectRoot "dist-server\server\index.js"
 $ClientEntry = Join-Path $ProjectRoot "dist\index.html"
+$ServiceLog = Join-Path $LogDir "service-events.log"
 
 function Ensure-Directories {
   New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null
+}
+
+function Write-ServiceLog {
+  param([string]$Message)
+
+  Ensure-Directories
+  $timestamp = Get-Date -Format "o"
+  Add-Content -LiteralPath $ServiceLog -Value "$timestamp $Message" -Encoding utf8
+}
+
+function Join-CandidatePath {
+  param(
+    [AllowNull()]
+    [string]$Base,
+    [string]$Child
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Base)) {
+    return $null
+  }
+
+  return Join-Path $Base $Child
+}
+
+function Get-WinGetNodeCandidates {
+  param([string]$BinaryName)
+
+  $packageRoot = Join-CandidatePath -Base $env:LOCALAPPDATA -Child "Microsoft\WinGet\Packages"
+  if (-not $packageRoot -or -not (Test-Path -LiteralPath $packageRoot)) {
+    return @()
+  }
+
+  $packageDirs = Get-ChildItem -LiteralPath $packageRoot -Directory -Filter "OpenJS.NodeJS*" -ErrorAction SilentlyContinue
+  foreach ($packageDir in $packageDirs) {
+    $nodeDirs = Get-ChildItem -LiteralPath $packageDir.FullName -Directory -Filter "node-*-win-*" -ErrorAction SilentlyContinue
+    foreach ($nodeDir in $nodeDirs) {
+      Join-Path $nodeDir.FullName $BinaryName
+    }
+  }
+}
+
+function Resolve-Executable {
+  param(
+    [string]$DisplayName,
+    [string[]]$Candidates
+  )
+
+  foreach ($candidate in $Candidates) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+      continue
+    }
+
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($command) {
+      Write-ServiceLog "Resolved $DisplayName to $($command.Source)"
+      return $command.Source
+    }
+
+    if (Test-Path -LiteralPath $candidate) {
+      $resolved = (Resolve-Path -LiteralPath $candidate).Path
+      Write-ServiceLog "Resolved $DisplayName to $resolved"
+      return $resolved
+    }
+  }
+
+  $searched = ($Candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; "
+  Write-ServiceLog "Could not resolve $DisplayName. Searched: $searched"
+  throw "$DisplayName executable was not found. Add it to PATH or install it in one of the expected locations."
+}
+
+function Get-NodeExe {
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidates = @(
+    "node.exe",
+    (Join-CandidatePath -Base $env:ProgramFiles -Child "nodejs\node.exe"),
+    (Join-CandidatePath -Base $programFilesX86 -Child "nodejs\node.exe"),
+    (Join-CandidatePath -Base $env:LOCALAPPDATA -Child "Programs\nodejs\node.exe")
+  ) + @(Get-WinGetNodeCandidates -BinaryName "node.exe")
+
+  return Resolve-Executable -DisplayName "node" -Candidates $candidates
+}
+
+function Get-NpmCmd {
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidates = @(
+    "npm.cmd",
+    "npm.exe",
+    (Join-CandidatePath -Base $env:ProgramFiles -Child "nodejs\npm.cmd"),
+    (Join-CandidatePath -Base $programFilesX86 -Child "nodejs\npm.cmd"),
+    (Join-CandidatePath -Base $env:LOCALAPPDATA -Child "Programs\nodejs\npm.cmd")
+  ) + @(Get-WinGetNodeCandidates -BinaryName "npm.cmd")
+
+  return Resolve-Executable -DisplayName "npm" -Candidates $candidates
+}
+
+function Get-CloudflaredExe {
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidates = @(
+    "cloudflared.exe",
+    (Join-CandidatePath -Base "C:\" -Child "cloudflared\cloudflared.exe"),
+    (Join-CandidatePath -Base $env:ProgramFiles -Child "cloudflared\cloudflared.exe"),
+    (Join-CandidatePath -Base $programFilesX86 -Child "cloudflared\cloudflared.exe"),
+    (Join-CandidatePath -Base $env:LOCALAPPDATA -Child "cloudflared\cloudflared.exe"),
+    (Join-CandidatePath -Base $env:USERPROFILE -Child ".cloudflared\cloudflared.exe")
+  )
+
+  return Resolve-Executable -DisplayName "cloudflared" -Candidates $candidates
 }
 
 function Read-Pid {
@@ -79,9 +187,11 @@ function Start-ManagedProcess {
   $existingPid = Read-Pid -Path $PidPath
   if (Test-Pid -ProcessId $existingPid) {
     Write-Host "$Name is already running (pid $existingPid)"
+    Write-ServiceLog "$Name already running pid=$existingPid"
     return
   }
 
+  Write-ServiceLog "Starting $Name with $FilePath $($Arguments -join " ")"
   $process = Start-Process `
     -FilePath $FilePath `
     -ArgumentList $Arguments `
@@ -93,6 +203,7 @@ function Start-ManagedProcess {
 
   Set-Content -LiteralPath $PidPath -Value $process.Id -Encoding ascii
   Write-Host "Started $Name (pid $($process.Id))"
+  Write-ServiceLog "Started $Name pid=$($process.Id)"
 }
 
 function Ensure-Build {
@@ -103,7 +214,8 @@ function Ensure-Build {
   Write-Host "Build output missing; running npm run build"
   Push-Location $ProjectRoot
   try {
-    & npm.cmd run build
+    $npmCmd = Get-NpmCmd
+    & $npmCmd run build
   } finally {
     Pop-Location
   }
@@ -117,11 +229,13 @@ function Start-Remote {
   $appErr = Join-Path $LogDir "app.stderr.log"
   $tunnelLog = Join-Path $LogDir "cloudflared.stdout.log"
   $tunnelErr = Join-Path $LogDir "cloudflared.stderr.log"
+  $nodeExe = Get-NodeExe
+  $cloudflaredExe = Get-CloudflaredExe
 
   Start-ManagedProcess `
     -Name "Codex window remote app" `
     -PidPath $AppPidFile `
-    -FilePath "node.exe" `
+    -FilePath $nodeExe `
     -Arguments @($ServerEntry) `
     -Stdout $appLog `
     -Stderr $appErr
@@ -131,7 +245,7 @@ function Start-Remote {
   Start-ManagedProcess `
     -Name "Cloudflare tunnel" `
     -PidPath $TunnelPidFile `
-    -FilePath "cloudflared.exe" `
+    -FilePath $cloudflaredExe `
     -Arguments @("--config", $CloudflaredConfig, "tunnel", "run", $TunnelName) `
     -Stdout $tunnelLog `
     -Stderr $tunnelErr
