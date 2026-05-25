@@ -15,13 +15,55 @@ A local web control surface for a running Codex desktop window. It is designed t
 
 ## Quick Start
 
+Prerequisites:
+
+- Node.js 20+
+- Git
+- Codex CLI installed and signed in as the same OS user that owns the Codex chats
+- Optional: `cloudflared` for public tunnel access
+
+Install:
+
 ```powershell
-npm install
+git clone https://github.com/ibrahimgha/mobile-harness-remote-windows-cloudflare.git
+cd mobile-harness-remote-windows-cloudflare
+npm ci
 Copy-Item .env.example .env
+```
+
+Edit `.env` and set at least:
+
+```dotenv
+CONTROL_TOKEN=use-a-long-random-secret
+ENABLE_WINDOW_CONTROL=false
+CODEX_RUN_BYPASS_SANDBOX=true
+CODEX_RUN_SKIP_GIT_REPO_CHECK=true
+```
+
+Run for development:
+
+```powershell
 npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+Run for production:
+
+```powershell
+npm run build
+npm run start
+```
+
+On Windows, use the bundled service commands:
+
+```powershell
+npm run service:start
+npm run service:stop
+npm run service:status
+```
+
+On Linux, run the app with `npm run start` behind your own process manager such as `systemd`; keep `ENABLE_WINDOW_CONTROL=false`.
 
 ## Cloudflare Tunnel
 
