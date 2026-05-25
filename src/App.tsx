@@ -1,5 +1,7 @@
 import {
   ArrowRight,
+  Bell,
+  BellOff,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -21,7 +23,17 @@ import {
   WifiOff,
   X
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  Fragment,
+  PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -60,6 +72,7 @@ type CodexRunJob = {
   chatId: string;
   projectPath: string;
   status: "queued" | "running" | "completed" | "failed";
+  kind?: "prompt" | "steer";
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;
@@ -90,6 +103,7 @@ type ChatMessageExcerpt = {
 type ChatTranscriptMessage = ChatMessageExcerpt & {
   id: string;
   role: "user" | "assistant";
+  isFinal?: boolean;
 };
 
 type ChatSummary = {
@@ -115,6 +129,11 @@ type ChatDetail = {
   lastResponse: ChatMessageExcerpt | null;
   messages: ChatTranscriptMessage[];
   hasResponse: boolean;
+};
+
+type CachedChatHistory = {
+  chat: ChatDetail;
+  cachedAt: string;
 };
 
 type ChatProjectGroup = {
@@ -159,6 +178,15 @@ type LocalQueuedCommand = {
   optimisticMessageId?: string;
 };
 
+type PromptReceipt = {
+  id: string;
+  chatId: string;
+  status: "sending" | "received";
+  promptPreview: string;
+  message: string;
+  createdAt: string;
+};
+
 type UploadedPromptFile = {
   name: string;
   originalName: string;
@@ -190,9 +218,31 @@ type ShortcutInstructionsResult = {
   loadedAt: string;
 };
 
+type PushPublicKeyResult = {
+  ok: boolean;
+  publicKey: string;
+  subscriptions: number;
+};
+
+type PushTestResult = {
+  ok: boolean;
+  result: {
+    attempted: number;
+    sent: number;
+    removed: number;
+    failed: number;
+  };
+};
+
+type RemoteNotificationState = "unsupported" | "default" | "denied" | "enabled" | "local";
+
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
 const localCommandQueueKey = "local-command-queue";
+const chatHistoryCacheKey = "chat-history-cache-v1";
+const activeJobsCacheKey = "active-jobs-cache-v1";
+const selectedChatIdKey = "selected-chat-id";
+const maxCachedChatHistories = 20;
 const maxAttachmentFiles = 5;
 const maxAttachmentBytes = 10 * 1024 * 1024;
 const socketReconnectMs = 1500;
@@ -258,6 +308,24 @@ function formatDate(value: string) {
   return date.toLocaleString();
 }
 
+function responseRunDuration(messages: ChatTranscriptMessage[], responseIndex: number) {
+  const response = messages[responseIndex];
+
+  if (!response || response.role !== "assistant") {
+    return "";
+  }
+
+  for (let index = responseIndex - 1; index >= 0; index -= 1) {
+    const prompt = messages[index];
+
+    if (prompt.role === "user") {
+      return formatElapsedSeconds(prompt.createdAt, response.createdAt, Date.parse(response.createdAt));
+    }
+  }
+
+  return "";
+}
+
 function firstChatId(index: ChatIndex | null) {
   return index?.projects[0]?.chats[0]?.id ?? null;
 }
@@ -270,6 +338,26 @@ function previewText(text: string, fallback: string) {
   }
 
   return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
+}
+
+function notificationResponseSummary(text: string, fallback: string) {
+  const normalized = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/[#>*_~|[\]()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return fallback;
+  }
+
+  const words = normalized.split(" ").filter(Boolean);
+  const summary = words.slice(0, 10).join(" ");
+
+  return words.length > 10 ? `${summary}...` : summary;
 }
 
 function formatBytes(bytes: number) {
@@ -378,18 +466,192 @@ function readLocalCommandQueue(): LocalQueuedCommand[] {
   }
 }
 
-function resizeTextareaElement(textarea: HTMLTextAreaElement) {
-  textarea.style.height = "auto";
+function readCachedActiveJobs(): Record<string, CodexRunJob[]> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(activeJobsCacheKey) ?? "{}") as unknown;
 
-  const styles = window.getComputedStyle(textarea);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const result: Record<string, CodexRunJob[]> = {};
+
+    for (const [chatId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) {
+        continue;
+      }
+
+      const jobs = value.filter((job): job is CodexRunJob => {
+        if (!job || typeof job !== "object") {
+          return false;
+        }
+
+        const candidate = job as Partial<CodexRunJob>;
+        return (
+          candidate.chatId === chatId &&
+          typeof candidate.id === "string" &&
+          typeof candidate.createdAt === "string" &&
+          typeof candidate.promptPreview === "string" &&
+          (candidate.status === "queued" || candidate.status === "running")
+        );
+      });
+
+      if (jobs.length) {
+        result[chatId] = sortJobsForChat(jobs).slice(0, 8);
+      }
+    }
+
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function writeCachedActiveJobs(chatJobs: Record<string, CodexRunJob[]>, recentJobs: CodexRunJob[] = []) {
+  const result: Record<string, CodexRunJob[]> = {};
+  const addJob = (job: CodexRunJob) => {
+    if (!isActiveJob(job)) {
+      return;
+    }
+
+    result[job.chatId] = mergeJobsForChat(result[job.chatId] ?? [], [job]).filter(isActiveJob).slice(0, 8);
+  };
+
+  for (const jobs of Object.values(chatJobs)) {
+    for (const job of jobs) {
+      addJob(job);
+    }
+  }
+
+  for (const job of recentJobs) {
+    addJob(job);
+  }
+
+  try {
+    localStorage.setItem(activeJobsCacheKey, JSON.stringify(result));
+  } catch {
+    return;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isCachedChatDetail(value: unknown): value is ChatDetail {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.title === "string" &&
+    typeof value.projectName === "string" &&
+    typeof value.projectPath === "string" &&
+    typeof value.createdAt === "string" &&
+    typeof value.updatedAt === "string" &&
+    Array.isArray(value.messages)
+  );
+}
+
+function cachedAtMs(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function readCachedChatHistories(): CachedChatHistory[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(chatHistoryCacheKey) ?? "[]");
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (item): item is CachedChatHistory =>
+          isRecord(item) && isCachedChatDetail(item.chat) && typeof item.cachedAt === "string"
+      )
+      .sort((a, b) => cachedAtMs(b.cachedAt) - cachedAtMs(a.cachedAt))
+      .slice(0, maxCachedChatHistories);
+  } catch {
+    return [];
+  }
+}
+
+function getCachedChatHistory(chatId: string) {
+  return readCachedChatHistories().find((item) => item.chat.id === chatId)?.chat ?? null;
+}
+
+function newestCachedChatHistory() {
+  return readCachedChatHistories()[0]?.chat ?? null;
+}
+
+function readStoredSelectedChatId() {
+  try {
+    const value = localStorage.getItem(selectedChatIdKey)?.trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberSelectedChatId(chatId: string | null) {
+  try {
+    if (chatId) {
+      localStorage.setItem(selectedChatIdKey, chatId);
+      return;
+    }
+
+    localStorage.removeItem(selectedChatIdKey);
+  } catch {
+    return;
+  }
+}
+
+function rememberCachedChatHistory(chat: ChatDetail) {
+  const next = [
+    { chat, cachedAt: new Date().toISOString() },
+    ...readCachedChatHistories().filter((item) => item.chat.id !== chat.id)
+  ]
+    .sort((a, b) => cachedAtMs(b.cachedAt) - cachedAtMs(a.cachedAt))
+    .slice(0, maxCachedChatHistories);
+
+  try {
+    localStorage.setItem(chatHistoryCacheKey, JSON.stringify(next));
+  } catch {
+    try {
+      localStorage.setItem(chatHistoryCacheKey, JSON.stringify(next.slice(0, Math.floor(maxCachedChatHistories / 2))));
+    } catch {
+      return;
+    }
+  }
+}
+
+function chatIndexContainsChat(index: ChatIndex, chatId: string) {
+  return index.projects.some((project) => project.chats.some((chat) => chat.id === chatId));
+}
+
+function composerShouldExpand(element: HTMLElement) {
+  const styles = window.getComputedStyle(element);
   const minHeight = Number.parseFloat(styles.minHeight) || 44;
-  const maxHeight = Number.parseFloat(styles.maxHeight) || 180;
-  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
 
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  return element.scrollHeight > minHeight + 6 || Boolean(element.textContent?.includes("\n"));
+}
 
-  return nextHeight > minHeight + 6;
+function textFromComposerEditor(element: HTMLElement) {
+  const text = element.innerText.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n");
+
+  if (!text.trim()) {
+    return "";
+  }
+
+  return text.replace(/\n$/, "");
+}
+
+function syncComposerEditorText(element: HTMLElement, text: string) {
+  if (textFromComposerEditor(element) === text) {
+    return;
+  }
+
+  element.textContent = text;
 }
 
 function promptWithUploadedFiles(text: string, files: UploadedPromptFile[]) {
@@ -420,6 +682,78 @@ async function readJsonResponse<T>(response: Response, fallbackMessage: string):
   } catch {
     throw new Error(`${fallbackMessage}. The API response was not valid JSON.`);
   }
+}
+
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  const output = new Uint8Array(raw.length);
+
+  for (let index = 0; index < raw.length; index += 1) {
+    output[index] = raw.charCodeAt(index);
+  }
+
+  return output;
+}
+
+function supportsServiceWorkerNotifications() {
+  return "serviceWorker" in navigator && "Notification" in window;
+}
+
+function supportsPushNotifications() {
+  return supportsServiceWorkerNotifications() && "PushManager" in window;
+}
+
+function pushKeysMatch(existingKey: ArrayBuffer | null, publicKey: string) {
+  if (!existingKey) {
+    return true;
+  }
+
+  const existing = new Uint8Array(existingKey);
+  const expected = urlBase64ToUint8Array(publicKey);
+
+  if (existing.length !== expected.length) {
+    return false;
+  }
+
+  return existing.every((value, index) => value === expected[index]);
+}
+
+async function getFreshPushSubscription(registration: ServiceWorkerRegistration, publicKey: string) {
+  let subscription = await registration.pushManager.getSubscription();
+
+  if (subscription && !pushKeysMatch(subscription.options.applicationServerKey, publicKey)) {
+    await subscription.unsubscribe();
+    subscription = null;
+  }
+
+  return subscription;
+}
+
+function projectNameFromPath(projectPath: string) {
+  const parts = projectPath.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) || "Codex";
+}
+
+function notificationLabel(status: RemoteNotificationState) {
+  if (status === "enabled") {
+    return "Notify on";
+  }
+
+  if (status === "local") {
+    return "Local notify";
+  }
+
+  if (status === "denied") {
+    return "Notify blocked";
+  }
+
+  if (status === "unsupported") {
+    return "No notify";
+  }
+
+  return "Notify";
 }
 
 function isActiveJob(job: CodexRunJob | undefined) {
@@ -463,10 +797,6 @@ function mergeJobsForChat(current: CodexRunJob[], incoming: CodexRunJob[]) {
   }
 
   return sortJobsForChat([...merged.values()]).slice(0, 40);
-}
-
-function activeJobCount(jobs: CodexRunJob[] | undefined) {
-  return jobs?.filter(isActiveJob).length ?? 0;
 }
 
 function jobStatusLabel(job: CodexRunJob) {
@@ -518,33 +848,53 @@ function normalizeImagePathForMarkdown(value: string) {
   return value.replace(/\\/g, "/");
 }
 
+function markdownImageDestination(value: string) {
+  const normalized = normalizeImagePathForMarkdown(value);
+
+  return /[\s()<>]/.test(normalized) ? `<${normalized.replace(/>/g, "%3E")}>` : normalized;
+}
+
 function normalizeScreenshotMarkdown(value: string) {
   const withNormalizedImageLinks = value.replace(markdownWindowsImagePattern, (_match, open: string, imagePath: string, close: string) => {
-    return `${open}${normalizeImagePathForMarkdown(imagePath)}${close}`;
+    return `${open}${markdownImageDestination(imagePath)}${close}`;
   });
 
-  return withNormalizedImageLinks
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
+  const lines = withNormalizedImageLinks.split(/\r?\n/);
+  const output: string[] = [];
 
-      if (!trimmed || trimmed.startsWith("![")) {
-        return line;
-      }
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    const nextLine = lines[index + 1];
+    const nextPath = nextLine?.trim().match(localImageLinePattern)?.[1];
+    const attachment = trimmed.match(/^(\d+\.\s+)(.+?)(\s+\([^)]*\))$/);
 
-      const exactPath = trimmed.match(localImageLinePattern)?.[1];
-      const inlinePath = trimmed.match(windowsImageInLinePattern)?.[1];
-      const imagePath = exactPath ?? inlinePath;
-
-      if (!imagePath) {
-        return line;
-      }
-
+    if (attachment && nextPath) {
       const indent = line.slice(0, line.indexOf(trimmed));
+      output.push(`${indent}${attachment[1]}[${attachment[2]}](${markdownImageDestination(nextPath)})${attachment[3]}`);
+      index += 1;
+      continue;
+    }
 
-      return `${indent}![Screenshot](${normalizeImagePathForMarkdown(imagePath)})`;
-    })
-    .join("\n");
+    if (!trimmed || trimmed.startsWith("![")) {
+      output.push(line);
+      continue;
+    }
+
+    const exactPath = trimmed.match(localImageLinePattern)?.[1];
+    const inlinePath = trimmed.match(windowsImageInLinePattern)?.[1];
+    const imagePath = exactPath ?? inlinePath;
+
+    if (!imagePath) {
+      output.push(line);
+      continue;
+    }
+
+    const indent = line.slice(0, line.indexOf(trimmed));
+    output.push(`${indent}[View screenshot](${markdownImageDestination(imagePath)})`);
+  }
+
+  return output.join("\n");
 }
 
 function localImagePathFromSrc(src: string | undefined) {
@@ -588,88 +938,55 @@ function localImagePathFromSrc(src: string | undefined) {
 
 function AuthenticatedImage({ src, alt, token }: { src: string | undefined; alt: string | undefined; token: string }) {
   const localPath = useMemo(() => localImagePathFromSrc(src), [src]);
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const imageUrl = useMemo(() => {
+    if (!localPath) {
+      return src;
+    }
+
+    const params = new URLSearchParams({ path: localPath });
+
+    if (token) {
+      params.set("token", token);
+    }
+
+    return `/api/local-image?${params.toString()}`;
+  }, [localPath, src, token]);
 
   useEffect(() => {
-    if (!localPath) {
-      setFailed(false);
-      setObjectUrl((previous) => {
-        if (previous) {
-          URL.revokeObjectURL(previous);
-        }
-
-        return null;
-      });
-      return;
-    }
-
-    let cancelled = false;
-    let createdUrl: string | null = null;
-    const controller = new AbortController();
-    const imagePath = localPath;
-
     setFailed(false);
-    setObjectUrl((previous) => {
-      if (previous) {
-        URL.revokeObjectURL(previous);
-      }
-
-      return null;
-    });
-
-    async function loadImage() {
-      try {
-        const response = await fetch(`/api/local-image?path=${encodeURIComponent(imagePath)}`, {
-          headers: token ? { "x-control-token": token } : {},
-          signal: controller.signal
-        });
-
-        if (!response.ok) {
-          throw new Error("Screenshot unavailable");
-        }
-
-        const blob = await response.blob();
-        createdUrl = URL.createObjectURL(blob);
-
-        if (cancelled) {
-          URL.revokeObjectURL(createdUrl);
-          return;
-        }
-
-        setObjectUrl(createdUrl);
-      } catch {
-        if (!cancelled) {
-          setFailed(true);
-        }
-      }
-    }
-
-    void loadImage();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-
-      if (createdUrl) {
-        URL.revokeObjectURL(createdUrl);
-      }
-    };
-  }, [localPath, token]);
+  }, [imageUrl]);
 
   if (!localPath) {
-    return <img className="chat-image" src={src} alt={alt || "Image"} loading="lazy" />;
+    return <img className="chat-image" src={imageUrl} alt={alt || "Image"} loading="lazy" />;
   }
 
   if (failed) {
     return <span className="image-placeholder">Screenshot unavailable</span>;
   }
 
-  if (!objectUrl) {
-    return <span className="image-placeholder">Loading screenshot...</span>;
-  }
+  return <img className="chat-image" src={imageUrl} alt={alt || "Screenshot"} loading="lazy" onError={() => setFailed(true)} />;
+}
 
-  return <img className="chat-image" src={objectUrl} alt={alt || "Screenshot"} loading="lazy" />;
+function LocalImageAttachment({
+  href,
+  label,
+  token
+}: {
+  href: string | undefined;
+  label: ReactNode;
+  token: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <span className="image-attachment">
+      <button className="image-attachment-toggle" type="button" onClick={() => setOpen((current) => !current)}>
+        {label}
+      </button>
+      {open ? <AuthenticatedImage src={href} alt={typeof label === "string" ? label : "Screenshot"} token={token} /> : null}
+    </span>
+  );
 }
 
 function FormattedMessage({ text, emptyText, token }: { text: string | undefined; emptyText: string; token: string }) {
@@ -682,12 +999,20 @@ function FormattedMessage({ text, emptyText, token }: { text: string | undefined
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-          img: ({ src, alt }) => <AuthenticatedImage src={src} alt={alt} token={token} />
+          a: ({ children, href }) =>
+            localImagePathFromSrc(href) ? (
+              <LocalImageAttachment href={href} label={children} token={token} />
+            ) : (
+              <a href={href} target="_blank" rel="noreferrer">
+                {children}
+              </a>
+            ),
+          img: ({ src, alt }) =>
+            localImagePathFromSrc(src) ? (
+              <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} />
+            ) : (
+              <AuthenticatedImage src={src} alt={alt} token={token} />
+            )
         }}
       >
         {normalizeScreenshotMarkdown(text)}
@@ -715,10 +1040,16 @@ function JobStatusIcon({ job }: { job: CodexRunJob }) {
 function StatusControls({
   socketLive,
   state,
+  notificationStatus,
+  notificationBusy,
+  onNotifications,
   onLogout
 }: {
   socketLive: boolean;
   state: BridgeState | null;
+  notificationStatus: RemoteNotificationState;
+  notificationBusy: boolean;
+  onNotifications: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -735,6 +1066,29 @@ function StatusControls({
         <MonitorUp size={15} />
         {state ? `${state.runner.activeJobs}/${state.runner.queuedJobs}` : "0/0"}
       </span>
+      <button
+        className={`icon-button notification-button ${notificationStatus === "enabled" ? "is-active" : ""}`}
+        type="button"
+        onClick={onNotifications}
+        disabled={notificationBusy || notificationStatus === "unsupported" || notificationStatus === "denied"}
+        aria-label={notificationStatus === "enabled" ? "Send test notification" : "Enable notifications"}
+        title={
+          notificationStatus === "enabled"
+            ? "Send test notification"
+            : notificationStatus === "denied"
+              ? "Notifications are blocked in browser settings"
+              : "Enable notifications"
+        }
+      >
+        {notificationBusy ? (
+          <Loader2 className="spin" size={18} />
+        ) : notificationStatus === "denied" || notificationStatus === "unsupported" ? (
+          <BellOff size={18} />
+        ) : (
+          <Bell size={18} />
+        )}
+        <span className="notification-label">{notificationLabel(notificationStatus)}</span>
+      </button>
       <button className="icon-button" type="button" onClick={onLogout} aria-label="Sign out">
         <LogOut size={18} />
       </button>
@@ -743,6 +1097,16 @@ function StatusControls({
 }
 
 export function App() {
+  const initialChatSelection = useMemo(() => {
+    const storedChatId = readStoredSelectedChatId();
+    const storedChat = storedChatId ? getCachedChatHistory(storedChatId) : null;
+    const fallbackChat = storedChat ?? (!storedChatId ? newestCachedChatHistory() : null);
+
+    return {
+      id: storedChatId ?? fallbackChat?.id ?? null,
+      chat: storedChat ?? fallbackChat
+    };
+  }, []);
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
@@ -765,17 +1129,23 @@ export function App() {
   const [authError, setAuthError] = useState("");
   const [state, setState] = useState<BridgeState | null>(null);
   const [chatIndex, setChatIndex] = useState<ChatIndex | null>(null);
-  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [selectedChat, setSelectedChat] = useState<ChatDetail | null>(null);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(initialChatSelection.id);
+  const [selectedChat, setSelectedChat] = useState<ChatDetail | null>(initialChatSelection.chat);
+  const [chatScrollVersion, setChatScrollVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
-  const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>({});
+  const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
+  const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
+  const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
+  const [refreshingChat, setRefreshingChat] = useState(false);
+  const [notificationStatus, setNotificationStatus] = useState<RemoteNotificationState>("default");
+  const [notificationBusy, setNotificationBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [instructionsLoading, setInstructionsLoading] = useState(false);
@@ -783,13 +1153,16 @@ export function App() {
   const [shortcutInstructions, setShortcutInstructions] = useState<ShortcutInstructionsResult | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
-  const selectedChatIdRef = useRef<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const chatDetailRequestRef = useRef(0);
   const localQueueSendingRef = useRef(false);
+  const sendHandledOnPointerDownRef = useRef(false);
+  const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
+  const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const notificationStatusRef = useRef<RemoteNotificationState>("default");
 
   const authHeaders = useMemo(
     () => ({
@@ -799,32 +1172,16 @@ export function App() {
     [token]
   );
 
-  const selectedProjectPath = useMemo(() => {
-    if (!chatIndex || !selectedChatId) {
-      return null;
+  const selectedJobs = useMemo(() => {
+    if (!selectedChatId) {
+      return [];
     }
 
-    for (const project of chatIndex.projects) {
-      if (project.chats.some((chat) => chat.id === selectedChatId)) {
-        return project.projectPath;
-      }
-    }
-
-    return null;
-  }, [chatIndex, selectedChatId]);
-
-  const chatLabelById = useMemo(() => {
-    const labels = new Map<string, string>();
-
-    for (const project of chatIndex?.projects ?? []) {
-      for (const chat of project.chats) {
-        labels.set(chat.id, `${project.projectName} / ${chat.title}`);
-      }
-    }
-
-    return labels;
-  }, [chatIndex]);
-  const selectedJobs = useMemo(() => (selectedChatId ? chatJobs[selectedChatId] ?? [] : []), [chatJobs, selectedChatId]);
+    return mergeJobsForChat(
+      chatJobs[selectedChatId] ?? [],
+      (state?.runner.recentJobs ?? []).filter((job) => job.chatId === selectedChatId)
+    );
+  }, [chatJobs, selectedChatId, state?.runner.recentJobs]);
   const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
@@ -845,6 +1202,14 @@ export function App() {
 
     return sortJobsForChat([...jobsById.values()]);
   }, [chatJobs, state?.runner.recentJobs]);
+  const selectedQueuedLocalCommands = useMemo(
+    () => (selectedChatId ? queuedLocalCommands.filter((command) => command.chatId === selectedChatId) : []),
+    [queuedLocalCommands, selectedChatId]
+  );
+  const selectedQueuedServerJobs = useMemo(
+    () => (selectedChatId ? queuedServerJobs.filter((job) => job.chatId === selectedChatId) : []),
+    [queuedServerJobs, selectedChatId]
+  );
   const busyServerChatIds = useMemo(() => {
     const chatIds = new Set<string>();
 
@@ -864,8 +1229,83 @@ export function App() {
 
     return chatIds;
   }, [chatJobs, state?.runner.recentJobs]);
+  const activeJobsByChatId = useMemo(() => {
+    const activeJobs = new Map<string, { count: number; running: boolean }>();
+    const seenJobIds = new Set<string>();
+
+    const addJob = (job: CodexRunJob) => {
+      if (!isActiveJob(job) || seenJobIds.has(job.id)) {
+        return;
+      }
+
+      seenJobIds.add(job.id);
+      const current = activeJobs.get(job.chatId) ?? { count: 0, running: false };
+      activeJobs.set(job.chatId, {
+        count: current.count + 1,
+        running: current.running || job.status === "running"
+      });
+    };
+
+    for (const job of state?.runner.recentJobs ?? []) {
+      addJob(job);
+    }
+
+    for (const jobs of Object.values(chatJobs)) {
+      for (const job of jobs) {
+        addJob(job);
+      }
+    }
+
+    return activeJobs;
+  }, [chatJobs, state?.runner.recentJobs]);
+  const trackServerJob = useCallback((job: CodexRunJob) => {
+    const activeJobs = activeServerJobIdsByChatRef.current;
+    const current = new Set(activeJobs.get(job.chatId));
+
+    if (isActiveJob(job)) {
+      current.add(job.id);
+      activeJobs.set(job.chatId, current);
+      return;
+    }
+
+    current.delete(job.id);
+
+    if (current.size) {
+      activeJobs.set(job.chatId, current);
+    } else {
+      activeJobs.delete(job.chatId);
+    }
+  }, []);
+  const replaceTrackedServerJobsForChat = useCallback((chatId: string, jobs: CodexRunJob[]) => {
+    const activeJobs = activeServerJobIdsByChatRef.current;
+
+    if (!jobs.length) {
+      activeJobs.delete(chatId);
+      return;
+    }
+
+    const current = new Set(activeJobs.get(chatId));
+
+    for (const job of jobs) {
+      if (isActiveJob(job)) {
+        current.add(job.id);
+      } else {
+        current.delete(job.id);
+      }
+    }
+
+    if (current.size) {
+      activeJobs.set(chatId, current);
+    } else {
+      activeJobs.delete(chatId);
+    }
+  }, []);
+  const serverChatIsBusyNow = useCallback((chatId: string) => {
+    return Boolean(activeServerJobIdsByChatRef.current.get(chatId)?.size);
+  }, []);
   const selectedJob = selectedJobs.find(isActiveJob);
-  const globalQueueCount = queuedServerJobs.length + queuedLocalCommands.length;
+  const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
+  const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
   const selectedJobDuration =
     selectedJob?.status === "running"
       ? formatElapsedSeconds(selectedJob.startedAt ?? selectedJob.createdAt, selectedJob.finishedAt, durationNow)
@@ -895,7 +1335,8 @@ export function App() {
         id: "last-response",
         role: "assistant",
         text: selectedChat.lastResponse.text,
-        createdAt: selectedChat.lastResponse.createdAt
+        createdAt: selectedChat.lastResponse.createdAt,
+        isFinal: true
       });
     }
 
@@ -903,6 +1344,10 @@ export function App() {
   }, [selectedChat]);
   const visibleMessages = transcriptMessages;
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
+  const chatShellIsLoading =
+    loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
+  const topbarProjectLabel = selectedChat?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
+  const topbarTitle = selectedChat?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -935,6 +1380,197 @@ export function App() {
       setNotice(error instanceof Error ? error.message : "Could not load bridge state");
     }
   }, [apiFetch, authenticated]);
+
+  const ensureNotificationRegistration = useCallback(async () => {
+    if (!supportsServiceWorkerNotifications()) {
+      throw new Error("Notifications are not supported in this browser mode");
+    }
+
+    return navigator.serviceWorker.register("/sw.js");
+  }, []);
+
+  const refreshNotificationStatus = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    if (!supportsServiceWorkerNotifications()) {
+      setNotificationStatus("unsupported");
+      return;
+    }
+
+    if (Notification.permission === "denied") {
+      setNotificationStatus("denied");
+      return;
+    }
+
+    if (!supportsPushNotifications()) {
+      setNotificationStatus(Notification.permission === "granted" ? "local" : "default");
+      return;
+    }
+
+    try {
+      const registration = await ensureNotificationRegistration();
+      const { publicKey } = await apiFetch<PushPublicKeyResult>("/api/notifications/public-key");
+      let subscription = await getFreshPushSubscription(registration, publicKey);
+
+      if (!subscription && Notification.permission === "granted") {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
+        });
+      }
+
+      if (Notification.permission === "granted" && subscription) {
+        await apiFetch<ApiResult>("/api/notifications/subscribe", {
+          method: "POST",
+          body: JSON.stringify({ subscription: subscription.toJSON() })
+        });
+        setNotificationStatus("enabled");
+        return;
+      }
+
+      setNotificationStatus(Notification.permission === "granted" ? "default" : Notification.permission);
+    } catch {
+      setNotificationStatus(Notification.permission === "granted" ? "local" : "default");
+    }
+  }, [apiFetch, authenticated, ensureNotificationRegistration]);
+
+  const showLocalNotification = useCallback(
+    async (payload: { title: string; body: string; tag: string; chatId?: string; jobId?: string }) => {
+      if (!supportsServiceWorkerNotifications() || Notification.permission !== "granted") {
+        return;
+      }
+
+      try {
+        const registration = await ensureNotificationRegistration();
+        await registration.showNotification(payload.title, {
+          body: payload.body,
+          tag: payload.tag,
+          icon: "/icon-192.png",
+          badge: "/apple-touch-icon.png",
+          data: {
+            url: "/",
+            chatId: payload.chatId,
+            jobId: payload.jobId
+          }
+        });
+      } catch {
+        return;
+      }
+    },
+    [ensureNotificationRegistration]
+  );
+
+  const localNotificationBodyForJob = useCallback(
+    async (job: CodexRunJob) => {
+      if (job.status === "failed") {
+        return notificationResponseSummary(job.message ?? "", "Run failed before response");
+      }
+
+      try {
+        const chat = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(job.chatId)}`);
+
+        if (chat.lastResponse?.text) {
+          return notificationResponseSummary(chat.lastResponse.text, "Response unavailable");
+        }
+      } catch {
+        // Fall back to the prompt preview below.
+      }
+
+      return notificationResponseSummary(job.promptPreview, "Response unavailable");
+    },
+    [apiFetch]
+  );
+
+  const sendTestNotification = useCallback(async () => {
+    const result = await apiFetch<PushTestResult>("/api/notifications/test", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+
+    if (result.result.sent === 0) {
+      await showLocalNotification({
+        title: "Codex notifications are on",
+        body: "You will get a notification when a remote Codex run finishes.",
+        tag: "codex-remote-test"
+      });
+    }
+  }, [apiFetch, showLocalNotification]);
+
+  const enableNotifications = useCallback(async () => {
+    if (!supportsServiceWorkerNotifications()) {
+      setNotificationStatus("unsupported");
+      setNotice("Notifications are not supported in this browser mode.");
+      return;
+    }
+
+    setNotificationBusy(true);
+
+    try {
+      const registration = await ensureNotificationRegistration();
+      const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+
+      if (permission === "denied") {
+        setNotificationStatus("denied");
+        setNotice("Notifications are blocked. Enable them in browser settings, then try again.");
+        return;
+      }
+
+      if (permission !== "granted") {
+        setNotificationStatus("default");
+        setNotice("Notification permission was not granted.");
+        return;
+      }
+
+      if (!supportsPushNotifications()) {
+        setNotificationStatus("local");
+        await showLocalNotification({
+          title: "Codex notifications are on",
+          body: "This browser can show notifications while the app is open.",
+          tag: "codex-remote-local-test"
+        });
+        return;
+      }
+
+      const { publicKey } = await apiFetch<PushPublicKeyResult>("/api/notifications/public-key");
+      let subscription = await getFreshPushSubscription(registration, publicKey);
+
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
+        });
+      }
+
+      await apiFetch<ApiResult>("/api/notifications/subscribe", {
+        method: "POST",
+        body: JSON.stringify({ subscription: subscription.toJSON() })
+      });
+
+      setNotificationStatus("enabled");
+      await sendTestNotification();
+      setNotice("Notifications enabled. A test notification was sent.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not enable notifications");
+      await refreshNotificationStatus();
+    } finally {
+      setNotificationBusy(false);
+    }
+  }, [apiFetch, ensureNotificationRegistration, refreshNotificationStatus, sendTestNotification, showLocalNotification]);
+
+  const handleNotificationsClick = useCallback(() => {
+    if (notificationStatusRef.current === "enabled") {
+      setNotificationBusy(true);
+      void sendTestNotification()
+        .then(() => setNotice("Test notification sent."))
+        .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not send test notification"))
+        .finally(() => setNotificationBusy(false));
+      return;
+    }
+
+    void enableNotifications();
+  }, [enableNotifications, sendTestNotification]);
 
   const verifyToken = useCallback(
     async (value: string) => {
@@ -980,7 +1616,7 @@ export function App() {
       const index = await apiFetch<ChatIndex>("/api/chats");
       setChatIndex(index);
       setSelectedChatId((current) => {
-        const next = current ?? firstChatId(index);
+        const next = current && chatIndexContainsChat(index, current) ? current : firstChatId(index);
 
         if (next) {
           selectedChatIdRef.current = next;
@@ -995,13 +1631,25 @@ export function App() {
     }
   }, [apiFetch, authenticated]);
 
+  const requestChatScroll = useCallback(() => {
+    setChatScrollVersion((version) => version + 1);
+  }, []);
+
   const loadChatDetail = useCallback(
     async (chatId: string, quiet = false) => {
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
+      const cachedDetail = getCachedChatHistory(chatId);
 
       if (!quiet) {
-        setLoadingDetail(true);
+        setLoadingDetail(!cachedDetail);
+      }
+
+      if (cachedDetail && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
+        setSelectedChat(cachedDetail);
+        if (!quiet) {
+          requestChatScroll();
+        }
       }
 
       try {
@@ -1012,6 +1660,9 @@ export function App() {
         }
 
         setSelectedChat(detail);
+        if (!quiet) {
+          requestChatScroll();
+        }
       } catch (error) {
         if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
           return;
@@ -1024,13 +1675,14 @@ export function App() {
         }
       }
     },
-    [apiFetch]
+    [apiFetch, requestChatScroll]
   );
 
   const loadChatJobs = useCallback(
     async (chatId: string) => {
       try {
         const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`);
+        replaceTrackedServerJobsForChat(chatId, result.jobs);
         setChatJobs((current) => ({
           ...current,
           [chatId]: sortJobsForChat(result.jobs).slice(0, 40)
@@ -1039,7 +1691,7 @@ export function App() {
         setNotice(error instanceof Error ? error.message : "Could not load command queue");
       }
     },
-    [apiFetch]
+    [apiFetch, replaceTrackedServerJobsForChat]
   );
 
   const loadShortcutInstructions = useCallback(async () => {
@@ -1071,11 +1723,56 @@ export function App() {
     []
   );
 
-  const rememberJob = useCallback((job: CodexRunJob) => {
-    setChatJobs((current) => ({
-      ...current,
-      [job.chatId]: mergeJobsForChat(current[job.chatId] ?? [], [job])
-    }));
+  const rememberJob = useCallback(
+    (job: CodexRunJob) => {
+      trackServerJob(job);
+      setChatJobs((current) => ({
+        ...current,
+        [job.chatId]: mergeJobsForChat(current[job.chatId] ?? [], [job])
+      }));
+    },
+    [trackServerJob]
+  );
+
+  const startPromptReceipt = useCallback((chatId: string, promptText: string, message = "Sending to server") => {
+    const receipt: PromptReceipt = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      chatId,
+      status: "sending",
+      promptPreview: previewText(promptText, "Prompt"),
+      message,
+      createdAt: new Date().toISOString()
+    };
+
+    if (promptReceiptClearTimerRef.current !== undefined) {
+      window.clearTimeout(promptReceiptClearTimerRef.current);
+      promptReceiptClearTimerRef.current = undefined;
+    }
+
+    setPromptReceipt(receipt);
+    return receipt.id;
+  }, []);
+
+  const finishPromptReceipt = useCallback((receiptId: string, message = "Server received") => {
+    setPromptReceipt((current) => (current?.id === receiptId ? { ...current, status: "received", message } : current));
+
+    if (promptReceiptClearTimerRef.current !== undefined) {
+      window.clearTimeout(promptReceiptClearTimerRef.current);
+    }
+
+    promptReceiptClearTimerRef.current = window.setTimeout(() => {
+      setPromptReceipt((current) => (current?.id === receiptId ? null : current));
+      promptReceiptClearTimerRef.current = undefined;
+    }, 1400);
+  }, []);
+
+  const clearPromptReceipt = useCallback((receiptId?: string) => {
+    if (promptReceiptClearTimerRef.current !== undefined) {
+      window.clearTimeout(promptReceiptClearTimerRef.current);
+      promptReceiptClearTimerRef.current = undefined;
+    }
+
+    setPromptReceipt((current) => (!receiptId || current?.id === receiptId ? null : current));
   }, []);
 
   const refreshWorkspace = useCallback(async () => {
@@ -1091,6 +1788,24 @@ export function App() {
       selectedChatId ? loadChatJobs(selectedChatId) : Promise.resolve()
     ]);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, selectedChatId]);
+
+  const refreshSelectedChat = useCallback(async () => {
+    const chatId = selectedChatIdRef.current;
+
+    if (!authenticated || !chatId || refreshingChat) {
+      return;
+    }
+
+    setNotice("");
+    setRefreshingChat(true);
+
+    try {
+      await loadChatJobs(chatId);
+      await loadChatDetail(chatId, true);
+    } finally {
+      setRefreshingChat(false);
+    }
+  }, [authenticated, loadChatDetail, loadChatJobs, refreshingChat]);
 
   const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string, messageId = optimisticPromptId(createdAt)) => {
     setSelectedChat((current) => {
@@ -1142,15 +1857,30 @@ export function App() {
     });
   }, []);
 
+  function closeMobileMenuPanels() {
+    setMenuOpen(false);
+    setInstructionsOpen(false);
+  }
+
   function selectChat(chatId: string) {
+    setUnreadChatIds((current) => {
+      if (!current.has(chatId)) {
+        return current;
+      }
+
+      const next = new Set(current);
+      next.delete(chatId);
+      return next;
+    });
+
     if (selectedChatIdRef.current !== chatId) {
       chatDetailRequestRef.current += 1;
       selectedChatIdRef.current = chatId;
-      setSelectedChat(null);
+      setSelectedChat(getCachedChatHistory(chatId));
       setSelectedChatId(chatId);
     }
 
-    setMenuOpen(false);
+    closeMobileMenuPanels();
   }
 
   useEffect(() => {
@@ -1185,7 +1915,16 @@ export function App() {
 
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
+    rememberSelectedChatId(selectedChatId);
   }, [selectedChatId]);
+
+  useEffect(() => {
+    notificationStatusRef.current = notificationStatus;
+  }, [notificationStatus]);
+
+  useEffect(() => {
+    void refreshNotificationStatus();
+  }, [refreshNotificationStatus]);
 
   useEffect(() => {
     if (selectedChatId && selectedChat?.id && selectedChat.id !== selectedChatId) {
@@ -1198,7 +1937,7 @@ export function App() {
       return;
     }
 
-    setMenuOpen(false);
+    closeMobileMenuPanels();
     setPendingAttachments([]);
   }, [selectedChatId]);
 
@@ -1209,7 +1948,7 @@ export function App() {
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setMenuOpen(false);
+        closeMobileMenuPanels();
       }
     }
 
@@ -1277,6 +2016,25 @@ export function App() {
   }, [localCommandQueue]);
 
   useEffect(() => {
+    writeCachedActiveJobs(chatJobs, state?.runner.recentJobs ?? []);
+  }, [chatJobs, state?.runner.recentJobs]);
+
+  useEffect(() => {
+    if (selectedChat) {
+      rememberCachedChatHistory(selectedChat);
+    }
+  }, [selectedChat]);
+
+  useEffect(
+    () => () => {
+      if (promptReceiptClearTimerRef.current !== undefined) {
+        window.clearTimeout(promptReceiptClearTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
     if (!authenticated || !instructionsOpen) {
       return;
     }
@@ -1305,23 +2063,6 @@ export function App() {
   }, [selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
-    if (!selectedProjectPath) {
-      return;
-    }
-
-    setCollapsedProjects((current) => {
-      if (!current.has(selectedProjectPath)) {
-        return current;
-      }
-
-      const next = new Set(current);
-      next.delete(selectedProjectPath);
-
-      return next;
-    });
-  }, [selectedProjectPath]);
-
-  useEffect(() => {
     if (!authenticated || !selectedChatId) {
       return;
     }
@@ -1331,16 +2072,34 @@ export function App() {
   }, [authenticated, loadChatDetail, loadChatJobs, selectedChatId]);
 
   useEffect(() => {
-    if (!selectedChatId || loadingDetail) {
+    if (!selectedChatId || chatShellIsLoading) {
       return;
     }
 
-    chatEndRef.current?.scrollIntoView({ block: "end" });
-  }, [lastVisibleMessageId, loadingDetail, selectedChatId]);
+    const scrollToBottom = () => {
+      chatEndRef.current?.scrollIntoView({ block: "end" });
+    };
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToBottom();
+      window.requestAnimationFrame(scrollToBottom);
+    });
+    const imageLoadFallback = window.setTimeout(scrollToBottom, 250);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(imageLoadFallback);
+    };
+  }, [chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, selectedChatId]);
 
   useEffect(() => {
-    if (composerTextareaRef.current) {
-      setComposerExpanded(resizeTextareaElement(composerTextareaRef.current));
+    const editor = composerEditorRef.current;
+
+    if (editor) {
+      if (document.activeElement !== editor || !draft) {
+        syncComposerEditorText(editor, draft);
+      }
+
+      setComposerExpanded(composerShouldExpand(editor));
     }
   }, [draft]);
 
@@ -1353,12 +2112,13 @@ export function App() {
       const next = { ...current };
 
       for (const job of state.runner.recentJobs) {
+        trackServerJob(job);
         next[job.chatId] = mergeJobsForChat(next[job.chatId] ?? [], [job]);
       }
 
       return next;
     });
-  }, [state]);
+  }, [state, trackServerJob]);
 
   useEffect(() => {
     if (!authenticated) {
@@ -1462,10 +2222,33 @@ export function App() {
         if (job) {
           rememberJob(job);
 
-          if (job.chatId === selectedChatIdRef.current && (job.status === "completed" || job.status === "failed")) {
+          if (job.status === "completed" || job.status === "failed") {
+            if (notificationStatusRef.current === "local") {
+              void localNotificationBodyForJob(job).then((body) =>
+                showLocalNotification({
+                  title: job.status === "completed" ? "Codex finished" : "Codex failed",
+                  body,
+                  tag: `codex-job-${job.id}`,
+                  chatId: job.chatId,
+                  jobId: job.id
+                })
+              );
+            }
+
             void loadChats();
-            void loadChatJobs(job.chatId);
-            void loadChatDetail(job.chatId, true);
+
+            if (job.chatId === selectedChatIdRef.current) {
+              void loadChatJobs(job.chatId);
+              void loadChatDetail(job.chatId, true);
+            } else {
+              setUnreadChatIds((current) => {
+                if (current.has(job.chatId)) {
+                  return current;
+                }
+
+                return new Set(current).add(job.chatId);
+              });
+            }
           }
         }
       });
@@ -1486,7 +2269,17 @@ export function App() {
       document.removeEventListener("visibilitychange", reviveSocket);
       socket?.close();
     };
-  }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, rememberJob, token]);
+  }, [
+    authenticated,
+    loadChatDetail,
+    loadChatJobs,
+    loadChats,
+    loadState,
+    localNotificationBodyForJob,
+    rememberJob,
+    showLocalNotification,
+    token
+  ]);
 
   useEffect(() => {
     if (!authenticated) {
@@ -1512,7 +2305,7 @@ export function App() {
     }
 
     const nextCommand = localCommandQueue.find((command, index) => {
-      if (!isLocalCommandDue(command) || busyServerChatIds.has(command.chatId)) {
+      if (!isLocalCommandDue(command) || busyServerChatIds.has(command.chatId) || serverChatIsBusyNow(command.chatId)) {
         return false;
       }
 
@@ -1526,6 +2319,7 @@ export function App() {
     }
 
     localQueueSendingRef.current = true;
+    const receiptId = startPromptReceipt(nextCommand.chatId, nextCommand.text, "Sending queued prompt to server");
     setLocalCommandQueue((current) =>
       current.map((command) =>
         command.id === nextCommand.id
@@ -1543,6 +2337,7 @@ export function App() {
           rememberJob(result.job);
         }
 
+        finishPromptReceipt(receiptId);
         setLocalCommandQueue((current) => current.filter((command) => command.id !== nextCommand.id));
         setNotice(result.message ?? "Prompt queued on target laptop");
         await Promise.all([
@@ -1574,11 +2369,25 @@ export function App() {
           )
         );
         setNotice(message);
+        clearPromptReceipt(receiptId);
       })
       .finally(() => {
         localQueueSendingRef.current = false;
       });
-  }, [apiFetch, authenticated, busyServerChatIds, loadChatDetail, loadChatJobs, loadState, localCommandQueue, rememberJob]);
+  }, [
+    apiFetch,
+    authenticated,
+    busyServerChatIds,
+    clearPromptReceipt,
+    finishPromptReceipt,
+    loadChatDetail,
+    loadChatJobs,
+    loadState,
+    localCommandQueue,
+    rememberJob,
+    serverChatIsBusyNow,
+    startPromptReceipt
+  ]);
 
   function restoreQueuedCommandToComposer(command: LocalQueuedCommand) {
     if (command.status !== "pending") {
@@ -1610,15 +2419,61 @@ export function App() {
     void loadChatDetail(nextChatId, true);
 
     window.requestAnimationFrame(() => {
-      const textarea = composerTextareaRef.current;
+      const editor = composerEditorRef.current;
 
-      if (!textarea) {
+      if (!editor) {
         return;
       }
 
-      setComposerExpanded(resizeTextareaElement(textarea));
-      textarea.focus();
+      setComposerExpanded(composerShouldExpand(editor));
     });
+  }
+
+  async function steerQueuedCommand(command: LocalQueuedCommand) {
+    if (command.status !== "pending") {
+      return;
+    }
+
+    setLocalCommandQueue((current) =>
+      current.map((item) =>
+        item.id === command.id ? { ...item, status: "sending", message: "Steering into running Codex chat" } : item
+      )
+    );
+    setNotice("Steering prompt into the running chat...");
+
+    try {
+      const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(command.chatId)}/steer`, {
+        method: "POST",
+        body: JSON.stringify({ text: command.text })
+      });
+
+      if (result.job) {
+        rememberJob(result.job);
+      }
+
+      setLocalCommandQueue((current) => current.filter((item) => item.id !== command.id));
+      setNotice(result.message ?? "Steering prompt sent");
+      await Promise.all([
+        loadState(),
+        loadChatJobs(command.chatId),
+        selectedChatIdRef.current === command.chatId ? loadChatDetail(command.chatId, true) : Promise.resolve()
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not steer prompt";
+
+      setLocalCommandQueue((current) =>
+        current.map((item) =>
+          item.id === command.id
+            ? {
+                ...item,
+                status: "pending",
+                message
+              }
+            : item
+        )
+      );
+      setNotice(message);
+    }
   }
 
   useEffect(() => {
@@ -1668,6 +2523,41 @@ export function App() {
     ]);
   }
 
+  function openAttachmentPicker() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.tabIndex = -1;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.width = "1px";
+    input.style.height = "1px";
+    input.setAttribute("aria-hidden", "true");
+
+    let removed = false;
+    const removeInput = () => {
+      if (removed) {
+        return;
+      }
+
+      removed = true;
+      input.remove();
+    };
+
+    input.addEventListener(
+      "change",
+      () => {
+        addAttachments(input.files);
+        removeInput();
+      },
+      { once: true }
+    );
+
+    document.body.append(input);
+    input.click();
+    window.setTimeout(removeInput, 60000);
+  }
+
   function removeAttachment(id: string) {
     setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
   }
@@ -1694,10 +2584,8 @@ export function App() {
     return result.files;
   }
 
-  async function sendPrompt(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+  async function sendPrompt() {
+    if (sending || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
       return;
     }
 
@@ -1705,6 +2593,7 @@ export function App() {
     const previousSelectedChat = selectedChat;
     const previousChatIndex = chatIndex;
     const previousAttachments = pendingAttachments;
+    let receiptId: string | undefined;
 
     setSending(true);
     setNotice(pendingAttachments.length ? "Uploading files..." : "");
@@ -1719,7 +2608,8 @@ export function App() {
       const sameChatHasLocalQueue = localCommandQueue.some(
         (command) => command.chatId === selectedChatId && isLocalCommandBlocking(command)
       );
-      const sameChatIsBusy = sameChatHasLocalQueue || busyServerChatIds.has(selectedChatId);
+      const sameChatIsBusy =
+        sameChatHasLocalQueue || busyServerChatIds.has(selectedChatId) || serverChatIsBusyNow(selectedChatId);
 
       if (sameChatIsBusy) {
         setLocalCommandQueue((current) => [
@@ -1736,6 +2626,7 @@ export function App() {
         ]);
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
+        receiptId = startPromptReceipt(selectedChatId, promptText);
         setNotice("Sending to target laptop...");
         const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
           method: "POST",
@@ -1746,10 +2637,14 @@ export function App() {
           rememberJob(result.job);
         }
 
+        finishPromptReceipt(receiptId);
         setNotice(result.message ?? "Prompt sent to target laptop");
       }
 
       setDraft("");
+      if (composerEditorRef.current) {
+        syncComposerEditorText(composerEditorRef.current, "");
+      }
       setPendingAttachments([]);
       void loadState();
       window.setTimeout(() => {
@@ -1761,10 +2656,32 @@ export function App() {
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
       setPendingAttachments(previousAttachments);
+      if (receiptId) {
+        clearPromptReceipt(receiptId);
+      }
       setNotice(error instanceof Error ? error.message : "Prompt failed");
     } finally {
       setSending(false);
     }
+  }
+
+  function sendPromptFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 || sending || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+      return;
+    }
+
+    event.preventDefault();
+    sendHandledOnPointerDownRef.current = true;
+    void sendPrompt();
+  }
+
+  function sendPromptFromClick() {
+    if (sendHandledOnPointerDownRef.current) {
+      sendHandledOnPointerDownRef.current = false;
+      return;
+    }
+
+    void sendPrompt();
   }
 
   function logout() {
@@ -1775,6 +2692,7 @@ export function App() {
     setChatIndex(null);
     setSelectedChat(null);
     selectedChatIdRef.current = null;
+    activeServerJobIdsByChatRef.current.clear();
     chatDetailRequestRef.current += 1;
     setSelectedChatId(null);
     setInstructionsOpen(false);
@@ -1816,10 +2734,13 @@ export function App() {
           <div className="auth-row">
             <input
               id="control-token"
+              name="control-token-field"
               type="password"
               value={loginToken}
               onChange={(event) => setLoginToken(event.target.value)}
-              autoComplete="current-password"
+              autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore="true"
             />
             <button type="submit" aria-label="Unlock">
               <ArrowRight size={18} />
@@ -1853,14 +2774,21 @@ export function App() {
             <button className="icon-button" type="button" onClick={refreshWorkspace} aria-label="Refresh chats">
               {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
             </button>
-            <button className="icon-button mobile-close-button" type="button" onClick={() => setMenuOpen(false)} aria-label="Close menu">
+            <button className="icon-button mobile-close-button" type="button" onClick={closeMobileMenuPanels} aria-label="Close menu">
               <X size={18} />
             </button>
           </div>
         </div>
 
         <div className="mobile-menu-controls">
-          <StatusControls socketLive={socketLive} state={state} onLogout={logout} />
+          <StatusControls
+            socketLive={socketLive}
+            state={state}
+            notificationStatus={notificationStatus}
+            notificationBusy={notificationBusy}
+            onNotifications={handleNotificationsClick}
+            onLogout={logout}
+          />
         </div>
 
         {instructionsOpen ? (
@@ -1914,7 +2842,7 @@ export function App() {
           <div className="project-list">
             {chatIndex?.projects.map((project) => {
               const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
-              const isCollapsed = collapsedProjects.has(project.projectPath) && selectedProjectPath !== project.projectPath;
+              const isCollapsed = collapsedProjects.has(project.projectPath);
               const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
 
               return (
@@ -1939,19 +2867,31 @@ export function App() {
                   {!isCollapsed ? (
                     <div id={listId} className="chat-list">
                       {project.chats.map((chat) => {
-                        const queuedCommands = activeJobCount(chatJobs[chat.id]);
+                        const activeJob = activeJobsByChatId.get(chat.id);
+                        const hasUnread = unreadChatIds.has(chat.id);
 
                         return (
                           <button
                             key={chat.id}
                             type="button"
-                            className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""}`}
+                            className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""} ${hasUnread ? "has-unread" : ""}`}
                             onClick={() => selectChat(chat.id)}
                           >
-                            <span>{chat.title}</span>
+                            <span className="chat-title-row">
+                              <span className="chat-title-text">{chat.title}</span>
+                              {hasUnread ? <span className="chat-unread-dot" aria-label="Unread completed response" /> : null}
+                            </span>
                             <span className="chat-meta">
                               <small>{formatRelative(chat.updatedAt)}</small>
-                              {queuedCommands ? <span className="chat-queue-badge">{queuedCommands}</span> : null}
+                              {activeJob ? (
+                                <span
+                                  className={`chat-active-indicator ${activeJob.running ? "is-running" : ""}`}
+                                  title={`${activeJob.count} active command${activeJob.count === 1 ? "" : "s"}`}
+                                >
+                                  <Loader2 className="spin" size={13} />
+                                  {activeJob.count > 1 ? <span>{activeJob.count}</span> : null}
+                                </span>
+                              ) : null}
                             </span>
                           </button>
                         );
@@ -1977,35 +2917,71 @@ export function App() {
             <Menu size={18} />
           </button>
           <div className="chat-title-copy">
-            <p className="overline">{selectedChat?.projectName ?? "Project"}</p>
-            <h2>{selectedChat?.title ?? "Select a chat"}</h2>
+            <p className="overline">{topbarProjectLabel}</p>
+            <h2>{topbarTitle}</h2>
           </div>
-          <div className="desktop-status-controls">
-            <StatusControls socketLive={socketLive} state={state} onLogout={logout} />
+          <div className="chat-topbar-actions">
+            <button
+              className="icon-button"
+              type="button"
+              onClick={refreshSelectedChat}
+              disabled={!selectedChatId || refreshingChat}
+              aria-label="Refresh this chat"
+              title="Refresh this chat"
+            >
+              {refreshingChat ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            </button>
+            <div className="desktop-status-controls">
+              <StatusControls
+                socketLive={socketLive}
+                state={state}
+                notificationStatus={notificationStatus}
+                notificationBusy={notificationBusy}
+                onNotifications={handleNotificationsClick}
+                onLogout={logout}
+              />
+            </div>
           </div>
         </header>
 
         <div className="chat-content">
-          {loadingDetail ? (
+          {chatShellIsLoading ? (
             <div className="loading-state">
               <Loader2 className="spin" size={24} />
             </div>
           ) : selectedChat ? (
             <div className="chat-thread" aria-label="Recent chat messages">
               {visibleMessages.length ? (
-                visibleMessages.map((message) => (
-                  <article key={message.id} className={`chat-bubble is-${message.role}`}>
-                    <div className="bubble-meta">
-                      <span>{message.role === "user" ? "You" : "Codex"}</span>
-                      <time>{formatDate(message.createdAt)}</time>
-                    </div>
-                    <FormattedMessage
-                      text={message.text}
-                      emptyText={message.role === "user" ? "No prompt text." : "No response text."}
-                      token={token}
-                    />
-                  </article>
-                ))
+                visibleMessages.map((message, index) => {
+                  const runDuration = responseRunDuration(visibleMessages, index);
+
+                  return (
+                    <Fragment key={message.id}>
+                      <article className={`chat-bubble is-${message.role}`}>
+                        <div className="bubble-meta">
+                          <span>{message.role === "user" ? "You" : "Codex"}</span>
+                          <time>{formatDate(message.createdAt)}</time>
+                          {runDuration ? (
+                            <span className="bubble-duration" title="Run duration">
+                              <Clock3 size={12} />
+                              {runDuration}
+                            </span>
+                          ) : null}
+                        </div>
+                        <FormattedMessage
+                          text={message.text}
+                          emptyText={message.role === "user" ? "No prompt text." : "No response text."}
+                          token={token}
+                        />
+                      </article>
+                      {message.role === "assistant" && message.isFinal ? (
+                        <div className="run-complete-separator" role="separator" aria-label="Run complete">
+                          <span>Run complete</span>
+                        </div>
+                      ) : null}
+                    </Fragment>
+                  );
+                })
               ) : (
                 <div className="empty-chat">
                   <Clock3 size={26} />
@@ -2020,7 +2996,7 @@ export function App() {
           )}
         </div>
 
-        {globalQueueCount ? (
+        {selectedQueueCount ? (
           <section className="command-queue" aria-labelledby="command-queue-title">
             <div className="queue-header">
               <div className="queue-title">
@@ -2028,12 +3004,12 @@ export function App() {
                 <h3 id="command-queue-title">Command queue</h3>
               </div>
               <span className="queue-count">
-                {globalQueueCount} queued
+                {selectedQueueCount} queued
               </span>
             </div>
 
-            <div className="queue-list" aria-label="Global command queue">
-              {queuedLocalCommands.map((command) => (
+            <div className="queue-list" aria-label="Selected chat command queue">
+              {selectedQueuedLocalCommands.map((command) => (
                 <article key={command.id} className="queue-item is-queued">
                   <div className="queue-status-row">
                     <span className="queue-status">
@@ -2042,6 +3018,16 @@ export function App() {
                     </span>
                     <span className="queue-actions">
                       <time>{formatRelative(command.createdAt)}</time>
+                      <button
+                        className="queue-steer"
+                        type="button"
+                        onClick={() => void steerQueuedCommand(command)}
+                        disabled={selectedJob?.status !== "running" || command.status !== "pending"}
+                        aria-label="Steer queued prompt into running chat"
+                        title="Steer into running chat"
+                      >
+                        <ArrowRight size={14} />
+                      </button>
                       <button
                         className="queue-remove"
                         type="button"
@@ -2054,12 +3040,10 @@ export function App() {
                     </span>
                   </div>
                   <p className="queue-preview">{previewText(command.text, "Prompt")}</p>
-                  <p className="queue-detail">
-                    {chatLabelById.get(command.chatId) ?? "Unknown chat"} · {localCommandDetailText(command)}
-                  </p>
+                  <p className="queue-detail">{localCommandDetailText(command)}</p>
                 </article>
               ))}
-              {queuedServerJobs.map((job) => (
+              {selectedQueuedServerJobs.map((job) => (
                 <article key={job.id} className={`queue-item is-${job.status}`}>
                   <div className="queue-status-row">
                     <span className="queue-status">
@@ -2069,20 +3053,28 @@ export function App() {
                     <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
                   </div>
                   <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
-                  <p className="queue-detail">
-                    {chatLabelById.get(job.chatId) ?? "Unknown chat"} · {jobDetailText(job)}
-                  </p>
+                  <p className="queue-detail">{jobDetailText(job)}</p>
                 </article>
               ))}
             </div>
           </section>
         ) : null}
 
-        {selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
+        {selectedPromptReceipt ? (
+          <div className={`job-strip is-${selectedPromptReceipt.status}`}>
+            {selectedPromptReceipt.status === "sending" ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+            <span className="job-strip-status">
+              <span className="job-strip-label">{selectedPromptReceipt.message}</span>
+            </span>
+            <small>{selectedPromptReceipt.promptPreview}</small>
+          </div>
+        ) : selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
           <div className="job-strip">
             <Loader2 className={selectedJob.status === "running" ? "spin" : ""} size={16} />
             <span className="job-strip-status">
-              {selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}
+              <span className="job-strip-label">
+                {selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}
+              </span>
               {selectedJob.status === "running" ? (
                 <span className="job-duration" aria-label={`Elapsed ${selectedJobDuration}`}>
                   <Clock3 size={13} />
@@ -2094,40 +3086,52 @@ export function App() {
           </div>
         ) : null}
 
-        <form className={`composer ${composerExpanded ? "is-expanded" : ""}`} onSubmit={sendPrompt}>
-          <input
-            ref={fileInputRef}
-            className="file-input"
-            type="file"
-            multiple
-            onChange={(event) => {
-              addAttachments(event.currentTarget.files);
-              event.currentTarget.value = "";
-            }}
-          />
+        <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
           <div className="composer-field">
             <button
               className="attach-button"
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={openAttachmentPicker}
               disabled={!selectedChatId || sending || pendingAttachments.length >= maxAttachmentFiles}
               aria-label="Attach files"
               title="Attach files"
             >
               <Paperclip size={18} />
             </button>
-            <textarea
-              ref={composerTextareaRef}
-              rows={1}
-              value={draft}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                setComposerExpanded(resizeTextareaElement(event.currentTarget));
-              }}
-              placeholder="New prompt"
+            <div
+              ref={composerEditorRef}
+              className="composer-editor"
+              role="textbox"
+              aria-label="New prompt"
+              aria-multiline="true"
+              aria-disabled={!selectedChatId || sending}
+              data-placeholder="New prompt"
+              data-disabled={!selectedChatId || sending ? "true" : "false"}
+              contentEditable={Boolean(selectedChatId && !sending)}
+              suppressContentEditableWarning
+              inputMode="text"
+              autoCapitalize="sentences"
+              autoCorrect="on"
               spellCheck={false}
+              data-form-type="other"
+              data-lpignore="true"
+              data-1p-ignore="true"
+              onInput={(event) => {
+                setDraft(textFromComposerEditor(event.currentTarget));
+                setComposerExpanded(composerShouldExpand(event.currentTarget));
+              }}
+              onPaste={(event) => {
+                event.preventDefault();
+                document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+              }}
             />
-            <button type="submit" disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}>
+            <button
+              className="send-button"
+              type="button"
+              onPointerDown={sendPromptFromPointer}
+              onClick={sendPromptFromClick}
+              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}
+            >
               {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
               Send
             </button>
@@ -2152,7 +3156,7 @@ export function App() {
               </div>
             ) : null}
           </div>
-        </form>
+        </div>
 
       </section>
     </main>

@@ -20,12 +20,20 @@ type EnqueueOptions = {
   textLength: number;
 };
 
+type CreateJobOptions = EnqueueOptions & {
+  kind: NonNullable<CodexRunJob["kind"]>;
+  status: CodexRunJob["status"];
+  message: string;
+};
+
 const maxRecentJobs = 160;
 const maxHeartbeatLength = 1200;
 const maxHeartbeatHistory = 8;
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
 const transcriptVerifyAttempts = Number(process.env.CODEX_TRANSCRIPT_VERIFY_ATTEMPTS ?? 5);
 const transcriptVerifyDelayMs = Number(process.env.CODEX_TRANSCRIPT_VERIFY_DELAY_MS ?? 350);
+const postTurnCompletedGraceMs = Number(process.env.CODEX_POST_TURN_COMPLETED_GRACE_MS ?? 15000);
+const reconcileLogBytes = Number(process.env.CODEX_RECONCILE_LOG_BYTES ?? 2 * 1024 * 1024);
 
 function resolveCliPath(): string {
   const configured = process.env.CODEX_CLI_PATH?.trim();
@@ -140,10 +148,41 @@ function heartbeatFromRecord(record: unknown): string | null {
   return null;
 }
 
+function isTurnCompletedRecord(record: unknown): boolean {
+  if (!record || typeof record !== "object") {
+    return false;
+  }
+
+  const candidate = record as {
+    type?: string;
+    payload?: {
+      type?: string;
+    };
+  };
+
+  return candidate.type === "turn.completed" || candidate.payload?.type === "turn.completed";
+}
+
+async function readFileTail(filePath: string, maxBytes: number): Promise<string> {
+  const stat = await fs.stat(filePath);
+  const bytesToRead = Math.min(Math.max(1, maxBytes), stat.size);
+  const buffer = Buffer.alloc(bytesToRead);
+  const handle = await fs.open(filePath, "r");
+
+  try {
+    await handle.read(buffer, 0, bytesToRead, stat.size - bytesToRead);
+  } finally {
+    await handle.close();
+  }
+
+  return buffer.toString("utf8");
+}
+
 export class CodexRunner {
   private readonly onJobChange?: CodexRunnerOptions["onJobChange"];
   private readonly queue: Array<{ job: CodexRunJob; text: string }> = [];
   private readonly jobs = new Map<string, CodexRunJob>();
+  private readonly jobTexts = new Map<string, string>();
   private readonly runningChatIds = new Set<string>();
 
   readonly cliPath = resolveCliPath();
@@ -175,20 +214,33 @@ export class CodexRunner {
     return this.sortedJobs.filter((job) => job.chatId === chatId);
   }
 
+  async reconcileChatJobs(chatId: string): Promise<CodexRunJob[]> {
+    const runningJobs = this.jobsForChat(chatId).filter((job) => job.status === "running");
+
+    for (const job of runningJobs) {
+      if (await this.stdoutHasTurnCompleted(job)) {
+        await this.recoverCompletedJob(job);
+      }
+    }
+
+    return this.jobsForChat(chatId);
+  }
+
   private get sortedJobs(): CodexRunJob[] {
     return [...this.jobs.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   }
 
-  enqueue(options: EnqueueOptions): CodexRunJob {
+  private createJob(options: CreateJobOptions): CodexRunJob {
     const createdAt = new Date().toISOString();
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
-    const logBase = `${createdAt.replace(/[:.]/g, "-")}-${safeSegment(options.chatId)}-${safeSegment(id)}`;
+    const logBase = `${createdAt.replace(/[:.]/g, "-")}-${safeSegment(options.kind)}-${safeSegment(options.chatId)}-${safeSegment(id)}`;
     const job: CodexRunJob = {
       id,
       chatId: options.chatId,
       projectPath: options.projectPath,
-      status: "queued",
+      status: options.status,
+      kind: options.kind,
       createdAt,
       promptPreview: options.promptPreview,
       promptHash: options.promptHash,
@@ -199,16 +251,41 @@ export class CodexRunner {
         stderr: path.join(runLogDir, `${logBase}.stderr.log`),
         lastMessage: path.join(runLogDir, `${logBase}.last-message.txt`)
       },
-      message: "Queued for Codex CLI on the target laptop"
+      message: options.message
     };
 
     job.command = [this.cliPath, ...this.argsForJob(job)];
     this.jobs.set(id, job);
+    this.jobTexts.set(id, options.text);
+
+    return job;
+  }
+
+  enqueue(options: EnqueueOptions): CodexRunJob {
+    const job = this.createJob({
+      ...options,
+      kind: "prompt",
+      status: "queued",
+      message: "Queued for Codex CLI on the target laptop"
+    });
+
     this.queue.push({ job, text: options.text });
     this.refreshQueuePositions();
     this.emit(job, "queued");
     void this.processNext();
 
+    return job;
+  }
+
+  steer(options: EnqueueOptions): CodexRunJob {
+    const job = this.createJob({
+      ...options,
+      kind: "steer",
+      status: "running",
+      message: "Steering Codex CLI on target laptop"
+    });
+
+    void this.runJob(job, options.text, { bypassChatGate: true });
     return job;
   }
 
@@ -253,12 +330,16 @@ export class CodexRunner {
     }
   }
 
-  private async runJob(job: CodexRunJob, text: string): Promise<void> {
+  private async runJob(job: CodexRunJob, text: string, options: { bypassChatGate?: boolean } = {}): Promise<void> {
     await fs.mkdir(path.dirname(job.logPaths.stdout), { recursive: true });
     job.status = "running";
     job.startedAt = new Date().toISOString();
     job.command = [this.cliPath, ...this.argsForJob(job)];
-    job.message = this.simulationMode ? "Simulating Codex CLI run" : "Running Codex CLI on target laptop";
+    job.message = this.simulationMode
+      ? "Simulating Codex CLI run"
+      : job.kind === "steer"
+        ? "Steering Codex CLI on target laptop"
+        : "Running Codex CLI on target laptop";
     this.emit(job, "started");
 
     if (this.simulationMode) {
@@ -272,6 +353,7 @@ export class CodexRunner {
       job.finishedAt = new Date().toISOString();
       job.message = "Simulation completed";
       this.emit(job, "completed");
+      this.jobTexts.delete(job.id);
       return;
     }
 
@@ -279,11 +361,94 @@ export class CodexRunner {
       const stdout = createWriteStream(job.logPaths.stdout, { flags: "a" });
       const stderr = createWriteStream(job.logPaths.stderr, { flags: "a" });
       let stdoutBuffer = "";
+      let completed = false;
+      let childClosed = false;
+      let completionPromise: Promise<void> | undefined;
+      let postCompletionKillTimer: ReturnType<typeof setTimeout> | undefined;
       const child = spawn(this.cliPath, this.argsForJob(job), {
         cwd: existsSync(job.projectPath) ? job.projectPath : os.homedir(),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
+
+      const clearPostCompletionKillTimer = () => {
+        if (postCompletionKillTimer) {
+          clearTimeout(postCompletionKillTimer);
+          postCompletionKillTimer = undefined;
+        }
+      };
+
+      const finishFromTurnCompleted = () => {
+        completionPromise ??= completeJob("completed", 0, null, "turn.completed");
+
+        if (postTurnCompletedGraceMs > 0 && !postCompletionKillTimer) {
+          postCompletionKillTimer = setTimeout(() => {
+            if (!childClosed && !child.killed) {
+              child.kill();
+            }
+          }, postTurnCompletedGraceMs);
+          postCompletionKillTimer.unref?.();
+        }
+      };
+
+      const handleLine = (line: string) => {
+        if (this.handleStdoutLine(job, line) === "turn.completed") {
+          finishFromTurnCompleted();
+        }
+      };
+
+      const completeJob = async (
+        status: "completed" | "failed",
+        code: number | null,
+        signal: NodeJS.Signals | null,
+        source: "close" | "turn.completed"
+      ) => {
+        if (completed) {
+          resolve();
+          return;
+        }
+
+        if (job.status === "completed" || job.status === "failed") {
+          completed = true;
+          resolve();
+          return;
+        }
+
+        completed = true;
+        job.exitCode = code;
+        job.signal = signal;
+        job.finishedAt = new Date().toISOString();
+        job.status = status;
+
+        try {
+          job.codexTranscript = await this.verifyCodexTranscript(job, text);
+
+          if (status === "completed") {
+            const sourceMessage = source === "turn.completed" ? "Codex CLI reported turn.completed" : "Codex CLI completed";
+            job.message = job.codexTranscript.responseVisible
+              ? `${sourceMessage} and saved to Codex transcript`
+              : `${sourceMessage}; Codex transcript visibility was not fully confirmed`;
+          } else {
+            job.message = `Codex CLI failed with exit code ${code ?? "unknown"}`;
+          }
+
+          this.emit(job, status === "completed" ? "completed" : "failed");
+        } catch (error: unknown) {
+          stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+          job.status = "failed";
+          job.message = error instanceof Error ? error.message : "Codex CLI transcript verification failed";
+          this.emit(job, "failed");
+        } finally {
+          if (job.status === "completed" || job.status === "failed") {
+            this.jobTexts.delete(job.id);
+          }
+
+          if (options.bypassChatGate) {
+            this.processNext();
+          }
+          resolve();
+        }
+      };
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout.write(chunk);
@@ -293,7 +458,7 @@ export class CodexRunner {
         stdoutBuffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          this.handleStdoutLine(job, line);
+          handleLine(line);
         }
       });
       child.stderr.pipe(stderr);
@@ -305,30 +470,19 @@ export class CodexRunner {
 
       child.on("close", (code, signal) => {
         void (async () => {
+          childClosed = true;
+          clearPostCompletionKillTimer();
+
           if (stdoutBuffer.trim()) {
-            this.handleStdoutLine(job, stdoutBuffer);
+            handleLine(stdoutBuffer);
           }
 
+          completionPromise ??= completeJob(code === 0 ? "completed" : "failed", code, signal, "close");
+          await completionPromise;
           stdout.end();
           stderr.end();
-          job.exitCode = code;
-          job.signal = signal;
-          job.finishedAt = new Date().toISOString();
-          job.status = code === 0 ? "completed" : "failed";
-
-          if (code === 0) {
-            job.codexTranscript = await this.verifyCodexTranscript(job, text);
-            job.message = job.codexTranscript.responseVisible
-              ? "Codex CLI completed and saved to Codex transcript"
-              : "Codex CLI completed; Codex transcript visibility was not fully confirmed";
-          } else {
-            job.codexTranscript = await this.verifyCodexTranscript(job, text);
-            job.message = `Codex CLI failed with exit code ${code ?? "unknown"}`;
-          }
-
-          this.emit(job, job.status === "completed" ? "completed" : "failed");
-          resolve();
         })().catch((error: unknown) => {
+          clearPostCompletionKillTimer();
           stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
           stderr.end();
           stdout.end();
@@ -337,11 +491,63 @@ export class CodexRunner {
           job.finishedAt = new Date().toISOString();
           job.status = "failed";
           job.message = error instanceof Error ? error.message : "Codex CLI transcript verification failed";
+          this.jobTexts.delete(job.id);
           this.emit(job, "failed");
           resolve();
         });
       });
     });
+  }
+
+  private async stdoutHasTurnCompleted(job: CodexRunJob): Promise<boolean> {
+    try {
+      const tail = await readFileTail(job.logPaths.stdout, reconcileLogBytes);
+
+      for (const line of tail.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        try {
+          if (isTurnCompletedRecord(JSON.parse(trimmed))) {
+            return true;
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      return false;
+    }
+
+    return false;
+  }
+
+  private async recoverCompletedJob(job: CodexRunJob): Promise<void> {
+    if (job.status !== "running") {
+      return;
+    }
+
+    const text = this.jobTexts.get(job.id);
+
+    job.status = "completed";
+    job.exitCode = 0;
+    job.signal = null;
+    job.finishedAt = new Date().toISOString();
+
+    if (text) {
+      job.codexTranscript = await this.verifyCodexTranscript(job, text);
+    }
+
+    job.message = job.codexTranscript?.responseVisible
+      ? "Codex CLI completion recovered from turn.completed and saved to Codex transcript"
+      : "Codex CLI completion recovered from turn.completed; transcript visibility was not fully confirmed";
+
+    this.jobTexts.delete(job.id);
+    this.runningChatIds.delete(job.chatId);
+    this.emit(job, "completed");
+    this.processNext();
   }
 
   private async findSessionPath(chatId: string): Promise<string | null> {
@@ -467,20 +673,27 @@ export class CodexRunner {
     return status;
   }
 
-  private handleStdoutLine(job: CodexRunJob, line: string) {
+  private handleStdoutLine(job: CodexRunJob, line: string): "turn.completed" | null {
     const trimmed = line.trim();
     if (!trimmed) {
-      return;
+      return null;
     }
 
     try {
-      const heartbeat = heartbeatFromRecord(JSON.parse(trimmed));
+      const record = JSON.parse(trimmed);
+      if (isTurnCompletedRecord(record)) {
+        return "turn.completed";
+      }
+
+      const heartbeat = heartbeatFromRecord(record);
       if (heartbeat) {
         this.updateHeartbeat(job, heartbeat);
       }
     } catch {
-      return;
+      return null;
     }
+
+    return null;
   }
 
   private updateHeartbeat(job: CodexRunJob, text: string) {

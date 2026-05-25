@@ -13,6 +13,14 @@ import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import type { BridgeEvent, BridgeState, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
+import {
+  countPushSubscriptions,
+  getPushPublicKey,
+  removePushSubscription,
+  savePushSubscription,
+  sendJobPushNotification,
+  sendTestPushNotification
+} from "./webPush.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const clientOrigin = process.env.CLIENT_ORIGIN;
@@ -44,6 +52,28 @@ const runner = new CodexRunner({
       chatId: job.chatId,
       job
     });
+
+    if (event === "completed" || event === "failed") {
+      void sendJobPushNotification(job, event)
+        .then((result) => {
+          if (result.attempted || result.removed || result.failed) {
+            pushEvent(result.failed ? "error" : "status", "Push notification processed", {
+              action: "push-job-notification",
+              chatId: job.chatId,
+              jobId: job.id,
+              result
+            });
+          }
+        })
+        .catch((error: unknown) => {
+          pushEvent("error", "Push notification failed", {
+            action: "push-job-notification-failed",
+            chatId: job.chatId,
+            jobId: job.id,
+            error: describeError(error)
+          });
+        });
+    }
   }
 });
 const events: BridgeEvent[] = [];
@@ -158,6 +188,76 @@ function uploadRootForProject(projectPath: string, chatId: string, createdAt: Da
   const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
 
   return path.join(basePath, ".codex-remote", "uploads", safeSegment(chatId), timestamp);
+}
+
+function uploadRootsForChat(projectPath: string, chatId: string): string[] {
+  const roots = new Set<string>();
+
+  if (fs.existsSync(projectPath)) {
+    roots.add(path.join(projectPath, ".codex-remote", "uploads", safeSegment(chatId)));
+  }
+
+  roots.add(path.join(os.homedir(), "codex-remote-uploads", ".codex-remote", "uploads", safeSegment(chatId)));
+
+  return [...roots];
+}
+
+async function listChatUploadedImages(chatId: string, projectPath: string): Promise<UploadedPromptFile[]> {
+  const files: UploadedPromptFile[] = [];
+
+  async function visit(dir: string, root: string) {
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        await visit(entryPath, root);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const extension = path.extname(entry.name).toLowerCase();
+
+      if (!imageContentTypes.has(extension)) {
+        continue;
+      }
+
+      try {
+        const stat = await fsp.stat(entryPath);
+        const relativePath = fs.existsSync(projectPath)
+          ? path.relative(projectPath, entryPath)
+          : path.relative(root, entryPath);
+
+        files.push({
+          name: entry.name,
+          originalName: entry.name.replace(/^\d+-/, ""),
+          type: imageContentTypes.get(extension) ?? "image/*",
+          size: stat.size,
+          path: entryPath,
+          relativePath,
+          uploadedAt: new Date(stat.mtimeMs).toISOString()
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  for (const root of uploadRootsForChat(projectPath, chatId)) {
+    await visit(root, root);
+  }
+
+  return files.sort((a, b) => Date.parse(b.uploadedAt) - Date.parse(a.uploadedAt));
 }
 
 async function listShortcutInstructionFiles(): Promise<ShortcutInstructionFile[]> {
@@ -339,6 +439,10 @@ function hasValidToken(value: unknown): boolean {
   return typeof value === "string" && controlToken.length > 0 && value === controlToken;
 }
 
+function tokenFromRequest(req: express.Request) {
+  return req.header("x-control-token") ?? (typeof req.query.token === "string" ? req.query.token : undefined);
+}
+
 function requireControlAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!tokenRequired) {
     next();
@@ -358,7 +462,7 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
     return;
   }
 
-  if (!hasValidToken(req.header("x-control-token"))) {
+  if (!hasValidToken(tokenFromRequest(req))) {
     pushEvent("error", "Control request rejected because the token was missing or invalid", {
       action: "auth-rejected",
       reason: "invalid-token",
@@ -468,7 +572,7 @@ app.get("/api/local-image", requireControlAuth, async (req, res) => {
 
     res.setHeader("Cache-Control", "private, max-age=300");
     res.type(resolved.contentType);
-    res.sendFile(resolved.path);
+    res.sendFile(resolved.path, { dotfiles: "allow" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not read screenshot";
 
@@ -502,6 +606,91 @@ app.get("/api/debug/events", requireControlAuth, async (req, res) => {
   }
 });
 
+app.get("/api/notifications/public-key", requireControlAuth, async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      publicKey: await getPushPublicKey(),
+      subscriptions: await countPushSubscriptions()
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not prepare notifications";
+    pushEvent("error", message, {
+      action: "notifications-public-key",
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/notifications/subscribe", requireControlAuth, async (req, res) => {
+  try {
+    const stored = await savePushSubscription(req.body?.subscription, req.header("user-agent")?.slice(0, 240));
+
+    pushEvent("status", "Push notifications enabled for a device", {
+      action: "notifications-subscribe",
+      request: requestContext(req),
+      subscriptionId: stored.id
+    });
+
+    res.json({
+      ok: true,
+      subscriptionId: stored.id
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not save notification subscription";
+    pushEvent("error", message, {
+      action: "notifications-subscribe-failed",
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.delete("/api/notifications/subscribe", requireControlAuth, async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      removed: await removePushSubscription(req.body?.endpoint)
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not remove notification subscription";
+    pushEvent("error", message, {
+      action: "notifications-unsubscribe-failed",
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/notifications/test", requireControlAuth, async (req, res) => {
+  try {
+    const result = await sendTestPushNotification();
+
+    pushEvent(result.failed ? "error" : "status", "Test push notification processed", {
+      action: "notifications-test",
+      request: requestContext(req),
+      result
+    });
+
+    res.json({
+      ok: result.failed === 0,
+      result
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not send test notification";
+    pushEvent("error", message, {
+      action: "notifications-test-failed",
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
 app.get("/api/jobs", requireControlAuth, (_req, res) => {
   res.json({
     ok: true,
@@ -512,14 +701,25 @@ app.get("/api/jobs", requireControlAuth, (_req, res) => {
   });
 });
 
-app.get("/api/chats/:id/jobs", requireControlAuth, (req, res) => {
+app.get("/api/chats/:id/jobs", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
-  res.json({
-    ok: true,
-    chatId,
-    jobs: runner.jobsForChat(chatId)
-  });
+  try {
+    res.json({
+      ok: true,
+      chatId,
+      jobs: await runner.reconcileChatJobs(chatId)
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load command queue";
+    pushEvent("error", message, {
+      action: "chat-jobs",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
 });
 
 app.get("/api/chats", requireControlAuth, async (req, res) => {
@@ -535,6 +735,14 @@ app.get("/api/chats", requireControlAuth, async (req, res) => {
     });
     res.status(500).json({ ok: false, message });
   }
+});
+
+app.post("/api/projects", requireControlAuth, async (req, res) => {
+  pushEvent("status", "Remote project creation is disabled", {
+    action: "project-create-disabled",
+    request: requestContext(req)
+  });
+  res.status(410).json({ ok: false, message: "Starting new chats from the remote is disabled" });
 });
 
 app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
@@ -556,6 +764,47 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
       action: "get-chat",
       chatId,
       request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/chats/:id/fork", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  pushEvent("status", "Remote chat forking is disabled", {
+    action: "chat-fork-disabled",
+    request: requestContext(req),
+    sourceChatId: chatId
+  });
+  res.status(410).json({ ok: false, message: "Forking chats from the remote is disabled" });
+});
+
+app.get("/api/chats/:id/uploads", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    const files = await listChatUploadedImages(chat.id, chat.projectPath);
+
+    res.json({
+      ok: true,
+      chatId,
+      files
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load uploaded screenshots";
+
+    pushEvent("error", message, {
+      action: "chat-uploads-failed",
+      request: requestContext(req),
+      chatId,
       error: describeError(error)
     });
     res.status(500).json({ ok: false, message });
@@ -727,6 +976,64 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     const message = error instanceof Error ? error.message : "Could not queue prompt";
     pushEvent("error", message, {
       action: "chat-prompt-queue-failed",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+
+  if (!text.trim()) {
+    res.status(400).json({ ok: false, message: "Text is empty" });
+    return;
+  }
+
+  if (text.trimEnd().length > maxPromptLength) {
+    res.status(400).json({ ok: false, message: `Text is longer than the ${maxPromptLength} character safety limit` });
+    return;
+  }
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    const promptSummary = summarizePrompt(text);
+    const job = runner.steer({
+      chatId,
+      projectPath: chat.projectPath,
+      text: text.trimEnd(),
+      promptPreview: String(promptSummary.promptPreview ?? ""),
+      promptHash: String(promptSummary.promptHash ?? ""),
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
+    });
+
+    pushEvent("action", "Steering prompt sent to Codex session on target laptop", {
+      action: "chat-prompt-steer",
+      chatId,
+      route: "POST /api/chats/:id/steer",
+      request: requestContext(req),
+      ...promptSummary,
+      job
+    });
+
+    res.status(202).json({
+      ok: true,
+      message: "Steering prompt sent to the running Codex chat",
+      job
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not send steering prompt";
+    pushEvent("error", message, {
+      action: "chat-prompt-steer-failed",
       chatId,
       request: requestContext(req),
       error: describeError(error)

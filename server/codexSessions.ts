@@ -18,6 +18,8 @@ type IndexedSession = {
 };
 
 type ParsedSession = ChatDetail & {
+  indexed: boolean;
+  source?: string;
   sortTime: number;
 };
 
@@ -150,6 +152,50 @@ async function collectJsonlFiles(root: string): Promise<string[]> {
     .map((entry) => entry.filePath);
 }
 
+export async function findSessionFile(id: string): Promise<string | null> {
+  const files = await collectJsonlFiles(sessionsRoot);
+
+  return files.find((filePath) => idFromFilename(filePath) === id) ?? null;
+}
+
+export function getSessionsRoot(): string {
+  return sessionsRoot;
+}
+
+export function getSessionIndexPath(): string {
+  return sessionIndexPath;
+}
+
+export async function ensureSessionIndexEntry(id: string, threadName: string, updatedAt: string) {
+  const name = threadName.replace(/\s+/g, " ").trim();
+
+  if (!id || !name) {
+    return;
+  }
+
+  try {
+    const index = await readSessionIndex();
+    const current = index.get(id);
+
+    if (current?.threadName === name && Date.parse(current.updatedAt) >= Date.parse(updatedAt)) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  await fs.mkdir(path.dirname(sessionIndexPath), { recursive: true });
+  await fs.appendFile(
+    sessionIndexPath,
+    `${JSON.stringify({
+      id,
+      thread_name: name,
+      updated_at: updatedAt
+    })}\n`,
+    "utf8"
+  );
+}
+
 async function readFileSlice(filePath: string, start: number, length: number): Promise<Buffer> {
   if (length <= 0) {
     return Buffer.alloc(0);
@@ -210,11 +256,13 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
   let id = fallbackId;
   let projectPath = "Unknown project";
   let createdAt: string | undefined;
+  let source: string | undefined;
   let lastPrompt: ChatMessageExcerpt | null = null;
   let lastAssistant: ChatMessageExcerpt | null = null;
   let lastFinalAssistant: ChatMessageExcerpt | null = null;
   let lastAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let lastFinalAssistantAfterPrompt: ChatMessageExcerpt | null = null;
+  let newestRecordMs = Number.NaN;
   const userMessages: ChatTranscriptMessage[] = [];
   const assistantMessages: ChatTranscriptMessage[] = [];
 
@@ -237,6 +285,7 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
           role?: string;
           phase?: string;
           content?: unknown;
+          source?: string;
         };
       };
 
@@ -244,6 +293,13 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
         id = record.payload.id ?? id;
         projectPath = record.payload.cwd ?? projectPath;
         createdAt = record.payload.timestamp ?? record.timestamp ?? createdAt;
+        const metaMs = Date.parse(createdAt ?? "");
+
+        if (Number.isFinite(metaMs)) {
+          newestRecordMs = Number.isFinite(newestRecordMs) ? Math.max(newestRecordMs, metaMs) : metaMs;
+        }
+
+        source = record.payload.source;
         break;
       }
     } catch {
@@ -256,7 +312,7 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
   const buffer = await readFileSlice(filePath, start, bytesToRead);
 
   for (const line of buffer.toString("utf8").split(/\r?\n/)) {
-    if (!line.includes('"type":"message"')) {
+    if (!line.includes('"timestamp"') && !line.includes('"type":"message"')) {
       continue;
     }
 
@@ -271,6 +327,11 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
           content?: unknown;
         };
       };
+      const recordMs = Date.parse(record.timestamp ?? "");
+
+      if (Number.isFinite(recordMs)) {
+        newestRecordMs = Number.isFinite(newestRecordMs) ? Math.max(newestRecordMs, recordMs) : recordMs;
+      }
 
       if (record.payload?.type !== "message") {
         continue;
@@ -309,7 +370,8 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
           id: transcriptId("assistant", timestamp, assistantMessages.length),
           role: "assistant",
           text,
-          createdAt: timestamp
+          createdAt: timestamp,
+          isFinal: isFinalAnswer
         });
 
         if (isFinalAnswer) {
@@ -327,7 +389,8 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
 
   const indexed = index.get(id);
   const indexedUpdated = safeDate(indexed?.updatedAt, stat.mtimeMs);
-  const updatedMs = Math.max(indexedUpdated.ms, stat.mtimeMs);
+  const contentUpdatedMs = Number.isFinite(newestRecordMs) ? newestRecordMs : indexedUpdated.ms;
+  const updatedMs = Math.max(contentUpdatedMs, Date.parse(createdAt ?? "") || 0);
   const updated = { iso: new Date(updatedMs).toISOString(), ms: updatedMs };
   const response = lastFinalAssistantAfterPrompt ?? lastAssistantAfterPrompt ?? lastFinalAssistant ?? lastAssistant;
   const title = indexed?.threadName ?? previewText(lastPrompt?.text ?? "", id);
@@ -352,6 +415,8 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
     lastResponse: response,
     messages,
     hasResponse: Boolean(response),
+    indexed: Boolean(indexed),
+    source,
     sortTime: updated.ms
   };
 }
@@ -401,6 +466,22 @@ async function readSessions(): Promise<ParsedSession[]> {
 
 export async function listChats(): Promise<{ projects: ChatProjectGroup[]; totalChats: number }> {
   const sessions = await readSessions();
+  const missingIndexSessions = sessions
+    .filter((session) => !session.indexed && session.projectName !== "Unknown project")
+    .slice(0, 25);
+
+  if (missingIndexSessions.length) {
+    await Promise.allSettled(
+      missingIndexSessions.map((session) =>
+        ensureSessionIndexEntry(
+          session.id,
+          session.source === "exec" ? session.projectName : session.title,
+          session.updatedAt
+        )
+      )
+    );
+  }
+
   const groups = new Map<string, ChatProjectGroup & { sortTime: number }>();
 
   for (const session of sessions) {
@@ -439,7 +520,40 @@ export async function getChat(id: string): Promise<ChatDetail | null> {
     return null;
   }
 
-  const { sortTime: _sortTime, ...detail } = session;
+  const { indexed: _indexed, source: _source, sortTime: _sortTime, ...detail } = session;
+
+  return detail;
+}
+
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+export async function findNewestChatForProject(projectPath: string, afterMs = 0): Promise<ChatDetail | null> {
+  clearSessionCache();
+
+  const sessions = await readSessions();
+  const session = sessions.find((candidate) => {
+    const createdMs = Date.parse(candidate.createdAt);
+    const updatedMs = Date.parse(candidate.updatedAt);
+    const isNewEnough =
+      !afterMs ||
+      (Number.isFinite(createdMs) && createdMs >= afterMs) ||
+      (Number.isFinite(updatedMs) && updatedMs >= afterMs);
+
+    return samePath(candidate.projectPath, projectPath) && isNewEnough;
+  });
+
+  if (!session) {
+    return null;
+  }
+
+  const { indexed: _indexed, source: _source, sortTime: _sortTime, ...detail } = session;
 
   return detail;
 }

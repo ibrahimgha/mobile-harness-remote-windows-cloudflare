@@ -7,7 +7,7 @@
     "dev": "concurrently -k -n bridge,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
+    "build": "npm run check:ios-composer && tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "service:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 install",
     "service:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 uninstall",
@@ -17,9 +17,11 @@
     "service:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 status",
     "tunnel:dev": "cloudflared tunnel --url http://localhost:5173",
     "tunnel:prod": "cloudflared tunnel --url http://localhost:8787",
-    "check": "tsc -b && tsc -p tsconfig.server.json"
+    "check": "npm run check:ios-composer && tsc -b && tsc -p tsconfig.server.json",
+    "check:ios-composer": "node scripts/check-ios-composer.mjs"
   },
   "dependencies": {
+    "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -29,6 +31,7 @@
     "react-dom": "^19.2.3",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "web-push": "^3.6.7",
     "ws": "^8.18.3"
   },
   "devDependencies": {

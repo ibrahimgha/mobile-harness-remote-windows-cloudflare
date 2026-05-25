@@ -47,6 +47,7 @@ export type CodexRunJob = {
   chatId: string;
   projectPath: string;
   status: CodexRunStatus;
+  kind?: "prompt" | "steer";
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;
@@ -105,6 +106,7 @@ export type ChatMessageExcerpt = {
 export type ChatTranscriptMessage = ChatMessageExcerpt & {
   id: string;
   role: "user" | "assistant";
+  isFinal?: boolean;
 };
 
 export type ChatSummary = {
