@@ -122,6 +122,10 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
   isFinal?: boolean;
 };
 
+type VisibleChatMessage = ChatTranscriptMessage & {
+  isRunFailure?: boolean;
+};
+
 type ChatSummary = {
   id: string;
   title: string;
@@ -979,12 +983,16 @@ function normalizeScreenshotMarkdown(value: string) {
   return output.join("\n");
 }
 
-function localImagePathFromSrc(src: string | undefined) {
+function localImagePathFromSrc(src: string | undefined, basePath?: string) {
   if (!src) {
     return null;
   }
 
   let value = src.trim();
+
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value) && !value.startsWith("file://")) {
+    return null;
+  }
 
   try {
     value = decodeURIComponent(value);
@@ -1015,11 +1023,29 @@ function localImagePathFromSrc(src: string | undefined) {
     return null;
   }
 
-  return /^(?:[a-zA-Z]:\/|\/\/|\/)/.test(value) ? value : null;
+  if (/^(?:[a-zA-Z]:\/|\/\/|\/)/.test(value)) {
+    return value;
+  }
+
+  if (!basePath?.trim()) {
+    return null;
+  }
+
+  return `${basePath.replace(/\\/g, "/").replace(/\/+$/, "")}/${value.replace(/^\.?\//, "")}`;
 }
 
-function AuthenticatedImage({ src, alt, token }: { src: string | undefined; alt: string | undefined; token: string }) {
-  const localPath = useMemo(() => localImagePathFromSrc(src), [src]);
+function AuthenticatedImage({
+  src,
+  alt,
+  token,
+  basePath
+}: {
+  src: string | undefined;
+  alt: string | undefined;
+  token: string;
+  basePath?: string;
+}) {
+  const localPath = useMemo(() => localImagePathFromSrc(src, basePath), [basePath, src]);
   const [failed, setFailed] = useState(false);
   const imageUrl = useMemo(() => {
     if (!localPath) {
@@ -1053,11 +1079,13 @@ function AuthenticatedImage({ src, alt, token }: { src: string | undefined; alt:
 function LocalImageAttachment({
   href,
   label,
-  token
+  token,
+  basePath
 }: {
   href: string | undefined;
   label: ReactNode;
   token: string;
+  basePath?: string;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -1066,12 +1094,24 @@ function LocalImageAttachment({
       <button className="image-attachment-toggle" type="button" onClick={() => setOpen((current) => !current)}>
         {label}
       </button>
-      {open ? <AuthenticatedImage src={href} alt={typeof label === "string" ? label : "Screenshot"} token={token} /> : null}
+      {open ? <AuthenticatedImage src={href} alt={typeof label === "string" ? label : "Screenshot"} token={token} basePath={basePath} /> : null}
     </span>
   );
 }
 
-function FormattedMessage({ text, emptyText, token }: { text: string | undefined; emptyText: string; token: string }) {
+function FormattedMessage({
+  text,
+  emptyText,
+  token,
+  collapseLocalImages = false,
+  basePath
+}: {
+  text: string | undefined;
+  emptyText: string;
+  token: string;
+  collapseLocalImages?: boolean;
+  basePath?: string;
+}) {
   if (!text?.trim()) {
     return <div className="message-empty">{emptyText}</div>;
   }
@@ -1082,18 +1122,20 @@ function FormattedMessage({ text, emptyText, token }: { text: string | undefined
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ children, href }) =>
-            localImagePathFromSrc(href) ? (
-              <LocalImageAttachment href={href} label={children} token={token} />
+            localImagePathFromSrc(href, basePath) && collapseLocalImages ? (
+              <LocalImageAttachment href={href} label={children} token={token} basePath={basePath} />
+            ) : localImagePathFromSrc(href, basePath) ? (
+              <AuthenticatedImage src={href} alt={typeof children === "string" ? children : "Output image"} token={token} basePath={basePath} />
             ) : (
               <a href={href} target="_blank" rel="noreferrer">
                 {children}
               </a>
             ),
           img: ({ src, alt }) =>
-            localImagePathFromSrc(src) ? (
-              <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} />
+            localImagePathFromSrc(src, basePath) && collapseLocalImages ? (
+              <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} basePath={basePath} />
             ) : (
-              <AuthenticatedImage src={src} alt={alt} token={token} />
+              <AuthenticatedImage src={src} alt={alt} token={token} basePath={basePath} />
             )
         }}
       >
@@ -1612,8 +1654,17 @@ export function App() {
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
-  const selectedRunFailures = useMemo(
-    () => selectedJobs.filter((job) => job.status === "failed").slice(0, 5),
+  const runFailureMessages = useMemo<VisibleChatMessage[]>(
+    () =>
+      selectedJobs
+        .filter((job) => job.status === "failed")
+        .map((job) => ({
+          id: `run-failure-${job.id}`,
+          role: "assistant" as const,
+          text: jobDetailText(job),
+          createdAt: job.finishedAt ?? job.createdAt,
+          isRunFailure: true
+        })),
     [selectedJobs]
   );
   const selectedJobDuration =
@@ -1652,7 +1703,21 @@ export function App() {
 
     return fallback;
   }, [selectedChat]);
-  const visibleMessages = transcriptMessages;
+  const visibleMessages = useMemo<VisibleChatMessage[]>(
+    () =>
+      [...transcriptMessages, ...runFailureMessages]
+        .sort((a, b) => {
+          const byTime = (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0);
+
+          if (byTime !== 0) {
+            return byTime;
+          }
+
+          return a.id.localeCompare(b.id);
+        })
+        .slice(-20),
+    [runFailureMessages, transcriptMessages]
+  );
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
@@ -3344,13 +3409,13 @@ export function App() {
             <div className="chat-thread" aria-label="Recent chat messages">
               {visibleMessages.length ? (
                 visibleMessages.map((message, index) => {
-                  const runDuration = responseRunDuration(visibleMessages, index);
+                  const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
 
                   return (
                     <Fragment key={message.id}>
-                      <article className={`chat-bubble is-${message.role}`}>
+                      <article className={`chat-bubble is-${message.role} ${message.isRunFailure ? "is-error" : ""}`}>
                         <div className="bubble-meta">
-                          <span>{message.role === "user" ? "You" : "Codex"}</span>
+                          <span>{message.isRunFailure ? "Codex run failed" : message.role === "user" ? "You" : "Codex"}</span>
                           <time>{formatDate(message.createdAt)}</time>
                           {runDuration ? (
                             <span className="bubble-duration" title="Run duration">
@@ -3363,6 +3428,8 @@ export function App() {
                           text={message.text}
                           emptyText={message.role === "user" ? "No prompt text." : "No response text."}
                           token={token}
+                          collapseLocalImages={message.role === "user"}
+                          basePath={selectedChat.projectPath}
                         />
                       </article>
                       {message.role === "assistant" && message.isFinal ? (
@@ -3378,15 +3445,6 @@ export function App() {
                   <Clock3 size={26} />
                 </div>
               )}
-              {selectedRunFailures.map((job) => (
-                <article key={`run-failure-${job.id}`} className="chat-bubble is-assistant is-error" role="status">
-                  <div className="bubble-meta">
-                    <span>Codex run failed</span>
-                    <time>{formatDate(job.finishedAt ?? job.createdAt)}</time>
-                  </div>
-                  <FormattedMessage text={jobDetailText(job)} emptyText="Run failed before a response was written." token={token} />
-                </article>
-              ))}
               <div ref={chatEndRef} aria-hidden="true" />
             </div>
           ) : (

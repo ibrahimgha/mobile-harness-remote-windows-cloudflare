@@ -1,6 +1,8 @@
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import type { ChatDetail, ChatMessageExcerpt, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
@@ -313,13 +315,9 @@ async function parseSessionFile(
     }
   }
 
-  const bytesToRead = Math.min(stat.size, maxTailBytes);
-  const start = Math.max(0, stat.size - bytesToRead);
-  const buffer = await readFileSlice(filePath, start, bytesToRead);
-
-  for (const line of buffer.toString("utf8").split(/\r?\n/)) {
-    if (!line.includes('"timestamp"') && !line.includes('"type":"message"')) {
-      continue;
+  const consumeTranscriptLine = (line: string) => {
+    if (!line.includes('"payload":{"type":"message"')) {
+      return;
     }
 
     try {
@@ -340,7 +338,7 @@ async function parseSessionFile(
       }
 
       if (record.payload?.type !== "message") {
-        continue;
+        return;
       }
 
       const text = textFromContent(record.payload.content);
@@ -363,7 +361,7 @@ async function parseSessionFile(
         const isDisplayableAssistant = isFinalAnswer || !isHeartbeatText(text);
 
         if (!isDisplayableAssistant) {
-          continue;
+          return;
         }
 
         lastAssistant = { text, createdAt: timestamp };
@@ -389,7 +387,26 @@ async function parseSessionFile(
         }
       }
     } catch {
-      continue;
+      return;
+    }
+  };
+
+  if (maxTailBytes >= stat.size) {
+    const lines = createInterface({
+      input: createReadStream(filePath, { encoding: "utf8" }),
+      crlfDelay: Infinity
+    });
+
+    for await (const line of lines) {
+      consumeTranscriptLine(line);
+    }
+  } else {
+    const bytesToRead = Math.min(stat.size, maxTailBytes);
+    const start = Math.max(0, stat.size - bytesToRead);
+    const buffer = await readFileSlice(filePath, start, bytesToRead);
+
+    for (const line of buffer.toString("utf8").split(/\r?\n/)) {
+      consumeTranscriptLine(line);
     }
   }
 
@@ -398,8 +415,11 @@ async function parseSessionFile(
   const contentUpdatedMs = Number.isFinite(newestRecordMs) ? newestRecordMs : indexedUpdated.ms;
   const updatedMs = Math.max(contentUpdatedMs, Date.parse(createdAt ?? "") || 0);
   const updated = { iso: new Date(updatedMs).toISOString(), ms: updatedMs };
-  const response = lastFinalAssistantAfterPrompt ?? lastAssistantAfterPrompt ?? lastFinalAssistant ?? lastAssistant;
-  const title = indexed?.threadName ?? previewText(lastPrompt?.text ?? "", id);
+  const currentLastPrompt = lastPrompt as ChatMessageExcerpt | null;
+  const response = (lastFinalAssistantAfterPrompt ?? lastAssistantAfterPrompt ?? lastFinalAssistant ?? lastAssistant) as
+    | ChatMessageExcerpt
+    | null;
+  const title = indexed?.threadName ?? previewText(currentLastPrompt?.text ?? "", id);
   const messages = [...userMessages.slice(-10), ...assistantMessages.slice(-10)].sort((a, b) => {
     const byTime = Date.parse(a.createdAt) - Date.parse(b.createdAt);
 
@@ -417,7 +437,7 @@ async function parseSessionFile(
     projectPath,
     createdAt: createdAt ?? new Date(stat.birthtimeMs).toISOString(),
     updatedAt: updated.iso,
-    lastPrompt,
+    lastPrompt: currentLastPrompt,
     lastResponse: response,
     messages,
     hasResponse: Boolean(response),
@@ -533,7 +553,7 @@ export async function getChat(id: string): Promise<ChatDetail | null> {
     return null;
   }
 
-  const session = await parseSessionFile(filePath, await readSessionIndex(), tailBytes);
+  const session = await parseSessionFile(filePath, await readSessionIndex(), Number.POSITIVE_INFINITY);
 
   if (!session) {
     return null;
