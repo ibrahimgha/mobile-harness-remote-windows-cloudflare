@@ -8,9 +8,11 @@ const sessionIndexPath = process.env.CODEX_SESSION_INDEX ?? path.join(os.homedir
 const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? 300);
 const cacheMs = Number(process.env.CODEX_SESSION_CACHE_MS ?? 5000);
 const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024);
+const summaryTailBytes = Number(process.env.CODEX_SESSION_SUMMARY_TAIL_BYTES ?? 768 * 1024);
 const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTES ?? 256 * 1024) || 256 * 1024);
+const parseConcurrency = Math.max(1, Number(process.env.CODEX_SESSION_PARSE_CONCURRENCY ?? 8) || 8);
 
-let sessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
+let summarySessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
 
 type IndexedSession = {
   threadName: string;
@@ -24,7 +26,7 @@ type ParsedSession = ChatDetail & {
 };
 
 export function clearSessionCache() {
-  sessionsCache = null;
+  summarySessionsCache = null;
 }
 
 function textFromContent(content: unknown): string {
@@ -250,7 +252,11 @@ async function readSessionIndex(): Promise<Map<string, IndexedSession>> {
   return index;
 }
 
-async function parseSessionFile(filePath: string, index: Map<string, IndexedSession>): Promise<ParsedSession | null> {
+async function parseSessionFile(
+  filePath: string,
+  index: Map<string, IndexedSession>,
+  maxTailBytes = tailBytes
+): Promise<ParsedSession | null> {
   const stat = await fs.stat(filePath);
   const fallbackId = idFromFilename(filePath);
   let id = fallbackId;
@@ -307,7 +313,7 @@ async function parseSessionFile(filePath: string, index: Map<string, IndexedSess
     }
   }
 
-  const bytesToRead = Math.min(stat.size, tailBytes);
+  const bytesToRead = Math.min(stat.size, maxTailBytes);
   const start = Math.max(0, stat.size - bytesToRead);
   const buffer = await readFileSlice(filePath, start, bytesToRead);
 
@@ -435,20 +441,26 @@ function toSummary(session: ParsedSession): ChatSummary {
   };
 }
 
-async function readSessions(): Promise<ParsedSession[]> {
-  if (sessionsCache && sessionsCache.expiresAt > Date.now()) {
-    return sessionsCache.sessions;
+async function readSessions(maxTailBytes = summaryTailBytes): Promise<ParsedSession[]> {
+  const canUseCache = maxTailBytes === summaryTailBytes;
+
+  if (canUseCache && summarySessionsCache && summarySessionsCache.expiresAt > Date.now()) {
+    return summarySessionsCache.sessions;
   }
 
   const index = await readSessionIndex();
   const files = await collectJsonlFiles(sessionsRoot);
   const parsed: Array<ParsedSession | null> = [];
 
-  for (const filePath of files) {
-    try {
-      parsed.push(await parseSessionFile(filePath, index));
-    } catch {
-      continue;
+  for (let offset = 0; offset < files.length; offset += parseConcurrency) {
+    const batch = await Promise.allSettled(
+      files.slice(offset, offset + parseConcurrency).map((filePath) => parseSessionFile(filePath, index, maxTailBytes))
+    );
+
+    for (const result of batch) {
+      if (result.status === "fulfilled") {
+        parsed.push(result.value);
+      }
     }
   }
 
@@ -456,10 +468,12 @@ async function readSessions(): Promise<ParsedSession[]> {
     .filter((session): session is ParsedSession => Boolean(session))
     .sort((a, b) => b.sortTime - a.sortTime);
 
-  sessionsCache = {
-    expiresAt: Date.now() + cacheMs,
-    sessions
-  };
+  if (canUseCache) {
+    summarySessionsCache = {
+      expiresAt: Date.now() + cacheMs,
+      sessions
+    };
+  }
 
   return sessions;
 }
@@ -513,8 +527,13 @@ export async function listChats(): Promise<{ projects: ChatProjectGroup[]; total
 }
 
 export async function getChat(id: string): Promise<ChatDetail | null> {
-  const sessions = await readSessions();
-  const session = sessions.find((candidate) => candidate.id === id);
+  const filePath = await findSessionFile(id);
+
+  if (!filePath) {
+    return null;
+  }
+
+  const session = await parseSessionFile(filePath, await readSessionIndex(), tailBytes);
 
   if (!session) {
     return null;

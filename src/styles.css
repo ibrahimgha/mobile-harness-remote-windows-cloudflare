@@ -753,6 +753,15 @@ p {
   align-self: flex-start;
 }
 
+.chat-bubble.is-error {
+  border-color: #f0b2aa;
+  background: var(--red-soft);
+}
+
+.chat-bubble.is-error .bubble-meta {
+  color: var(--red);
+}
+
 .bubble-meta {
   display: flex;
   flex-wrap: wrap;

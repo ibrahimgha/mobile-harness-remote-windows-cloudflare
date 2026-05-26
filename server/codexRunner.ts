@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, existsSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,12 @@ type CreateJobOptions = EnqueueOptions & {
   message: string;
 };
 
+type RunLogCandidate = {
+  name: string;
+  stdoutPath: string;
+  stat: Stats;
+};
+
 const maxRecentJobs = 160;
 const maxHeartbeatLength = 1200;
 const maxHeartbeatHistory = 8;
@@ -35,6 +41,8 @@ const transcriptVerifyAttempts = Number(process.env.CODEX_TRANSCRIPT_VERIFY_ATTE
 const transcriptVerifyDelayMs = Number(process.env.CODEX_TRANSCRIPT_VERIFY_DELAY_MS ?? 350);
 const postTurnCompletedGraceMs = Number(process.env.CODEX_POST_TURN_COMPLETED_GRACE_MS ?? 15000);
 const reconcileLogBytes = Number(process.env.CODEX_RECONCILE_LOG_BYTES ?? 2 * 1024 * 1024);
+const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
+const recoveredLogJobsLimit = Number(process.env.CODEX_RECOVERED_LOG_JOBS_LIMIT ?? 20);
 
 function resolveCliPath(): string {
   const configured = process.env.CODEX_CLI_PATH?.trim();
@@ -164,6 +172,53 @@ function isTurnCompletedRecord(record: unknown): boolean {
   return candidate.type === "turn.completed" || candidate.payload?.type === "turn.completed";
 }
 
+function errorMessageFromRecord(record: unknown): string | null {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const candidate = record as {
+    type?: string;
+    message?: unknown;
+    error?: {
+      message?: unknown;
+    };
+    payload?: {
+      type?: string;
+      message?: unknown;
+      error?: {
+        message?: unknown;
+      };
+    };
+  };
+
+  if (candidate.type === "error" && typeof candidate.message === "string") {
+    return clampHeartbeat(candidate.message);
+  }
+
+  if (candidate.type === "turn.failed" && typeof candidate.error?.message === "string") {
+    return clampHeartbeat(candidate.error.message);
+  }
+
+  if (candidate.payload?.type === "error" && typeof candidate.payload.message === "string") {
+    return clampHeartbeat(candidate.payload.message);
+  }
+
+  if (candidate.payload?.type === "turn.failed" && typeof candidate.payload.error?.message === "string") {
+    return clampHeartbeat(candidate.payload.error.message);
+  }
+
+  return null;
+}
+
+function isSpecificRunMessage(message: string | undefined): message is string {
+  if (!message) {
+    return false;
+  }
+
+  return !/^(queued|running|steering|simulating|simulation completed|codex cli failed)/i.test(message.trim());
+}
+
 async function readFileTail(filePath: string, maxBytes: number): Promise<string> {
   const stat = await fs.stat(filePath);
   const bytesToRead = Math.min(Math.max(1, maxBytes), stat.size);
@@ -224,6 +279,8 @@ export class CodexRunner {
       }
     }
 
+    await this.recoverFailedLogJobsForChat(chatId);
+
     return this.jobsForChat(chatId);
   }
 
@@ -234,7 +291,6 @@ export class CodexRunner {
   private createJob(options: CreateJobOptions): CodexRunJob {
     const createdAt = new Date().toISOString();
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
     const logBase = `${createdAt.replace(/[:.]/g, "-")}-${safeSegment(options.kind)}-${safeSegment(options.chatId)}-${safeSegment(id)}`;
     const job: CodexRunJob = {
       id,
@@ -443,7 +499,9 @@ export class CodexRunner {
               ? `${sourceMessage} and saved to Codex transcript`
               : `${sourceMessage}; Codex transcript visibility was not fully confirmed`;
           } else {
-            job.message = `Codex CLI failed with exit code ${code ?? "unknown"}`;
+            job.message = isSpecificRunMessage(job.message)
+              ? job.message
+              : `Codex CLI failed with exit code ${code ?? "unknown"}`;
           }
 
           this.emit(job, status === "completed" ? "completed" : "failed");
@@ -536,6 +594,112 @@ export class CodexRunner {
     }
 
     return false;
+  }
+
+  private async stdoutFailureMessage(filePath: string): Promise<string | null> {
+    try {
+      const tail = await readFileTail(filePath, reconcileLogBytes);
+      let message: string | null = null;
+
+      for (const line of tail.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        try {
+          message = errorMessageFromRecord(JSON.parse(trimmed)) ?? message;
+        } catch {
+          continue;
+        }
+      }
+
+      return message;
+    } catch {
+      return null;
+    }
+  }
+
+  private async recoverFailedLogJobsForChat(chatId: string): Promise<void> {
+    let entries: string[];
+
+    try {
+      entries = await fs.readdir(runLogDir);
+    } catch {
+      return;
+    }
+
+    const safeChatId = safeSegment(chatId);
+    const marker = `-${safeChatId}-`;
+    const suffix = ".stdout.log";
+    const candidates = entries.filter((name) => name.includes(marker) && name.endsWith(suffix));
+
+    const logs = (
+      await Promise.all(
+        candidates.map(async (name) => {
+          const stdoutPath = path.join(runLogDir, name);
+
+          try {
+            return {
+              name,
+              stdoutPath,
+              stat: await fs.stat(stdoutPath)
+            };
+          } catch {
+            return null;
+          }
+        })
+      )
+    )
+      .filter((item): item is RunLogCandidate => item !== null)
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
+      .slice(0, recoveredLogJobsLimit);
+
+    for (const log of logs) {
+      const markerIndex = log.name.indexOf(marker);
+      const prefix = log.name.slice(0, markerIndex);
+      const id = log.name.slice(markerIndex + marker.length, -suffix.length);
+
+      if (!id || this.jobs.has(id)) {
+        continue;
+      }
+
+      const message = await this.stdoutFailureMessage(log.stdoutPath);
+      if (!message) {
+        continue;
+      }
+
+      const kindMatch = prefix.match(/-(prompt|steer)$/);
+      const kind = kindMatch?.[1] === "steer" ? "steer" : "prompt";
+      const stderrPath = log.stdoutPath.replace(/\.stdout\.log$/i, ".stderr.log");
+      const lastMessagePath = log.stdoutPath.replace(/\.stdout\.log$/i, ".last-message.txt");
+      const createdAt =
+        log.stat.birthtimeMs > 0 && log.stat.birthtimeMs <= log.stat.mtimeMs
+          ? log.stat.birthtime.toISOString()
+          : log.stat.mtime.toISOString();
+
+      this.jobs.set(id, {
+        id,
+        chatId,
+        projectPath: "",
+        status: "failed",
+        kind,
+        createdAt,
+        promptPreview: kind === "steer" ? "Steering prompt" : "Prompt run",
+        promptHash: "",
+        textLength: 0,
+        command: [],
+        logPaths: {
+          stdout: log.stdoutPath,
+          stderr: stderrPath,
+          lastMessage: lastMessagePath
+        },
+        finishedAt: log.stat.mtime.toISOString(),
+        exitCode: 1,
+        signal: null,
+        message
+      });
+    }
   }
 
   private async recoverCompletedJob(job: CodexRunJob): Promise<void> {
@@ -697,6 +861,12 @@ export class CodexRunner {
       const record = JSON.parse(trimmed);
       if (isTurnCompletedRecord(record)) {
         return "turn.completed";
+      }
+
+      const errorMessage = errorMessageFromRecord(record);
+      if (errorMessage) {
+        job.message = errorMessage;
+        this.emit(job, "heartbeat");
       }
 
       const heartbeat = heartbeatFromRecord(record);

@@ -443,6 +443,62 @@ function optimisticPromptId(createdAt: string) {
   return `optimistic-user-${Date.parse(createdAt) || Date.now()}`;
 }
 
+function isOptimisticPromptMessage(message: ChatTranscriptMessage) {
+  return message.role === "user" && message.id.startsWith("optimistic-user-");
+}
+
+function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
+  const optimisticTime = Date.parse(optimistic.createdAt);
+
+  return messages.some((message) => {
+    if (message.role !== "user" || message.text.trimEnd() !== optimistic.text.trimEnd()) {
+      return false;
+    }
+
+    const messageTime = Date.parse(message.createdAt);
+
+    if (!Number.isFinite(optimisticTime) || !Number.isFinite(messageTime)) {
+      return true;
+    }
+
+    return messageTime >= optimisticTime - 60000;
+  });
+}
+
+function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incoming: ChatDetail) {
+  if (!current || current.id !== incoming.id) {
+    return incoming;
+  }
+
+  const incomingMessages = incoming.messages ?? [];
+  const optimisticMessages = (current.messages ?? []).filter(
+    (message) => isOptimisticPromptMessage(message) && !serverContainsOptimisticPrompt(incomingMessages, message)
+  );
+
+  if (!optimisticMessages.length) {
+    return incoming;
+  }
+
+  const messages = [...incomingMessages, ...optimisticMessages]
+    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
+    .slice(-20);
+  const lastOptimisticPrompt = optimisticMessages[optimisticMessages.length - 1];
+  const lastResponseTime = incoming.lastResponse ? Date.parse(incoming.lastResponse.createdAt) || 0 : 0;
+  const lastPromptTime = lastOptimisticPrompt ? Date.parse(lastOptimisticPrompt.createdAt) || 0 : 0;
+
+  return {
+    ...incoming,
+    updatedAt: lastPromptTime > (Date.parse(incoming.updatedAt) || 0) ? lastOptimisticPrompt.createdAt : incoming.updatedAt,
+    lastPrompt:
+      lastOptimisticPrompt && lastPromptTime >= lastResponseTime
+        ? { text: lastOptimisticPrompt.text, createdAt: lastOptimisticPrompt.createdAt }
+        : incoming.lastPrompt,
+    lastResponse: lastOptimisticPrompt && lastPromptTime >= lastResponseTime ? null : incoming.lastResponse,
+    messages,
+    hasResponse: lastOptimisticPrompt && lastPromptTime >= lastResponseTime ? false : incoming.hasResponse
+  };
+}
+
 function localCommandDetailText(command: LocalQueuedCommand) {
   if (command.message) {
     return command.message;
@@ -838,6 +894,10 @@ function jobStatusLabel(job: CodexRunJob) {
 }
 
 function jobDetailText(job: CodexRunJob) {
+  if (job.status === "failed" && job.message) {
+    return job.message;
+  }
+
   if (job.status === "completed" && job.codexTranscript?.message) {
     return job.codexTranscript.message;
   }
@@ -1552,6 +1612,10 @@ export function App() {
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
+  const selectedRunFailures = useMemo(
+    () => selectedJobs.filter((job) => job.status === "failed").slice(0, 5),
+    [selectedJobs]
+  );
   const selectedJobDuration =
     selectedJob?.status === "running"
       ? formatElapsedSeconds(selectedJob.startedAt ?? selectedJob.createdAt, selectedJob.finishedAt, durationNow)
@@ -1927,7 +1991,7 @@ export function App() {
       }
 
       if (cachedDetail && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
-        setSelectedChat(cachedDetail);
+        setSelectedChat((current) => mergeChatDetailPreservingOptimistic(current, cachedDetail));
         if (!quiet) {
           requestChatScroll();
         }
@@ -1940,7 +2004,7 @@ export function App() {
           return;
         }
 
-        setSelectedChat(detail);
+        setSelectedChat((current) => mergeChatDetailPreservingOptimistic(current, detail));
         if (!quiet) {
           requestChatScroll();
         }
@@ -3314,6 +3378,15 @@ export function App() {
                   <Clock3 size={26} />
                 </div>
               )}
+              {selectedRunFailures.map((job) => (
+                <article key={`run-failure-${job.id}`} className="chat-bubble is-assistant is-error" role="status">
+                  <div className="bubble-meta">
+                    <span>Codex run failed</span>
+                    <time>{formatDate(job.finishedAt ?? job.createdAt)}</time>
+                  </div>
+                  <FormattedMessage text={jobDetailText(job)} emptyText="Run failed before a response was written." token={token} />
+                </article>
+              ))}
               <div ref={chatEndRef} aria-hidden="true" />
             </div>
           ) : (
