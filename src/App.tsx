@@ -1213,6 +1213,91 @@ function RunSettingsPanel({
   );
 }
 
+function RunBoard({
+  open,
+  jobs,
+  chatById,
+  nowMs,
+  onClose
+}: {
+  open: boolean;
+  jobs: CodexRunJob[];
+  chatById: Map<string, ChatSummary>;
+  nowMs: number;
+  onClose: () => void;
+}) {
+  if (!open) {
+    return null;
+  }
+
+  const runningCount = jobs.filter((job) => job.status === "running").length;
+  const queuedCount = jobs.filter((job) => job.status === "queued").length;
+
+  return (
+    <section className="run-board-overlay" aria-label="Active Codex runs">
+      <header className="run-board-header">
+        <div>
+          <p>Codex Remote</p>
+          <h2>Active Runs</h2>
+        </div>
+        <div className="run-board-header-side">
+          <div className="run-board-counts" aria-label="Run counts">
+            <span>
+              <strong>{runningCount}</strong>
+              running
+            </span>
+            <span>
+              <strong>{queuedCount}</strong>
+              queued
+            </span>
+          </div>
+          <button className="run-board-close" type="button" onClick={onClose} aria-label="Close run board">
+            <X size={36} />
+          </button>
+        </div>
+      </header>
+
+      {jobs.length ? (
+        <div className="run-board-grid">
+          {jobs.map((job) => {
+            const chat = chatById.get(job.chatId);
+            const projectName = chat?.projectName ?? projectNameFromPath(job.projectPath);
+            const chatTitle = chat?.title ?? previewText(job.promptPreview || job.chatId, "Codex chat");
+            const timer =
+              job.status === "running"
+                ? formatElapsedSeconds(job.startedAt ?? job.createdAt, job.finishedAt, nowMs)
+                : formatElapsedSeconds(job.createdAt, undefined, nowMs);
+
+            return (
+              <article className={`run-board-card is-${job.status}`} key={job.id}>
+                <div className="run-board-card-top">
+                  <span className="run-board-status">
+                    <Loader2 className={job.status === "running" ? "spin" : ""} size={48} />
+                    {job.status === "running" ? "Running" : "Queued"}
+                  </span>
+                  {job.status === "queued" && job.queuePosition ? <span className="run-board-position">#{job.queuePosition}</span> : null}
+                </div>
+                <div className="run-board-timer">{timer}</div>
+                <div className="run-board-copy">
+                  <p>{projectName}</p>
+                  <h3>{chatTitle}</h3>
+                  <strong>{previewText(job.promptPreview, "Prompt")}</strong>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="run-board-empty">
+          <CheckCircle2 size={96} />
+          <h3>All Clear</h3>
+          <p>No active Codex runs right now.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function App() {
   const initialChatSelection = useMemo(() => {
     const storedChatId = readStoredSelectedChatId();
@@ -1265,6 +1350,7 @@ export function App() {
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [runBoardOpen, setRunBoardOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [instructionsLoading, setInstructionsLoading] = useState(false);
   const [instructionsError, setInstructionsError] = useState("");
@@ -1328,6 +1414,48 @@ export function App() {
     () => (selectedChatId ? queuedServerJobs.filter((job) => job.chatId === selectedChatId) : []),
     [queuedServerJobs, selectedChatId]
   );
+  const activeRunJobs = useMemo(() => {
+    const jobsById = new Map<string, CodexRunJob>();
+
+    const addJob = (job: CodexRunJob) => {
+      if (!isActiveJob(job)) {
+        return;
+      }
+
+      jobsById.set(job.id, { ...jobsById.get(job.id), ...job });
+    };
+
+    for (const job of state?.runner.recentJobs ?? []) {
+      addJob(job);
+    }
+
+    for (const jobs of Object.values(chatJobs)) {
+      for (const job of jobs) {
+        addJob(job);
+      }
+    }
+
+    return sortJobsForChat([...jobsById.values()]);
+  }, [chatJobs, state?.runner.recentJobs]);
+  const activeRunJobKey = useMemo(
+    () =>
+      activeRunJobs
+        .filter((job) => job.status === "running")
+        .map((job) => job.id)
+        .join("|"),
+    [activeRunJobs]
+  );
+  const chatSummaryById = useMemo(() => {
+    const chats = new Map<string, ChatSummary>();
+
+    for (const project of chatIndex?.projects ?? []) {
+      for (const chat of project.chats) {
+        chats.set(chat.id, chat);
+      }
+    }
+
+    return chats;
+  }, [chatIndex]);
   const busyServerChatIds = useMemo(() => {
     const chatIds = new Set<string>();
 
@@ -1960,6 +2088,19 @@ export function App() {
     }
   }, [authenticated, loadChatDetail, loadChatJobs, refreshingChat]);
 
+  const openRunBoard = useCallback(() => {
+    setRunBoardOpen(true);
+    document.documentElement.requestFullscreen?.().catch(() => undefined);
+  }, []);
+
+  const closeRunBoard = useCallback(() => {
+    setRunBoardOpen(false);
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => undefined);
+    }
+  }, []);
+
   const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string, messageId = optimisticPromptId(createdAt)) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
@@ -2111,6 +2252,22 @@ export function App() {
   }, [menuOpen]);
 
   useEffect(() => {
+    if (!runBoardOpen) {
+      return;
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeRunBoard();
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeRunBoard, runBoardOpen]);
+
+  useEffect(() => {
     if (!authenticated) {
       return;
     }
@@ -2202,7 +2359,7 @@ export function App() {
   }, [authenticated, instructionsOpen, loadShortcutInstructions]);
 
   useEffect(() => {
-    if (selectedJob?.status !== "running") {
+    if (selectedJob?.status !== "running" && !activeRunJobKey) {
       return;
     }
 
@@ -2213,7 +2370,7 @@ export function App() {
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [selectedJob?.id, selectedJob?.status]);
+  }, [activeRunJobKey, selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
     if (!authenticated || !selectedChatId) {
@@ -2924,6 +3081,16 @@ export function App() {
             >
               <FileText size={18} />
             </button>
+            <button
+              className={`icon-button ${runBoardOpen ? "is-active" : ""}`}
+              type="button"
+              onClick={openRunBoard}
+              aria-label="Open active runs board"
+              aria-pressed={runBoardOpen}
+              title="Active runs board"
+            >
+              <MonitorUp size={18} />
+            </button>
             <button className="icon-button" type="button" onClick={refreshWorkspace} aria-label="Refresh chats">
               {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
             </button>
@@ -3319,6 +3486,7 @@ export function App() {
         </div>
 
       </section>
+      <RunBoard open={runBoardOpen} jobs={activeRunJobs} chatById={chatSummaryById} nowMs={durationNow} onClose={closeRunBoard} />
     </main>
   );
 }
