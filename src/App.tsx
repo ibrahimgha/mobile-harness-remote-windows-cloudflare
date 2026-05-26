@@ -27,6 +27,7 @@ import {
   FormEvent,
   Fragment,
   PointerEvent as ReactPointerEvent,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -501,6 +502,44 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
     messages,
     hasResponse: lastOptimisticPrompt && lastPromptTime >= lastResponseTime ? false : incoming.hasResponse
   };
+}
+
+function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
+  if (!a || a.id !== b.id) {
+    return false;
+  }
+
+  if (
+    a.title !== b.title ||
+    a.projectName !== b.projectName ||
+    a.projectPath !== b.projectPath ||
+    a.createdAt !== b.createdAt ||
+    a.updatedAt !== b.updatedAt ||
+    a.hasResponse !== b.hasResponse ||
+    (a.lastPrompt?.text ?? "") !== (b.lastPrompt?.text ?? "") ||
+    (a.lastPrompt?.createdAt ?? "") !== (b.lastPrompt?.createdAt ?? "") ||
+    (a.lastResponse?.text ?? "") !== (b.lastResponse?.text ?? "") ||
+    (a.lastResponse?.createdAt ?? "") !== (b.lastResponse?.createdAt ?? "")
+  ) {
+    return false;
+  }
+
+  if ((a.messages ?? []).length !== (b.messages ?? []).length) {
+    return false;
+  }
+
+  return (a.messages ?? []).every((message, index) => {
+    const other = b.messages[index];
+
+    return (
+      other &&
+      message.id === other.id &&
+      message.role === other.role &&
+      message.createdAt === other.createdAt &&
+      message.text === other.text &&
+      Boolean(message.isFinal) === Boolean(other.isFinal)
+    );
+  });
 }
 
 function localCommandDetailText(command: LocalQueuedCommand) {
@@ -1099,7 +1138,7 @@ function LocalImageAttachment({
   );
 }
 
-function FormattedMessage({
+const FormattedMessage = memo(function FormattedMessage({
   text,
   emptyText,
   token,
@@ -1143,7 +1182,7 @@ function FormattedMessage({
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 function JobStatusIcon({ job }: { job: CodexRunJob }) {
   if (job.status === "running") {
@@ -2056,7 +2095,11 @@ export function App() {
       }
 
       if (cachedDetail && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
-        setSelectedChat((current) => mergeChatDetailPreservingOptimistic(current, cachedDetail));
+        setSelectedChat((current) => {
+          const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
+
+          return sameChatDetailForRender(current, next) ? current : next;
+        });
         if (!quiet) {
           requestChatScroll();
         }
@@ -2069,7 +2112,11 @@ export function App() {
           return;
         }
 
-        setSelectedChat((current) => mergeChatDetailPreservingOptimistic(current, detail));
+        setSelectedChat((current) => {
+          const next = mergeChatDetailPreservingOptimistic(current, detail);
+
+          return sameChatDetailForRender(current, next) ? current : next;
+        });
         if (!quiet) {
           requestChatScroll();
         }
