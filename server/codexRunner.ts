@@ -3,7 +3,7 @@ import { createWriteStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { CodexRunJob, CodexTranscriptStatus } from "./types.js";
+import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus } from "./types.js";
 
 type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
@@ -18,6 +18,7 @@ type EnqueueOptions = {
   promptPreview: string;
   promptHash: string;
   textLength: number;
+  settings: CodexRunSettings;
 };
 
 type CreateJobOptions = EnqueueOptions & {
@@ -246,6 +247,7 @@ export class CodexRunner {
       promptHash: options.promptHash,
       textLength: options.textLength,
       command: [],
+      settings: options.settings,
       logPaths: {
         stdout: path.join(runLogDir, `${logBase}.stdout.log`),
         stderr: path.join(runLogDir, `${logBase}.stderr.log`),
@@ -305,6 +307,18 @@ export class CodexRunner {
 
     if (this.skipGitRepoCheck) {
       args.push("--skip-git-repo-check");
+    }
+
+    if (job.settings?.model && job.settings.model !== "default") {
+      args.push("--model", job.settings.model);
+    }
+
+    if (job.settings?.reasoningEffort) {
+      args.push("-c", `model_reasoning_effort="${job.settings.reasoningEffort}"`);
+    }
+
+    if (job.settings?.speed === "priority") {
+      args.push("-c", 'desktop.default-service-tier="priority"');
     }
 
     args.push(job.chatId, "-");
@@ -719,6 +733,14 @@ export class CodexRunner {
   }
 
   private emit(job: CodexRunJob, event: JobEvent) {
-    this.onJobChange?.({ ...job, logPaths: { ...job.logPaths }, command: [...job.command] }, event);
+    this.onJobChange?.(
+      {
+        ...job,
+        logPaths: { ...job.logPaths },
+        settings: job.settings ? { ...job.settings } : undefined,
+        command: [...job.command]
+      },
+      event
+    );
   }
 }

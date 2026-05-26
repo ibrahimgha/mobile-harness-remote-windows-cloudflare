@@ -30,6 +30,8 @@ export type BridgeState = {
     cliPath: string;
     bypassSandbox: boolean;
     skipGitRepoCheck: boolean;
+    settings: CodexRunSettings;
+    settingsOptions: CodexRunSettingsOptions;
     activeJobs: number;
     queuedJobs: number;
     recentJobs: CodexRunJob[];
@@ -41,6 +43,19 @@ export type CodexRunMode = "codex-cli" | "simulation";
 export type PromptDeliveryMode = "cli";
 
 export type CodexRunStatus = "queued" | "running" | "completed" | "failed";
+
+export type CodexRunSettings = {
+  model: string;
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  speed: "default" | "priority";
+  updatedAt: string;
+};
+
+export type CodexRunSettingsOptions = {
+  models: string[];
+  reasoningEfforts: CodexRunSettings["reasoningEffort"][];
+  speeds: CodexRunSettings["speed"][];
+};
 
 export type CodexRunJob = {
   id: string;
@@ -54,6 +69,7 @@ export type CodexRunJob = {
   promptHash: string;
   textLength: number;
   command: string[];
+  settings?: CodexRunSettings;
   logPaths: {
     stdout: string;
     stderr: string;

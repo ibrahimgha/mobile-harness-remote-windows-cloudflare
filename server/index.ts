@@ -12,7 +12,8 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import type { BridgeEvent, BridgeState, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
+import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
+import type { BridgeEvent, BridgeState, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
   getPushPublicKey,
@@ -412,6 +413,8 @@ function getState(): BridgeState {
       cliPath: runner.cliPath,
       bypassSandbox: runner.bypassSandbox,
       skipGitRepoCheck: runner.skipGitRepoCheck,
+      settings: getRunSettings(),
+      settingsOptions: getRunSettingsOptions(),
       activeJobs: runner.activeJobs,
       queuedJobs: runner.queuedJobs,
       recentJobs: runner.recentJobs
@@ -531,6 +534,35 @@ app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
+});
+
+app.patch("/api/run-settings", requireControlAuth, (req, res) => {
+  const patch: Partial<CodexRunSettings> = {};
+
+  if (typeof req.body?.model === "string") {
+    patch.model = req.body.model;
+  }
+
+  if (typeof req.body?.reasoningEffort === "string") {
+    patch.reasoningEffort = req.body.reasoningEffort as CodexRunSettings["reasoningEffort"];
+  }
+
+  if (typeof req.body?.speed === "string") {
+    patch.speed = req.body.speed as CodexRunSettings["speed"];
+  }
+
+  const settings = updateRunSettings(patch);
+
+  pushEvent("status", "Codex run settings updated", {
+    action: "codex-run-settings-updated",
+    settings
+  });
+
+  res.json({
+    ok: true,
+    settings,
+    options: getRunSettingsOptions()
+  });
 });
 
 app.get("/api/shortcut-instructions", requireControlAuth, async (req, res) => {
@@ -955,7 +987,8 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       text: text.trimEnd(),
       promptPreview: String(promptSummary.promptPreview ?? ""),
       promptHash: String(promptSummary.promptHash ?? ""),
-      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
+      settings: getRunSettings()
     });
 
     pushEvent("action", "Prompt queued for exact Codex session on target laptop", {
@@ -1013,7 +1046,8 @@ app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
       text: text.trimEnd(),
       promptPreview: String(promptSummary.promptPreview ?? ""),
       promptHash: String(promptSummary.promptHash ?? ""),
-      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
+      settings: getRunSettings()
     });
 
     pushEvent("action", "Steering prompt sent to Codex session on target laptop", {

@@ -54,7 +54,22 @@ type BridgeState = {
     activeJobs: number;
     queuedJobs: number;
     recentJobs: CodexRunJob[];
+    settings: CodexRunSettings;
+    settingsOptions: CodexRunSettingsOptions;
   };
+};
+
+type CodexRunSettings = {
+  model: string;
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  speed: "default" | "priority";
+  updatedAt: string;
+};
+
+type CodexRunSettingsOptions = {
+  models: string[];
+  reasoningEfforts: CodexRunSettings["reasoningEffort"][];
+  speeds: CodexRunSettings["speed"][];
 };
 
 type BridgeEvent = {
@@ -85,6 +100,7 @@ type CodexRunJob = {
   heartbeatAt?: string;
   heartbeatHistory?: string[];
   codexTranscript?: CodexTranscriptStatus;
+  settings?: CodexRunSettings;
 };
 
 type CodexTranscriptStatus = {
@@ -159,6 +175,12 @@ type ChatJobsResult = {
   ok: boolean;
   chatId: string;
   jobs: CodexRunJob[];
+};
+
+type RunSettingsResult = {
+  ok: boolean;
+  settings: CodexRunSettings;
+  options: CodexRunSettingsOptions;
 };
 
 type PendingAttachment = {
@@ -1096,6 +1118,101 @@ function StatusControls({
   );
 }
 
+function settingLabel(value: string) {
+  if (value === "default") {
+    return "Default";
+  }
+
+  if (value === "xhigh") {
+    return "X High";
+  }
+
+  return value
+    .split(/[-_]/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function RunSettingsPanel({
+  settings,
+  options,
+  busy,
+  onChange
+}: {
+  settings?: CodexRunSettings;
+  options?: CodexRunSettingsOptions;
+  busy: boolean;
+  onChange: (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => void;
+}) {
+  const current = settings ?? {
+    model: "default",
+    reasoningEffort: "xhigh" as const,
+    speed: "default" as const,
+    updatedAt: ""
+  };
+  const available = options ?? {
+    models: ["default"],
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"] as CodexRunSettings["reasoningEffort"][],
+    speeds: ["default", "priority"] as CodexRunSettings["speed"][]
+  };
+
+  return (
+    <section className="run-settings-panel" aria-label="Global Codex run settings">
+      <div className="run-settings-header">
+        <span>Run settings</span>
+        <span className="run-settings-status">{busy ? <Loader2 className="spin" size={13} /> : "Global"}</span>
+      </div>
+      <div className="run-settings-grid">
+        <label>
+          <span>Model</span>
+          <select
+            value={current.model}
+            disabled={busy}
+            onChange={(event) => onChange({ model: event.currentTarget.value })}
+            aria-label="Global model"
+          >
+            {available.models.map((model) => (
+              <option key={model} value={model}>
+                {model === "default" ? "Default" : model}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Reasoning</span>
+          <select
+            value={current.reasoningEffort}
+            disabled={busy}
+            onChange={(event) => onChange({ reasoningEffort: event.currentTarget.value as CodexRunSettings["reasoningEffort"] })}
+            aria-label="Global reasoning level"
+          >
+            {available.reasoningEfforts.map((effort) => (
+              <option key={effort} value={effort}>
+                {settingLabel(effort)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Speed</span>
+          <select
+            value={current.speed}
+            disabled={busy}
+            onChange={(event) => onChange({ speed: event.currentTarget.value as CodexRunSettings["speed"] })}
+            aria-label="Global speed"
+          >
+            {available.speeds.map((speed) => (
+              <option key={speed} value={speed}>
+                {settingLabel(speed)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const initialChatSelection = useMemo(() => {
     const storedChatId = readStoredSelectedChatId();
@@ -1146,6 +1263,7 @@ export function App() {
   const [refreshingChat, setRefreshingChat] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState<RemoteNotificationState>("default");
   const [notificationBusy, setNotificationBusy] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [instructionsLoading, setInstructionsLoading] = useState(false);
@@ -1380,6 +1498,41 @@ export function App() {
       setNotice(error instanceof Error ? error.message : "Could not load bridge state");
     }
   }, [apiFetch, authenticated]);
+
+  const updateRunSettings = useCallback(
+    async (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => {
+      if (!authenticated) {
+        return;
+      }
+
+      setSettingsSaving(true);
+
+      try {
+        const result = await apiFetch<RunSettingsResult>("/api/run-settings", {
+          method: "PATCH",
+          body: JSON.stringify(patch)
+        });
+
+        setState((current) =>
+          current
+            ? {
+                ...current,
+                runner: {
+                  ...current.runner,
+                  settings: result.settings,
+                  settingsOptions: result.options
+                }
+              }
+            : current
+        );
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Could not update run settings");
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [apiFetch, authenticated]
+  );
 
   const ensureNotificationRegistration = useCallback(async () => {
     if (!supportsServiceWorkerNotifications()) {
@@ -2790,6 +2943,13 @@ export function App() {
             onLogout={logout}
           />
         </div>
+
+        <RunSettingsPanel
+          settings={state?.runner.settings}
+          options={state?.runner.settingsOptions}
+          busy={settingsSaving}
+          onChange={updateRunSettings}
+        />
 
         {instructionsOpen ? (
           <div className="instructions-panel" aria-label="Shortcut instruction files">
