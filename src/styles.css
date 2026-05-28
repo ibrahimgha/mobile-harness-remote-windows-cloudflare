@@ -788,6 +788,37 @@ p {
   opacity: 0.86;
 }
 
+.copy-button,
+.bubble-copy-button,
+.code-copy-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--teal-strong);
+  background: rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+}
+
+.bubble-copy-button {
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border-color: rgba(255, 255, 255, 0.32);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.chat-bubble.is-assistant .bubble-copy-button,
+.chat-bubble.is-error .bubble-copy-button {
+  border-color: var(--line);
+  color: var(--teal-strong);
+  background: #ffffff;
+}
+
 .chat-bubble.is-user .bubble-meta {
   color: rgba(255, 255, 255, 0.86);
 }
@@ -926,6 +957,32 @@ p {
 .chat-bubble.is-user .message-markdown pre {
   border-color: rgba(255, 255, 255, 0.22);
   background: rgba(0, 0, 0, 0.18);
+}
+
+.code-block {
+  position: relative;
+  margin: 0 0 0.9rem;
+}
+
+.code-block pre {
+  margin-bottom: 0;
+  padding-right: 48px;
+}
+
+.code-copy-button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  border-color: #c8d8d0;
+}
+
+.chat-bubble.is-user .code-copy-button {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .message-markdown pre code {

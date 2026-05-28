@@ -27,6 +27,7 @@ import {
   FormEvent,
   Fragment,
   PointerEvent as ReactPointerEvent,
+  isValidElement,
   memo,
   type ReactNode,
   useCallback,
@@ -1138,6 +1139,54 @@ function LocalImageAttachment({
   );
 }
 
+function textFromReactNode(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(textFromReactNode).join("");
+  }
+
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return textFromReactNode(node.props.children);
+  }
+
+  return "";
+}
+
+function CopyButton({
+  text,
+  label,
+  className = "copy-button"
+}: {
+  text: string;
+  label: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(async () => {
+    if (!text) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  }, [text]);
+
+  return (
+    <button className={className} type="button" onClick={copy} aria-label={label} title={label}>
+      {copied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+    </button>
+  );
+}
+
 const FormattedMessage = memo(function FormattedMessage({
   text,
   emptyText,
@@ -1175,6 +1224,12 @@ const FormattedMessage = memo(function FormattedMessage({
               <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} basePath={basePath} />
             ) : (
               <AuthenticatedImage src={src} alt={alt} token={token} basePath={basePath} />
+            ),
+          pre: ({ children }) => (
+            <div className="code-block">
+              <CopyButton className="code-copy-button" text={textFromReactNode(children).trimEnd()} label="Copy code" />
+              <pre>{children}</pre>
+            </div>
             )
         }}
       >
@@ -3469,6 +3524,9 @@ export function App() {
                               <Clock3 size={12} />
                               {runDuration}
                             </span>
+                          ) : null}
+                          {message.role === "user" ? (
+                            <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
                           ) : null}
                         </div>
                         <FormattedMessage
