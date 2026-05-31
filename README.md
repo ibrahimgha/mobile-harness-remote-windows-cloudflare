@@ -104,6 +104,20 @@ npm run start
 npm run tunnel:prod
 ```
 
+## Windows App Wrapper
+
+Install the `Ibrahim HP` Windows app shortcut for the public remote URL:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\IbrahimHP\Install-IbrahimHP.ps1
+```
+
+It opens the remote in Microsoft Edge or Google Chrome app mode with a custom icon. To remove it:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\IbrahimHP\Uninstall-IbrahimHP.ps1
+```
+
 ## Enabling Remote Control
 
 Edit `.env` before exposing the app:
