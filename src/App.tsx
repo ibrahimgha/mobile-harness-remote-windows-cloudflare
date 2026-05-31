@@ -8,6 +8,7 @@ import {
   CircleX,
   Clock3,
   Copy,
+  Eye,
   FileText,
   Folder,
   FolderPlus,
@@ -320,6 +321,7 @@ type PushTestResult = {
 };
 
 type RemoteNotificationState = "unsupported" | "default" | "denied" | "enabled" | "local";
+type ChatMessageViewMode = "all" | "final" | "codex";
 
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
@@ -327,6 +329,8 @@ const localCommandQueueKey = "local-command-queue";
 const chatHistoryCacheKey = "chat-history-cache-v1";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = "selected-chat-id";
+const chatMessageViewModesKey = "chat-message-view-modes-v1";
+const chatMessageViewModeOrder: ChatMessageViewMode[] = ["all", "final", "codex"];
 const maxCachedChatHistories = 20;
 const defaultChatTurns = 10;
 const chatTurnPageSize = 10;
@@ -343,6 +347,82 @@ function isTemporaryChatId(chatId: string | null | undefined) {
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isChatMessageViewMode(value: unknown): value is ChatMessageViewMode {
+  return value === "all" || value === "final" || value === "codex";
+}
+
+function readChatMessageViewModes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(chatMessageViewModesKey) ?? "{}");
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, ChatMessageViewMode] => {
+        const [chatId, mode] = entry;
+        return typeof chatId === "string" && isChatMessageViewMode(mode);
+      })
+    );
+  } catch {
+    return {};
+  }
+}
+
+function chatMessageViewModeMeta(mode: ChatMessageViewMode) {
+  if (mode === "final") {
+    return {
+      label: "Final",
+      title: "Final responses only",
+      description: "Showing prompts, run separators, tool output, and final Codex responses. Codex updates are hidden."
+    };
+  }
+
+  if (mode === "codex") {
+    return {
+      label: "Codex",
+      title: "Codex updates",
+      description: "Showing prompts, Codex updates, final Codex responses, and run separators. Tool chatter is hidden."
+    };
+  }
+
+  return {
+    label: "All",
+    title: "All messages",
+    description: "Showing every message in this chat."
+  };
+}
+
+function nextChatMessageViewMode(mode: ChatMessageViewMode) {
+  const index = chatMessageViewModeOrder.indexOf(mode);
+
+  return chatMessageViewModeOrder[(index + 1) % chatMessageViewModeOrder.length];
+}
+
+function isFinalCodexMessage(message: ChatTranscriptMessage | VisibleChatMessage) {
+  return (
+    message.role === "assistant" &&
+    (message.isFinal || message.kind === "assistant_final" || !message.kind)
+  );
+}
+
+function messageVisibleForViewMode(message: VisibleChatMessage, mode: ChatMessageViewMode) {
+  if (mode === "all") {
+    return true;
+  }
+
+  if (message.isRunFailure || message.role === "user" || message.kind === "task_complete" || message.kind === "forked_from") {
+    return true;
+  }
+
+  if (mode === "final") {
+    return message.role !== "assistant" || isFinalCodexMessage(message);
+  }
+
+  return message.role === "assistant";
 }
 
 function formatRelative(value: string) {
@@ -1715,6 +1795,9 @@ export function App() {
   const [chatIndex, setChatIndex] = useState<ChatIndex | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(initialChatSelection.id);
   const [selectedChat, setSelectedChat] = useState<ChatDetail | null>(initialChatSelection.chat);
+  const [chatMessageViewModes, setChatMessageViewModes] = useState<Record<string, ChatMessageViewMode>>(() =>
+    readChatMessageViewModes()
+  );
   const [chatScrollVersion, setChatScrollVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -1787,6 +1870,8 @@ export function App() {
       (state?.runner.recentJobs ?? []).filter((job) => job.chatId === selectedChatId)
     );
   }, [chatJobs, selectedChatId, state?.runner.recentJobs]);
+  const selectedChatMessageViewMode = selectedChatId ? (chatMessageViewModes[selectedChatId] ?? "all") : "all";
+  const selectedChatMessageViewMeta = chatMessageViewModeMeta(selectedChatMessageViewMode);
   const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
   const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
@@ -2009,7 +2094,7 @@ export function App() {
 
     return fallback;
   }, [selectedChat]);
-  const visibleMessages = useMemo<VisibleChatMessage[]>(
+  const timelineMessages = useMemo<VisibleChatMessage[]>(
     () => {
       const firstTranscriptMs = Date.parse(transcriptMessages[0]?.createdAt ?? "");
       const scopedRunFailures = Number.isFinite(firstTranscriptMs)
@@ -2028,6 +2113,10 @@ export function App() {
         });
     },
     [runFailureMessages, transcriptMessages]
+  );
+  const visibleMessages = useMemo(
+    () => timelineMessages.filter((message) => messageVisibleForViewMode(message, selectedChatMessageViewMode)),
+    [selectedChatMessageViewMode, timelineMessages]
   );
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
   const chatShellIsLoading =
@@ -2538,6 +2627,19 @@ export function App() {
       setRefreshingChat(false);
     }
   }, [authenticated, loadChatDetail, loadChatJobs, refreshingChat]);
+
+  const cycleSelectedChatMessageViewMode = useCallback(() => {
+    const chatId = selectedChatIdRef.current;
+
+    if (!chatId) {
+      return;
+    }
+
+    setChatMessageViewModes((current) => ({
+      ...current,
+      [chatId]: nextChatMessageViewMode(current[chatId] ?? "all")
+    }));
+  }, []);
 
   const loadMoreMessages = useCallback(async () => {
     const chatId = selectedChatIdRef.current;
@@ -3278,6 +3380,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(localCommandQueueKey, JSON.stringify(localCommandQueue));
   }, [localCommandQueue]);
+
+  useEffect(() => {
+    localStorage.setItem(chatMessageViewModesKey, JSON.stringify(chatMessageViewModes));
+  }, [chatMessageViewModes]);
 
   useEffect(() => {
     writeCachedActiveJobs(chatJobs, state?.runner.recentJobs ?? []);
@@ -4356,6 +4462,17 @@ export function App() {
               title="Fork chat"
             >
               <GitFork size={18} />
+            </button>
+            <button
+              className={`icon-button message-view-button is-${selectedChatMessageViewMode}`}
+              type="button"
+              onClick={cycleSelectedChatMessageViewMode}
+              disabled={!selectedChatId}
+              aria-label={`Message view: ${selectedChatMessageViewMeta.title}. Press to switch.`}
+              title={`${selectedChatMessageViewMeta.description} Press to switch.`}
+            >
+              <Eye size={18} />
+              <span className="message-view-label">{selectedChatMessageViewMeta.label}</span>
             </button>
             <button
               className="icon-button"
