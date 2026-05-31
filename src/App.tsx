@@ -340,6 +340,7 @@ const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
 const socketStaleMs = 45000;
+const queuedCommandSteerGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
   return Boolean(chatId && (chatId.startsWith("optimistic-fork-") || chatId.startsWith("pending-chat-")));
@@ -377,7 +378,7 @@ function chatMessageViewModeMeta(mode: ChatMessageViewMode) {
     return {
       label: "Final",
       title: "Final responses only",
-      description: "Showing prompts, run separators, tool output, and final Codex responses. Codex updates are hidden."
+      description: "Showing prompts, final Codex responses, and run separators. Tool chatter and Codex updates are hidden."
     };
   }
 
@@ -419,7 +420,7 @@ function messageVisibleForViewMode(message: VisibleChatMessage, mode: ChatMessag
   }
 
   if (mode === "final") {
-    return message.role !== "assistant" || isFinalCodexMessage(message);
+    return isFinalCodexMessage(message);
   }
 
   return message.role === "assistant";
@@ -653,6 +654,13 @@ function isLocalCommandDue(command: LocalQueuedCommand) {
 
 function isLocalCommandBlocking(command: LocalQueuedCommand) {
   return command.status === "pending" || command.status === "sending";
+}
+
+function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | undefined, nowMs: number) {
+  const createdMs = Date.parse(command.createdAt);
+  const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedCommandSteerGuardMs : true;
+
+  return command.status === "pending" && job?.status === "running" && oldEnough;
 }
 
 function localCommandRetryDelay(attempts: number) {
@@ -1943,6 +1951,37 @@ export function App() {
 
     return chats;
   }, [chatIndex]);
+  const firstIndexedChatId = useMemo(() => firstChatId(chatIndex), [chatIndex]);
+  const selectedChatSummaryId =
+    selectedChatId && (isTemporaryChatId(selectedChatId) || chatSummaryById.has(selectedChatId)) ? selectedChatId : firstIndexedChatId;
+  const selectedChatSummary = selectedChatSummaryId ? (chatSummaryById.get(selectedChatSummaryId) ?? null) : null;
+  const selectedChatForActions = useMemo<ChatDetail | null>(() => {
+    if (selectedChat) {
+      return selectedChat;
+    }
+
+    if (!selectedChatSummary) {
+      return null;
+    }
+
+    return {
+      id: selectedChatSummary.id,
+      title: selectedChatSummary.title,
+      projectName: selectedChatSummary.projectName,
+      projectPath: selectedChatSummary.projectPath,
+      createdAt: selectedChatSummary.createdAt,
+      updatedAt: selectedChatSummary.updatedAt,
+      lastPrompt: null,
+      lastResponse: null,
+      messages: [],
+      messagePage: {
+        visibleTurns: 0,
+        totalTurns: 0,
+        hasMore: false
+      },
+      hasResponse: selectedChatSummary.hasResponse
+    };
+  }, [selectedChat, selectedChatSummary]);
   const busyServerChatIds = useMemo(() => {
     const chatIds = new Set<string>();
 
@@ -2121,8 +2160,8 @@ export function App() {
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
-  const topbarProjectLabel = selectedChat?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
-  const topbarTitle = selectedChat?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
+  const topbarProjectLabel = selectedChat?.projectName ?? selectedChatSummary?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
+  const topbarTitle = selectedChat?.title ?? selectedChatSummary?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -2947,12 +2986,12 @@ export function App() {
   }
 
   function openChatAction(mode: "rename" | "fork") {
-    if (!selectedChat) {
+    if (!selectedChatForActions) {
       return;
     }
 
     setChatActionMode((current) => (current === mode ? null : mode));
-    setChatActionName(mode === "rename" ? selectedChat.title : `${selectedChat.title} fork`);
+    setChatActionName(mode === "rename" ? selectedChatForActions.title : `${selectedChatForActions.title} fork`);
     setChatActionError("");
     setProjectActionMode(null);
     setProjectActionError("");
@@ -2962,7 +3001,7 @@ export function App() {
   async function submitChatAction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!selectedChat || !chatActionMode || chatActionBusy) {
+    if (!selectedChatForActions || !chatActionMode || chatActionBusy) {
       return;
     }
 
@@ -2974,7 +3013,7 @@ export function App() {
     }
 
     const mode = chatActionMode;
-    const sourceChat = selectedChat;
+    const sourceChat = selectedChatForActions;
     const optimisticFork = mode === "fork" ? selectOptimisticFork(sourceChat, name) : null;
 
     setChatActionBusy(true);
@@ -3802,7 +3841,7 @@ export function App() {
   }
 
   async function steerQueuedCommand(command: LocalQueuedCommand) {
-    if (command.status !== "pending") {
+    if (!queuedCommandCanSteer(command, selectedJob, Date.now())) {
       return;
     }
 
@@ -4044,6 +4083,7 @@ export function App() {
 
     event.preventDefault();
     sendHandledOnPointerDownRef.current = true;
+    event.currentTarget.blur();
     void sendPrompt();
   }
 
@@ -4445,7 +4485,7 @@ export function App() {
               className={`icon-button ${chatActionMode === "rename" ? "is-active" : ""}`}
               type="button"
               onClick={() => openChatAction("rename")}
-              disabled={!selectedChat || chatActionBusy}
+              disabled={!selectedChatForActions || chatActionBusy}
               aria-label="Rename chat"
               aria-pressed={chatActionMode === "rename"}
               title="Rename chat"
@@ -4456,7 +4496,7 @@ export function App() {
               className={`icon-button ${chatActionMode === "fork" ? "is-active" : ""}`}
               type="button"
               onClick={() => openChatAction("fork")}
-              disabled={!selectedChat || chatActionBusy}
+              disabled={!selectedChatForActions || chatActionBusy}
               aria-label="Fork chat"
               aria-pressed={chatActionMode === "fork"}
               title="Fork chat"
@@ -4497,7 +4537,7 @@ export function App() {
           </div>
         </header>
 
-        {chatActionMode && selectedChat ? (
+        {chatActionMode && selectedChatForActions ? (
           <form className="chat-action-panel" onSubmit={submitChatAction} aria-label={chatActionMode === "rename" ? "Rename chat" : "Fork chat"}>
             <label>
               <span>{chatActionMode === "rename" ? "New chat name" : "Fork name"}</span>
@@ -4623,7 +4663,12 @@ export function App() {
                         className="queue-steer"
                         type="button"
                         onClick={() => void steerQueuedCommand(command)}
-                        disabled={selectedJob?.status !== "running" || command.status !== "pending"}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                          }
+                        }}
+                        disabled={!queuedCommandCanSteer(command, selectedJob, durationNow)}
                         aria-label="Steer queued prompt into running chat"
                         title="Steer into running chat"
                       >
