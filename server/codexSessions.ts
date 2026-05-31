@@ -13,6 +13,8 @@ const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024
 const summaryTailBytes = Number(process.env.CODEX_SESSION_SUMMARY_TAIL_BYTES ?? 768 * 1024);
 const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTES ?? 256 * 1024) || 256 * 1024);
 const parseConcurrency = Math.max(1, Number(process.env.CODEX_SESSION_PARSE_CONCURRENCY ?? 8) || 8);
+const defaultDetailTurns = Math.max(1, Number(process.env.CODEX_CHAT_DETAIL_TURNS ?? 10) || 10);
+const maxDetailTurns = Math.max(defaultDetailTurns, Number(process.env.CODEX_CHAT_DETAIL_MAX_TURNS ?? 200) || 200);
 
 let summarySessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
 
@@ -25,6 +27,11 @@ type ParsedSession = ChatDetail & {
   indexed: boolean;
   source?: string;
   sortTime: number;
+};
+
+type ParseSessionOptions = {
+  maxTailBytes?: number;
+  detailTurns?: number;
 };
 
 export function clearSessionCache() {
@@ -254,11 +261,58 @@ async function readSessionIndex(): Promise<Map<string, IndexedSession>> {
   return index;
 }
 
+function clampDetailTurns(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return defaultDetailTurns;
+  }
+
+  return Math.min(maxDetailTurns, Math.max(1, Math.floor(value ?? defaultDetailTurns)));
+}
+
+function paginateTranscriptMessages(messages: ChatTranscriptMessage[], requestedTurns: number) {
+  const visibleTurns = clampDetailTurns(requestedTurns);
+  const userIndexes = messages.reduce<number[]>((indexes, message, index) => {
+    if (message.role === "user") {
+      indexes.push(index);
+    }
+
+    return indexes;
+  }, []);
+  const totalTurns = userIndexes.length;
+
+  if (!totalTurns) {
+    return {
+      messages: messages.slice(-visibleTurns * 2),
+      page: {
+        visibleTurns: 0,
+        totalTurns: 0,
+        hasMore: messages.length > visibleTurns * 2
+      }
+    };
+  }
+
+  const firstVisibleTurnIndex = Math.max(0, totalTurns - visibleTurns);
+  const firstMessageIndex = userIndexes[firstVisibleTurnIndex] ?? 0;
+  const pageMessages = messages.slice(firstMessageIndex);
+  const actualVisibleTurns = Math.min(visibleTurns, totalTurns);
+
+  return {
+    messages: pageMessages,
+    page: {
+      visibleTurns: actualVisibleTurns,
+      totalTurns,
+      hasMore: totalTurns > actualVisibleTurns
+    }
+  };
+}
+
 async function parseSessionFile(
   filePath: string,
   index: Map<string, IndexedSession>,
-  maxTailBytes = tailBytes
+  options: ParseSessionOptions | number = {}
 ): Promise<ParsedSession | null> {
+  const maxTailBytes = typeof options === "number" ? options : options.maxTailBytes ?? tailBytes;
+  const detailTurns = typeof options === "number" ? defaultDetailTurns : clampDetailTurns(options.detailTurns);
   const stat = await fs.stat(filePath);
   const fallbackId = idFromFilename(filePath);
   let id = fallbackId;
@@ -271,8 +325,7 @@ async function parseSessionFile(
   let lastAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let lastFinalAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let newestRecordMs = Number.NaN;
-  const userMessages: ChatTranscriptMessage[] = [];
-  const assistantMessages: ChatTranscriptMessage[] = [];
+  const transcriptMessages: ChatTranscriptMessage[] = [];
 
   const headBuffer = await readFileSlice(filePath, 0, Math.min(stat.size, headBytes));
 
@@ -348,8 +401,8 @@ async function parseSessionFile(
         lastPrompt = { text, createdAt: timestamp };
         lastAssistantAfterPrompt = null;
         lastFinalAssistantAfterPrompt = null;
-        userMessages.push({
-          id: transcriptId("user", timestamp, userMessages.length),
+        transcriptMessages.push({
+          id: transcriptId("user", timestamp, transcriptMessages.length),
           role: "user",
           text,
           createdAt: timestamp
@@ -370,8 +423,8 @@ async function parseSessionFile(
           lastAssistantAfterPrompt = lastAssistant;
         }
 
-        assistantMessages.push({
-          id: transcriptId("assistant", timestamp, assistantMessages.length),
+        transcriptMessages.push({
+          id: transcriptId("assistant", timestamp, transcriptMessages.length),
           role: "assistant",
           text,
           createdAt: timestamp,
@@ -420,7 +473,7 @@ async function parseSessionFile(
     | ChatMessageExcerpt
     | null;
   const title = indexed?.threadName ?? previewText(currentLastPrompt?.text ?? "", id);
-  const messages = [...userMessages.slice(-10), ...assistantMessages.slice(-10)].sort((a, b) => {
+  const sortedMessages = transcriptMessages.sort((a, b) => {
     const byTime = Date.parse(a.createdAt) - Date.parse(b.createdAt);
 
     if (byTime !== 0) {
@@ -429,6 +482,7 @@ async function parseSessionFile(
 
     return a.id.localeCompare(b.id);
   });
+  const messagePage = paginateTranscriptMessages(sortedMessages, detailTurns);
 
   return {
     id,
@@ -439,7 +493,8 @@ async function parseSessionFile(
     updatedAt: updated.iso,
     lastPrompt: currentLastPrompt,
     lastResponse: response,
-    messages,
+    messages: messagePage.messages,
+    messagePage: messagePage.page,
     hasResponse: Boolean(response),
     indexed: Boolean(indexed),
     source,
@@ -546,14 +601,17 @@ export async function listChats(): Promise<{ projects: ChatProjectGroup[]; total
   };
 }
 
-export async function getChat(id: string): Promise<ChatDetail | null> {
+export async function getChat(id: string, options: { detailTurns?: number } = {}): Promise<ChatDetail | null> {
   const filePath = await findSessionFile(id);
 
   if (!filePath) {
     return null;
   }
 
-  const session = await parseSessionFile(filePath, await readSessionIndex(), Number.POSITIVE_INFINITY);
+  const session = await parseSessionFile(filePath, await readSessionIndex(), {
+    maxTailBytes: Number.POSITIVE_INFINITY,
+    detailTurns: options.detailTurns
+  });
 
   if (!session) {
     return null;

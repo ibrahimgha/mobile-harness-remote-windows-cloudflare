@@ -150,6 +150,11 @@ type ChatDetail = {
   lastPrompt: ChatMessageExcerpt | null;
   lastResponse: ChatMessageExcerpt | null;
   messages: ChatTranscriptMessage[];
+  messagePage?: {
+    visibleTurns: number;
+    totalTurns: number;
+    hasMore: boolean;
+  };
   hasResponse: boolean;
 };
 
@@ -271,6 +276,8 @@ const chatHistoryCacheKey = "chat-history-cache-v1";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = "selected-chat-id";
 const maxCachedChatHistories = 20;
+const defaultChatTurns = 10;
+const chatTurnPageSize = 10;
 const maxAttachmentFiles = 5;
 const maxAttachmentBytes = 10 * 1024 * 1024;
 const socketReconnectMs = 1500;
@@ -520,7 +527,10 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
     (a.lastPrompt?.text ?? "") !== (b.lastPrompt?.text ?? "") ||
     (a.lastPrompt?.createdAt ?? "") !== (b.lastPrompt?.createdAt ?? "") ||
     (a.lastResponse?.text ?? "") !== (b.lastResponse?.text ?? "") ||
-    (a.lastResponse?.createdAt ?? "") !== (b.lastResponse?.createdAt ?? "")
+    (a.lastResponse?.createdAt ?? "") !== (b.lastResponse?.createdAt ?? "") ||
+    (a.messagePage?.visibleTurns ?? defaultChatTurns) !== (b.messagePage?.visibleTurns ?? defaultChatTurns) ||
+    (a.messagePage?.totalTurns ?? 0) !== (b.messagePage?.totalTurns ?? 0) ||
+    Boolean(a.messagePage?.hasMore) !== Boolean(b.messagePage?.hasMore)
   ) {
     return false;
   }
@@ -1532,6 +1542,7 @@ export function App() {
   const [chatScrollVersion, setChatScrollVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [, setNotice] = useState("");
@@ -1545,6 +1556,7 @@ export function App() {
   const [notificationStatus, setNotificationStatus] = useState<RemoteNotificationState>("default");
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [chatTurnLimits, setChatTurnLimits] = useState<Record<string, number>>({});
   const [menuOpen, setMenuOpen] = useState(false);
   const [runBoardOpen, setRunBoardOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
@@ -1561,6 +1573,7 @@ export function App() {
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
+  const chatTurnLimitsRef = useRef<Record<string, number>>({});
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
 
@@ -1571,6 +1584,10 @@ export function App() {
     }),
     [token]
   );
+
+  useEffect(() => {
+    chatTurnLimitsRef.current = chatTurnLimits;
+  }, [chatTurnLimits]);
 
   const selectedJobs = useMemo(() => {
     if (!selectedChatId) {
@@ -1748,6 +1765,8 @@ export function App() {
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
+  const selectedMessagePage = selectedChat?.messagePage;
+  const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
     () =>
       selectedJobs
@@ -1798,8 +1817,13 @@ export function App() {
     return fallback;
   }, [selectedChat]);
   const visibleMessages = useMemo<VisibleChatMessage[]>(
-    () =>
-      [...transcriptMessages, ...runFailureMessages]
+    () => {
+      const firstTranscriptMs = Date.parse(transcriptMessages[0]?.createdAt ?? "");
+      const scopedRunFailures = Number.isFinite(firstTranscriptMs)
+        ? runFailureMessages.filter((message) => (Date.parse(message.createdAt) || 0) >= firstTranscriptMs)
+        : runFailureMessages;
+
+      return [...transcriptMessages, ...scopedRunFailures]
         .sort((a, b) => {
           const byTime = (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0);
 
@@ -1808,8 +1832,8 @@ export function App() {
           }
 
           return a.id.localeCompare(b.id);
-        })
-        .slice(-20),
+        });
+    },
     [runFailureMessages, transcriptMessages]
   );
   const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
@@ -2140,16 +2164,19 @@ export function App() {
   }, []);
 
   const loadChatDetail = useCallback(
-    async (chatId: string, quiet = false) => {
+    async (chatId: string, quiet = false, requestedTurns?: number) => {
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
       const cachedDetail = getCachedChatHistory(chatId);
+      const turns = Math.max(1, requestedTurns ?? chatTurnLimitsRef.current[chatId] ?? defaultChatTurns);
 
       if (!quiet) {
         setLoadingDetail(!cachedDetail);
       }
 
-      if (cachedDetail && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
+      const cachedTurns = cachedDetail?.messagePage?.visibleTurns ?? defaultChatTurns;
+
+      if (cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
 
@@ -2161,7 +2188,7 @@ export function App() {
       }
 
       try {
-        const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}`);
+        const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}?turns=${encodeURIComponent(String(turns))}`);
 
         if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
           return;
@@ -2318,6 +2345,30 @@ export function App() {
       setRefreshingChat(false);
     }
   }, [authenticated, loadChatDetail, loadChatJobs, refreshingChat]);
+
+  const loadMoreMessages = useCallback(async () => {
+    const chatId = selectedChatIdRef.current;
+
+    if (!authenticated || !chatId || loadingMoreMessages) {
+      return;
+    }
+
+    const currentLimit = chatTurnLimitsRef.current[chatId] ?? selectedChat?.messagePage?.visibleTurns ?? defaultChatTurns;
+    const nextLimit = currentLimit + chatTurnPageSize;
+
+    setLoadingMoreMessages(true);
+    setChatTurnLimits((current) => {
+      const next = { ...current, [chatId]: nextLimit };
+      chatTurnLimitsRef.current = next;
+      return next;
+    });
+
+    try {
+      await loadChatDetail(chatId, true, nextLimit);
+    } finally {
+      setLoadingMoreMessages(false);
+    }
+  }, [authenticated, loadChatDetail, loadingMoreMessages, selectedChat?.messagePage?.visibleTurns]);
 
   const openRunBoard = useCallback(() => {
     setRunBoardOpen(true);
@@ -3509,6 +3560,12 @@ export function App() {
             </div>
           ) : selectedChat ? (
             <div className="chat-thread" aria-label="Recent chat messages">
+              {selectedCanLoadMoreMessages ? (
+                <button className="load-more-messages" type="button" onClick={loadMoreMessages} disabled={loadingMoreMessages}>
+                  {loadingMoreMessages ? <Loader2 className="spin" size={15} /> : <ChevronDown size={15} />}
+                  Load 10 more
+                </button>
+              ) : null}
               {visibleMessages.length ? (
                 visibleMessages.map((message, index) => {
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);

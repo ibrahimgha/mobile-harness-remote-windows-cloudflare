@@ -779,9 +779,12 @@ app.post("/api/projects", requireControlAuth, async (req, res) => {
 
 app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const turns = Number(Array.isArray(req.query.turns) ? req.query.turns[0] : req.query.turns);
 
   try {
-    const chat = await getChat(chatId);
+    const chat = await getChat(chatId, {
+      detailTurns: Number.isFinite(turns) ? turns : undefined
+    });
 
     if (!chat) {
       res.status(404).json({ ok: false, message: "Chat not found" });

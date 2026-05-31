@@ -147,6 +147,11 @@ export type ChatDetail = {
   lastPrompt: ChatMessageExcerpt | null;
   lastResponse: ChatMessageExcerpt | null;
   messages: ChatTranscriptMessage[];
+  messagePage: {
+    visibleTurns: number;
+    totalTurns: number;
+    hasMore: boolean;
+  };
   hasResponse: boolean;
 };
 
