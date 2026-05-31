@@ -9,6 +9,7 @@ A local web control surface for a running Codex desktop window. It is designed t
 - WebSocket event stream at `/ws`
 - Codex session browser grouped by project folder
 - Exact-session prompt routing through `codex exec resume <session-id>`
+- Remote project folder creation and remote new-chat creation inside an existing project
 - Windows-focused Codex window control through PowerShell and `WScript.Shell`
 - Simulation mode by default
 - Token-gated control actions for tunneled use
@@ -38,6 +39,7 @@ CONTROL_TOKEN=use-a-long-random-secret
 ENABLE_WINDOW_CONTROL=false
 CODEX_RUN_BYPASS_SANDBOX=true
 CODEX_RUN_SKIP_GIT_REPO_CHECK=true
+CODEX_NEW_PROJECTS_ROOT=C:\Users\your-user
 ```
 
 Run for development:
@@ -127,12 +129,16 @@ CODEX_WINDOW_TITLE=Codex
 
 `ENABLE_WINDOW_CONTROL` only affects the lower-level focus/hotkey endpoints. Leave it off for normal exact-session prompt routing.
 
+Remote project creation uses `CODEX_NEW_PROJECTS_ROOT` as the parent folder. If unset, it defaults to the OS user home directory.
+
 ## API
 
 ```http
 GET /api/state
 GET /api/debug/events
 GET /api/jobs
+POST /api/projects
+POST /api/chats
 POST /api/chats/:id/prompt
 POST /api/actions/focus
 POST /api/actions/send-text

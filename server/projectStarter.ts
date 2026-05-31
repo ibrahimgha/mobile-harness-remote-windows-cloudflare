@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { clearSessionCache, findNewestChatForProject } from "./codexSessions.js";
 import { promoteChatForDesktop } from "./desktopVisibility.js";
-import type { ChatDetail } from "./types.js";
+import type { ChatDetail, CodexRunSettings } from "./types.js";
 
 type StartProjectChatOptions = {
   cliPath: string;
@@ -14,6 +14,8 @@ type StartProjectChatOptions = {
   projectPath: string;
   projectName: string;
   prompt?: string;
+  createDirectory?: boolean;
+  settings?: CodexRunSettings;
 };
 
 export type ProjectChatStartResult = {
@@ -99,6 +101,24 @@ export function resolveNewProjectPath(name: string): { folderName: string; proje
   return { folderName, projectPath, root };
 }
 
+export function getDefaultProjectsRoot(): string {
+  return defaultProjectsRoot;
+}
+
+async function ensureProjectDirectory(projectPath: string, createDirectory: boolean) {
+  if (createDirectory) {
+    await fs.mkdir(path.dirname(projectPath), { recursive: true });
+    await fs.mkdir(projectPath, { recursive: false });
+    return;
+  }
+
+  const stat = await fs.stat(projectPath);
+
+  if (!stat.isDirectory()) {
+    throw new Error("Project path is not a folder");
+  }
+}
+
 function initialPrompt(projectName: string, prompt: string | undefined): string {
   const trimmed = prompt?.trim();
 
@@ -150,8 +170,21 @@ export async function startProjectChat(options: StartProjectChatOptions): Promis
     args.push("--skip-git-repo-check");
   }
 
+  if (options.settings?.model && options.settings.model !== "default") {
+    args.push("--model", options.settings.model);
+  }
+
+  if (options.settings?.reasoningEffort) {
+    args.push("-c", `model_reasoning_effort="${options.settings.reasoningEffort}"`);
+  }
+
+  if (options.settings?.speed === "priority") {
+    args.push("-c", 'desktop.default-service-tier="priority"');
+  }
+
   args.push("-");
 
+  await ensureProjectDirectory(options.projectPath, Boolean(options.createDirectory));
   await fs.mkdir(path.dirname(logPaths.stdout), { recursive: true });
 
   await new Promise<void>((resolve, reject) => {

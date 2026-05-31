@@ -12,6 +12,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
+import { getDefaultProjectsRoot, resolveNewProjectPath, startProjectChat } from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import type { BridgeEvent, BridgeState, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
@@ -769,12 +770,124 @@ app.get("/api/chats", requireControlAuth, async (req, res) => {
   }
 });
 
+app.post("/api/chats", requireControlAuth, async (req, res) => {
+  const projectPath = typeof req.body?.projectPath === "string" ? path.resolve(req.body.projectPath) : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.replace(/\s+/g, " ").trim() : "";
+  const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
+
+  if (!projectPath) {
+    res.status(400).json({ ok: false, message: "Project path is required" });
+    return;
+  }
+
+  try {
+    const stat = await fsp.stat(projectPath);
+
+    if (!stat.isDirectory()) {
+      res.status(400).json({ ok: false, message: "Project path is not a folder" });
+      return;
+    }
+
+    const projectTitle = title || path.basename(projectPath) || "New chat";
+    const result = await startProjectChat({
+      cliPath: runner.cliPath,
+      bypassSandbox: runner.bypassSandbox,
+      skipGitRepoCheck: runner.skipGitRepoCheck,
+      projectPath,
+      projectName: projectTitle,
+      prompt,
+      settings: getRunSettings()
+    });
+
+    pushEvent("action", "New Codex chat started in project", {
+      action: "chat-create",
+      route: "POST /api/chats",
+      request: requestContext(req),
+      projectPath,
+      chatId: result.chat.id,
+      title: projectTitle,
+      logPaths: result.logPaths
+    });
+
+    res.status(201).json({
+      ok: true,
+      message: "New chat started in project",
+      projectPath: result.projectPath,
+      chat: result.chat,
+      logPaths: result.logPaths
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not start chat in project";
+    const missing = error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+
+    pushEvent("error", message, {
+      action: "chat-create-failed",
+      route: "POST /api/chats",
+      request: requestContext(req),
+      projectPath,
+      error: describeError(error)
+    });
+    res.status(missing ? 404 : 500).json({ ok: false, message: missing ? "Project folder was not found" : message });
+  }
+});
+
 app.post("/api/projects", requireControlAuth, async (req, res) => {
-  pushEvent("status", "Remote project creation is disabled", {
-    action: "project-create-disabled",
-    request: requestContext(req)
-  });
-  res.status(410).json({ ok: false, message: "Starting new chats from the remote is disabled" });
+  const rawName = typeof req.body?.name === "string" ? req.body.name : "";
+  const title = rawName.replace(/\s+/g, " ").trim();
+  const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
+
+  try {
+    const { folderName, projectPath, root } = resolveNewProjectPath(rawName);
+
+    if (fs.existsSync(projectPath)) {
+      res.status(409).json({ ok: false, message: "Project folder already exists", root, projectPath, folderName });
+      return;
+    }
+
+    const result = await startProjectChat({
+      cliPath: runner.cliPath,
+      bypassSandbox: runner.bypassSandbox,
+      skipGitRepoCheck: runner.skipGitRepoCheck,
+      projectPath,
+      projectName: title || folderName,
+      prompt,
+      createDirectory: true,
+      settings: getRunSettings()
+    });
+
+    pushEvent("action", "New project folder and Codex chat started", {
+      action: "project-create",
+      route: "POST /api/projects",
+      request: requestContext(req),
+      root,
+      folderName,
+      projectPath,
+      chatId: result.chat.id,
+      logPaths: result.logPaths
+    });
+
+    res.status(201).json({
+      ok: true,
+      message: "New project folder and chat started",
+      root,
+      folderName,
+      projectPath: result.projectPath,
+      chat: result.chat,
+      logPaths: result.logPaths
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not create project";
+    const exists = error && typeof error === "object" && "code" in error && error.code === "EEXIST";
+
+    pushEvent("error", message, {
+      action: "project-create-failed",
+      route: "POST /api/projects",
+      request: requestContext(req),
+      root: getDefaultProjectsRoot(),
+      error: describeError(error)
+    });
+    res.status(exists ? 409 : 400).json({ ok: false, message: exists ? "Project folder already exists" : message });
+  }
 });
 
 app.get("/api/chats/:id", requireControlAuth, async (req, res) => {

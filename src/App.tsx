@@ -10,12 +10,15 @@ import {
   Copy,
   FileText,
   Folder,
+  FolderPlus,
   ListChecks,
   Loader2,
   LogOut,
   Menu,
+  MessageSquarePlus,
   MonitorUp,
   Paperclip,
+  Plus,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -187,6 +190,20 @@ type ChatProjectGroup = {
 type ChatIndex = {
   projects: ChatProjectGroup[];
   totalChats: number;
+};
+
+type ProjectChatStartResult = {
+  ok: boolean;
+  message?: string;
+  root?: string;
+  folderName?: string;
+  projectPath: string;
+  chat: ChatDetail;
+  logPaths?: {
+    stdout: string;
+    stderr: string;
+    lastMessage: string;
+  };
 };
 
 type ApiResult = {
@@ -1651,6 +1668,14 @@ export function App() {
   const [instructionsLoading, setInstructionsLoading] = useState(false);
   const [instructionsError, setInstructionsError] = useState("");
   const [shortcutInstructions, setShortcutInstructions] = useState<ShortcutInstructionsResult | null>(null);
+  const [projectActionMode, setProjectActionMode] = useState<"project" | "chat" | null>(null);
+  const [projectActionBusy, setProjectActionBusy] = useState(false);
+  const [projectActionError, setProjectActionError] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectPrompt, setNewProjectPrompt] = useState("");
+  const [newChatTitle, setNewChatTitle] = useState("");
+  const [newChatPrompt, setNewChatPrompt] = useState("");
+  const [newChatProjectPath, setNewChatProjectPath] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
@@ -1687,6 +1712,7 @@ export function App() {
       (state?.runner.recentJobs ?? []).filter((job) => job.chatId === selectedChatId)
     );
   }, [chatJobs, selectedChatId, state?.runner.recentJobs]);
+  const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
   const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
@@ -2475,6 +2501,120 @@ export function App() {
     }
   }, []);
 
+  const selectStartedChat = useCallback(
+    async (chat: ChatDetail) => {
+      rememberCachedChatHistory(chat);
+      chatDetailRequestRef.current += 1;
+      selectedChatIdRef.current = chat.id;
+      setSelectedChatId(chat.id);
+      setSelectedChat(chat);
+      setChatTurnLimits((current) => ({ ...current, [chat.id]: Math.max(chat.messagePage?.visibleTurns ?? defaultChatTurns, defaultChatTurns) }));
+      setProjectActionMode(null);
+      setProjectActionError("");
+      setInstructionsOpen(false);
+      setMenuOpen(false);
+      requestChatScroll();
+      await loadChats();
+      selectedChatIdRef.current = chat.id;
+      setSelectedChatId(chat.id);
+      setSelectedChat(chat);
+      void loadChatJobs(chat.id);
+      void loadChatDetail(chat.id, true);
+    },
+    [loadChatDetail, loadChatJobs, loadChats, requestChatScroll]
+  );
+
+  function openProjectAction(mode: "project" | "chat") {
+    setProjectActionMode((current) => (current === mode ? null : mode));
+    setProjectActionError("");
+    setInstructionsOpen(false);
+
+    if (mode === "chat" && !newChatProjectPath) {
+      setNewChatProjectPath(selectedChat?.projectPath ?? projectOptions[0]?.projectPath ?? "");
+    }
+  }
+
+  async function submitNewProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (projectActionBusy) {
+      return;
+    }
+
+    const name = newProjectName.trim();
+
+    if (!name) {
+      setProjectActionError("Project name is required");
+      return;
+    }
+
+    setProjectActionBusy(true);
+    setProjectActionError("");
+
+    try {
+      const result = await apiFetch<ProjectChatStartResult>("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          prompt: newProjectPrompt.trim() || undefined
+        })
+      });
+
+      setNewProjectName("");
+      setNewProjectPrompt("");
+      setNotice(result.message ?? "Project created");
+      await selectStartedChat(result.chat);
+    } catch (error) {
+      setProjectActionError(error instanceof Error ? error.message : "Could not create project");
+    } finally {
+      setProjectActionBusy(false);
+    }
+  }
+
+  async function submitNewChat(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (projectActionBusy) {
+      return;
+    }
+
+    const title = newChatTitle.trim();
+    const projectPath = newChatProjectPath || selectedChat?.projectPath || projectOptions[0]?.projectPath || "";
+
+    if (!projectPath) {
+      setProjectActionError("Project folder is required");
+      return;
+    }
+
+    if (!title) {
+      setProjectActionError("Chat name is required");
+      return;
+    }
+
+    setProjectActionBusy(true);
+    setProjectActionError("");
+
+    try {
+      const result = await apiFetch<ProjectChatStartResult>("/api/chats", {
+        method: "POST",
+        body: JSON.stringify({
+          projectPath,
+          title,
+          prompt: newChatPrompt.trim() || undefined
+        })
+      });
+
+      setNewChatTitle("");
+      setNewChatPrompt("");
+      setNotice(result.message ?? "Chat started");
+      await selectStartedChat(result.chat);
+    } catch (error) {
+      setProjectActionError(error instanceof Error ? error.message : "Could not start chat");
+    } finally {
+      setProjectActionBusy(false);
+    }
+  }
+
   const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string, messageId = optimisticPromptId(createdAt)) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
@@ -2528,6 +2668,8 @@ export function App() {
   function closeMobileMenuPanels() {
     setMenuOpen(false);
     setInstructionsOpen(false);
+    setProjectActionMode(null);
+    setProjectActionError("");
   }
 
   function selectChat(chatId: string) {
@@ -3403,6 +3545,8 @@ export function App() {
     setSelectedChatId(null);
     setInstructionsOpen(false);
     setShortcutInstructions(null);
+    setProjectActionMode(null);
+    setProjectActionError("");
     setPendingAttachments([]);
   }
 
@@ -3468,9 +3612,33 @@ export function App() {
           </div>
           <div className="sidebar-actions">
             <button
+              className={`icon-button ${projectActionMode === "project" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => openProjectAction("project")}
+              aria-label="Create project"
+              aria-pressed={projectActionMode === "project"}
+              title="Create project"
+            >
+              <FolderPlus size={18} />
+            </button>
+            <button
+              className={`icon-button ${projectActionMode === "chat" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => openProjectAction("chat")}
+              aria-label="Start chat"
+              aria-pressed={projectActionMode === "chat"}
+              title="Start chat"
+            >
+              <MessageSquarePlus size={18} />
+            </button>
+            <button
               className={`icon-button ${instructionsOpen ? "is-active" : ""}`}
               type="button"
-              onClick={() => setInstructionsOpen((open) => !open)}
+              onClick={() => {
+                setProjectActionMode(null);
+                setProjectActionError("");
+                setInstructionsOpen((open) => !open);
+              }}
               aria-label="Show shortcut instructions"
               aria-pressed={instructionsOpen}
               title="Shortcut instructions"
@@ -3513,6 +3681,91 @@ export function App() {
           busy={settingsSaving}
           onChange={updateRunSettings}
         />
+
+        {projectActionMode ? (
+          <form
+            className="new-project-panel"
+            onSubmit={projectActionMode === "project" ? submitNewProject : submitNewChat}
+            aria-label={projectActionMode === "project" ? "Create project" : "Start chat"}
+          >
+            <div className="new-project-panel-header">
+              <h2>{projectActionMode === "project" ? "New project" : "New chat"}</h2>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => {
+                  setProjectActionMode(null);
+                  setProjectActionError("");
+                }}
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
+            </div>
+            {projectActionMode === "project" ? (
+              <>
+                <label>
+                  <span>Project name</span>
+                  <input
+                    value={newProjectName}
+                    onChange={(event) => setNewProjectName(event.currentTarget.value)}
+                    disabled={projectActionBusy}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  <span>Initial prompt</span>
+                  <textarea
+                    value={newProjectPrompt}
+                    onChange={(event) => setNewProjectPrompt(event.currentTarget.value)}
+                    disabled={projectActionBusy}
+                    placeholder="Optional"
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label>
+                  <span>Project folder</span>
+                  <select
+                    value={newChatProjectPath || selectedChat?.projectPath || projectOptions[0]?.projectPath || ""}
+                    onChange={(event) => setNewChatProjectPath(event.currentTarget.value)}
+                    disabled={projectActionBusy || !projectOptions.length}
+                  >
+                    {projectOptions.map((project) => (
+                      <option key={project.projectPath} value={project.projectPath}>
+                        {project.projectName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Chat name</span>
+                  <input
+                    value={newChatTitle}
+                    onChange={(event) => setNewChatTitle(event.currentTarget.value)}
+                    disabled={projectActionBusy}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  <span>Initial prompt</span>
+                  <textarea
+                    value={newChatPrompt}
+                    onChange={(event) => setNewChatPrompt(event.currentTarget.value)}
+                    disabled={projectActionBusy}
+                    placeholder="Optional"
+                  />
+                </label>
+              </>
+            )}
+            {projectActionError ? <p className="new-project-error">{projectActionError}</p> : null}
+            <button type="submit" disabled={projectActionBusy || (projectActionMode === "chat" && !projectOptions.length)}>
+              {projectActionBusy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+              {projectActionMode === "project" ? "Create" : "Start"}
+            </button>
+          </form>
+        ) : null}
 
         {instructionsOpen ? (
           <div className="instructions-panel" aria-label="Shortcut instruction files">
