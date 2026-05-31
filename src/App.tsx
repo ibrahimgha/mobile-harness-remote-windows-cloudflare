@@ -27,6 +27,7 @@ import {
   FormEvent,
   Fragment,
   PointerEvent as ReactPointerEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   isValidElement,
   memo,
   type ReactNode,
@@ -3276,6 +3277,26 @@ export function App() {
     void sendPrompt();
   }
 
+  function sendPromptFromKeyboard(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.nativeEvent.isComposing ||
+      window.matchMedia("(pointer: coarse)").matches ||
+      sending ||
+      !selectedChatId ||
+      (!draft.trim() && !pendingAttachments.length)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void sendPrompt();
+  }
+
   function logout() {
     localStorage.removeItem(tokenKey);
     setToken("");
@@ -3744,6 +3765,7 @@ export function App() {
                 event.preventDefault();
                 document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
               }}
+              onKeyDown={sendPromptFromKeyboard}
             />
             <button
               className="send-button"
