@@ -679,7 +679,7 @@ p {
 
 .chat-workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -687,7 +687,12 @@ p {
   overflow: hidden;
 }
 
+.chat-topbar {
+  grid-row: 1;
+}
+
 .chat-action-panel {
+  grid-row: 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
@@ -813,6 +818,7 @@ p {
 }
 
 .chat-content {
+  grid-row: 3;
   display: flex;
   min-height: 0;
   padding: 16px;
@@ -1239,6 +1245,7 @@ p {
 }
 
 .composer {
+  grid-row: 6;
   display: block;
   padding: 10px 14px;
   border-top: 0;
@@ -1339,6 +1346,7 @@ p {
 }
 
 .command-queue {
+  grid-row: 4;
   display: grid;
   grid-template-rows: auto minmax(0, auto);
   gap: 8px;
@@ -1500,6 +1508,7 @@ p {
 }
 
 .job-strip {
+  grid-row: 5;
   display: grid;
   grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr);
   gap: 8px;
