@@ -518,6 +518,8 @@ async function parseSessionFile(
           action?: unknown;
           query?: unknown;
           changes?: unknown;
+          source_chat_id?: unknown;
+          source_title?: unknown;
           error?: {
             message?: unknown;
           };
@@ -624,6 +626,21 @@ async function parseSessionFile(
           label: "Run complete",
           durationMs: payload.duration_ms,
           text: payload.duration_ms ? `Completed in ${Math.round(payload.duration_ms / 1000)}s` : "Run complete",
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "event_msg" && payload.type === "chat_forked") {
+        const sourceTitle = textFromUnknown(payload.source_title).replace(/\s+/g, " ").trim();
+        const sourceChatId = textFromUnknown(payload.source_chat_id).trim();
+        const label = sourceTitle || sourceChatId || "source chat";
+
+        appendTranscriptMessage({
+          role: "system",
+          kind: "forked_from",
+          label: "Forked chat",
+          text: `Forked from ${label}`,
           createdAt: timestamp
         });
         return;

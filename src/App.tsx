@@ -134,7 +134,8 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
     | "tool_call"
     | "tool_output"
     | "error"
-    | "task_complete";
+    | "task_complete"
+    | "forked_from";
   isFinal?: boolean;
   label?: string;
   toolName?: string;
@@ -417,6 +418,19 @@ function formatDurationMs(durationMs: number | undefined) {
   }
 
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function separatorText(message: ChatTranscriptMessage) {
+  if (message.kind === "forked_from") {
+    return `${message.text || "Forked from source chat"} at ${formatDate(message.createdAt)}`;
+  }
+
+  if (message.kind === "task_complete") {
+    const completeDuration = formatDurationMs(message.durationMs);
+    return completeDuration ? `Run complete ${completeDuration}` : "Run complete";
+  }
+
+  return message.text;
 }
 
 function chatMessageLabel(message: VisibleChatMessage) {
@@ -842,6 +856,10 @@ function readStoredSelectedChatId() {
 
 function rememberSelectedChatId(chatId: string | null) {
   try {
+    if (chatId?.startsWith("optimistic-fork-")) {
+      return;
+    }
+
     if (chatId) {
       localStorage.setItem(selectedChatIdKey, chatId);
       return;
@@ -870,6 +888,31 @@ function rememberCachedChatHistory(chat: ChatDetail) {
       return;
     }
   }
+}
+
+function removeCachedChatHistory(chatId: string) {
+  try {
+    localStorage.setItem(
+      chatHistoryCacheKey,
+      JSON.stringify(readCachedChatHistories().filter((item) => item.chat.id !== chatId))
+    );
+  } catch {
+    return;
+  }
+}
+
+function summaryFromChat(chat: ChatDetail): ChatSummary {
+  return {
+    id: chat.id,
+    title: chat.title,
+    projectName: chat.projectName,
+    projectPath: chat.projectPath,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    lastPromptPreview: previewText(chat.lastPrompt?.text ?? "", "No prompt yet"),
+    lastResponsePreview: previewText(chat.lastResponse?.text ?? "", "No response yet"),
+    hasResponse: chat.hasResponse
+  };
 }
 
 function chatIndexContainsChat(index: ChatIndex, chatId: string) {
@@ -2540,6 +2583,122 @@ export function App() {
     [loadChatDetail, loadChatJobs, loadChats, requestChatScroll]
   );
 
+  function upsertChatSummary(chat: ChatDetail, previousChatId?: string) {
+    setChatIndex((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const summary = summaryFromChat(chat);
+      let foundProject = false;
+      let addedNewChat = false;
+      const projects = current.projects.map((project) => {
+        const filteredChats = project.chats.filter((candidate) => candidate.id !== chat.id && candidate.id !== previousChatId);
+
+        if (project.projectPath !== chat.projectPath) {
+          return {
+            ...project,
+            chats: filteredChats
+          };
+        }
+
+        foundProject = true;
+        addedNewChat = !project.chats.some((candidate) => candidate.id === chat.id || candidate.id === previousChatId);
+
+        return {
+          ...project,
+          updatedAt: chat.updatedAt,
+          chats: [summary, ...filteredChats]
+        };
+      });
+
+      if (!foundProject) {
+        addedNewChat = true;
+        projects.unshift({
+          projectName: chat.projectName,
+          projectPath: chat.projectPath,
+          updatedAt: chat.updatedAt,
+          chats: [summary]
+        });
+      }
+
+      return {
+        ...current,
+        totalChats: current.totalChats + (addedNewChat ? 1 : 0),
+        projects
+      };
+    });
+  }
+
+  function removeChatSummary(chatId: string) {
+    setChatIndex((current) => {
+      if (!current) {
+        return current;
+      }
+
+      let removed = false;
+      const projects = current.projects.map((project) => {
+        const chats = project.chats.filter((chat) => {
+          const keep = chat.id !== chatId;
+
+          if (!keep) {
+            removed = true;
+          }
+
+          return keep;
+        });
+
+        return { ...project, chats };
+      });
+
+      return {
+        ...current,
+        totalChats: Math.max(0, current.totalChats - (removed ? 1 : 0)),
+        projects
+      };
+    });
+  }
+
+  function selectOptimisticFork(sourceChat: ChatDetail, name: string) {
+    const createdAt = new Date().toISOString();
+    const optimisticId = `optimistic-fork-${Date.parse(createdAt) || Date.now()}`;
+    const forkMarker: ChatTranscriptMessage = {
+      id: `forked-from-${optimisticId}`,
+      role: "system",
+      kind: "forked_from",
+      label: "Forked chat",
+      text: `Forked from ${sourceChat.title}`,
+      createdAt
+    };
+    const optimisticChat: ChatDetail = {
+      ...sourceChat,
+      id: optimisticId,
+      title: name,
+      createdAt,
+      updatedAt: createdAt,
+      messages: [...(sourceChat.messages ?? []), forkMarker],
+      messagePage: sourceChat.messagePage
+        ? { ...sourceChat.messagePage }
+        : {
+            visibleTurns: defaultChatTurns,
+            totalTurns: 0,
+            hasMore: false
+          }
+    };
+
+    upsertChatSummary(optimisticChat);
+    chatDetailRequestRef.current += 1;
+    selectedChatIdRef.current = optimisticId;
+    setSelectedChatId(optimisticId);
+    setSelectedChat(optimisticChat);
+    setChatTurnLimits((current) => ({ ...current, [optimisticId]: Math.max(optimisticChat.messagePage?.visibleTurns ?? defaultChatTurns, defaultChatTurns) }));
+    setChatActionMode(null);
+    setChatActionError("");
+    requestChatScroll();
+
+    return { optimisticId, optimisticChat };
+  }
+
   function openProjectAction(mode: "project" | "chat") {
     setProjectActionMode((current) => (current === mode ? null : mode));
     setProjectActionError("");
@@ -2580,13 +2739,15 @@ export function App() {
     }
 
     const mode = chatActionMode;
+    const sourceChat = selectedChat;
+    const optimisticFork = mode === "fork" ? selectOptimisticFork(sourceChat, name) : null;
 
     setChatActionBusy(true);
     setChatActionError("");
 
     try {
       const result = await apiFetch<ChatMutationResult>(
-        mode === "rename" ? `/api/chats/${encodeURIComponent(selectedChat.id)}` : `/api/chats/${encodeURIComponent(selectedChat.id)}/fork`,
+        mode === "rename" ? `/api/chats/${encodeURIComponent(sourceChat.id)}` : `/api/chats/${encodeURIComponent(sourceChat.id)}/fork`,
         {
           method: mode === "rename" ? "PATCH" : "POST",
           body: JSON.stringify(mode === "rename" ? { title: name } : { name })
@@ -2598,7 +2759,21 @@ export function App() {
       setChatActionName("");
 
       if (mode === "fork") {
-        await selectStartedChat(result.chat);
+        if (optimisticFork) {
+          removeCachedChatHistory(optimisticFork.optimisticId);
+          upsertChatSummary(result.chat, optimisticFork.optimisticId);
+        }
+
+        rememberCachedChatHistory(result.chat);
+        chatDetailRequestRef.current += 1;
+        selectedChatIdRef.current = result.chat.id;
+        setSelectedChatId(result.chat.id);
+        setSelectedChat(result.chat);
+        setChatTurnLimits((current) => ({ ...current, [result.chat.id]: Math.max(result.chat.messagePage?.visibleTurns ?? defaultChatTurns, defaultChatTurns) }));
+        requestChatScroll();
+        await loadChats();
+        void loadChatJobs(result.chat.id);
+        void loadChatDetail(result.chat.id, true);
         return;
       }
 
@@ -2609,6 +2784,16 @@ export function App() {
       await loadChats();
       void loadChatDetail(result.chat.id, true);
     } catch (error) {
+      if (optimisticFork) {
+        removeCachedChatHistory(optimisticFork.optimisticId);
+        removeChatSummary(optimisticFork.optimisticId);
+        selectedChatIdRef.current = sourceChat.id;
+        setSelectedChatId(sourceChat.id);
+        setSelectedChat(sourceChat);
+        setChatActionMode("fork");
+        setChatActionName(name);
+      }
+
       setChatActionError(error instanceof Error ? error.message : mode === "rename" ? "Could not rename chat" : "Could not fork chat");
     } finally {
       setChatActionBusy(false);
@@ -2929,7 +3114,7 @@ export function App() {
   }, [chatJobs, state?.runner.recentJobs]);
 
   useEffect(() => {
-    if (selectedChat) {
+    if (selectedChat && !selectedChat.id.startsWith("optimistic-fork-")) {
       rememberCachedChatHistory(selectedChat);
     }
   }, [selectedChat]);
@@ -2972,7 +3157,7 @@ export function App() {
   }, [activeRunJobKey, selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
-    if (!authenticated || !selectedChatId) {
+    if (!authenticated || !selectedChatId || selectedChatId.startsWith("optimistic-fork-")) {
       return;
     }
 
@@ -4065,16 +4250,16 @@ export function App() {
               {visibleMessages.length ? (
                 visibleMessages.map((message, index) => {
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
-                  const completeDuration = message.kind === "task_complete" ? formatDurationMs(message.durationMs) : "";
                   const showFinalFallbackSeparator =
                     message.role === "assistant" &&
                     message.isFinal &&
-                    visibleMessages[index + 1]?.kind !== "task_complete";
+                    visibleMessages[index + 1]?.kind !== "task_complete" &&
+                    visibleMessages[index + 1]?.kind !== "forked_from";
 
-                  if (message.kind === "task_complete") {
+                  if (message.kind === "task_complete" || message.kind === "forked_from") {
                     return (
-                      <div className="run-complete-separator" role="separator" aria-label="Run complete" key={message.id}>
-                        <span>{completeDuration ? `Run complete ${completeDuration}` : "Run complete"}</span>
+                      <div className="run-complete-separator" role="separator" aria-label={message.kind === "forked_from" ? "Forked chat" : "Run complete"} key={message.id}>
+                        <span>{separatorText(message)}</span>
                       </div>
                     );
                   }

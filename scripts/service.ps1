@@ -247,7 +247,7 @@ function Get-PidAgeSeconds {
 
 function Test-LocalHealth {
   try {
-    $health = Invoke-RestMethod -Uri "http://localhost:8787/api/health" -TimeoutSec 8
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/health" -TimeoutSec 8
     return [bool]$health.ok
   } catch {
     Write-ServiceLog "Local health check failed: $($_.Exception.Message)"
@@ -434,7 +434,7 @@ function Show-Status {
   Write-Host "Public URL: https://$PublicHost"
 
   try {
-    $health = Invoke-RestMethod -Uri "http://localhost:8787/api/health" -TimeoutSec 15
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/health" -TimeoutSec 15
     Write-Host "Health: $($health.ok)"
   } catch {
     Write-Host "Health: unavailable"

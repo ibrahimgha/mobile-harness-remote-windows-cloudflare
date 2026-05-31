@@ -94,6 +94,18 @@ function rewriteSessionFile(raw: string, oldId: string, newId: string, nowIso: s
   return rewritten.join("\n").replace(/\n*$/, "\n");
 }
 
+function forkMarkerEvent(nowIso: string, sourceChatId: string, sourceTitle: string) {
+  return `${JSON.stringify({
+    timestamp: nowIso,
+    type: "event_msg",
+    payload: {
+      type: "chat_forked",
+      source_chat_id: sourceChatId,
+      source_title: sourceTitle
+    }
+  })}\n`;
+}
+
 export async function forkChatSession(sourceChatId: string, rawName: string): Promise<ForkChatResult> {
   const name = cleanChatName(rawName);
   const sourcePath = await findSessionFile(sourceChatId);
@@ -102,13 +114,18 @@ export async function forkChatSession(sourceChatId: string, rawName: string): Pr
     throw new Error("Source chat session file was not found");
   }
 
+  const sourceChat = await getChat(sourceChatId);
   const now = new Date();
   const nowIso = now.toISOString();
   const newId = randomUUID();
   const targetDir = sessionDirFor(now);
   const targetPath = path.join(targetDir, `rollout-${filenameTimestamp(now)}-${newId}.jsonl`);
   const raw = await fs.readFile(sourcePath, "utf8");
-  const rewritten = rewriteSessionFile(raw, sourceChatId, newId, nowIso);
+  const rewritten = `${rewriteSessionFile(raw, sourceChatId, newId, nowIso).trimEnd()}\n${forkMarkerEvent(
+    nowIso,
+    sourceChatId,
+    sourceChat?.title ?? sourceChatId
+  )}`;
 
   await fs.mkdir(targetDir, { recursive: true });
   await fs.writeFile(targetPath, rewritten, { flag: "wx" });

@@ -129,7 +129,8 @@ export type ChatTranscriptMessage = ChatMessageExcerpt & {
     | "tool_call"
     | "tool_output"
     | "error"
-    | "task_complete";
+    | "task_complete"
+    | "forked_from";
   isFinal?: boolean;
   label?: string;
   toolName?: string;

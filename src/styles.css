@@ -1022,6 +1022,9 @@ p {
 }
 
 .run-complete-separator span {
+  max-width: min(72vw, 860px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
