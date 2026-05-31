@@ -118,6 +118,12 @@ It opens the remote in Microsoft Edge or Google Chrome app mode with a custom ic
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\IbrahimHP\Uninstall-IbrahimHP.ps1
 ```
 
+Install the `seo-man` Windows app shortcut for the VM13 remote URL:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\SeoMan\Install-SeoMan.ps1
+```
+
 ## Enabling Remote Control
 
 Edit `.env` before exposing the app:
