@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -12,7 +13,12 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
-import { getDefaultProjectsRoot, resolveNewProjectPath, startProjectChat } from "./projectStarter.js";
+import {
+  getDefaultProjectsRoot,
+  resolveNewProjectPath,
+  startProjectChat,
+  type ProjectChatStartResult
+} from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
 import type { BridgeEvent, BridgeState, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
@@ -89,6 +95,25 @@ const imageContentTypes = new Map([
   [".bmp", "image/bmp"]
 ]);
 type LiveWebSocket = WebSocket & { isAlive?: boolean };
+type ChatStartMode = "project" | "chat";
+type ChatStartTask = {
+  id: string;
+  mode: ChatStartMode;
+  status: "pending" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  root?: string;
+  folderName?: string;
+  projectPath: string;
+  projectName: string;
+  message: string;
+  chat?: ProjectChatStartResult["chat"];
+  logPaths?: ProjectChatStartResult["logPaths"];
+  error?: string;
+};
+
+const chatStartTasks = new Map<string, ChatStartTask>();
+const maxChatStartTasks = 40;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -154,6 +179,133 @@ function describeError(error: unknown): Record<string, unknown> {
     message: error.message,
     stack: error.stack?.slice(0, 3000)
   };
+}
+
+function pruneChatStartTasks() {
+  const tasks = [...chatStartTasks.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+
+  for (const task of tasks.slice(maxChatStartTasks)) {
+    if (task.status !== "pending") {
+      chatStartTasks.delete(task.id);
+    }
+  }
+}
+
+function publicChatStartTask(task: ChatStartTask) {
+  return {
+    ok: true,
+    accepted: task.status === "pending",
+    pendingId: task.id,
+    mode: task.mode,
+    status: task.status,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    root: task.root,
+    folderName: task.folderName,
+    projectPath: task.projectPath,
+    projectName: task.projectName,
+    message: task.message,
+    chat: task.chat,
+    logPaths: task.logPaths,
+    error: task.error
+  };
+}
+
+function startChatInBackground(options: {
+  mode: ChatStartMode;
+  route: string;
+  request: Record<string, unknown>;
+  projectPath: string;
+  projectName: string;
+  prompt?: string;
+  createDirectory?: boolean;
+  root?: string;
+  folderName?: string;
+}) {
+  const now = new Date().toISOString();
+  const task: ChatStartTask = {
+    id: randomUUID(),
+    mode: options.mode,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    root: options.root,
+    folderName: options.folderName,
+    projectPath: options.projectPath,
+    projectName: options.projectName,
+    message: options.mode === "project" ? "Project creation accepted" : "Chat start accepted"
+  };
+
+  chatStartTasks.set(task.id, task);
+  pruneChatStartTasks();
+
+  pushEvent("status", task.message, {
+    action: `${options.mode}-create-accepted`,
+    route: options.route,
+    request: options.request,
+    pendingId: task.id,
+    projectPath: task.projectPath,
+    title: task.projectName
+  });
+
+  void (async () => {
+    try {
+      const result = await startProjectChat({
+        cliPath: runner.cliPath,
+        bypassSandbox: runner.bypassSandbox,
+        skipGitRepoCheck: runner.skipGitRepoCheck,
+        projectPath: options.projectPath,
+        projectName: options.projectName,
+        prompt: options.prompt,
+        createDirectory: options.createDirectory,
+        settings: getRunSettings()
+      });
+
+      task.status = "completed";
+      task.updatedAt = new Date().toISOString();
+      task.message = options.mode === "project" ? "New project folder and chat started" : "New chat started in project";
+      task.projectPath = result.projectPath;
+      task.chat = result.chat;
+      task.logPaths = result.logPaths;
+      pruneChatStartTasks();
+
+      pushEvent("action", task.message, {
+        action: `${options.mode}-create-completed`,
+        route: options.route,
+        request: options.request,
+        pendingId: task.id,
+        projectPath: result.projectPath,
+        chatId: result.chat.id,
+        chat: result.chat,
+        title: task.projectName,
+        logPaths: result.logPaths
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : options.mode === "project"
+            ? "Could not create project"
+            : "Could not start chat in project";
+
+      task.status = "failed";
+      task.updatedAt = new Date().toISOString();
+      task.message = message;
+      task.error = message;
+      pruneChatStartTasks();
+
+      pushEvent("error", message, {
+        action: `${options.mode}-create-failed`,
+        route: options.route,
+        request: options.request,
+        pendingId: task.id,
+        projectPath: options.projectPath,
+        error: describeError(error)
+      });
+    }
+  })();
+
+  return task;
 }
 
 function resolveLocalImagePath(rawPath: unknown): { ok: true; path: string; contentType: string } | { ok: false; message: string } {
@@ -771,6 +923,18 @@ app.get("/api/chats", requireControlAuth, async (req, res) => {
   }
 });
 
+app.get("/api/chat-starts/:pendingId", requireControlAuth, (req, res) => {
+  const pendingId = String(req.params.pendingId ?? "");
+  const task = chatStartTasks.get(pendingId);
+
+  if (!task) {
+    res.status(404).json({ ok: false, message: "Chat start request was not found" });
+    return;
+  }
+
+  res.json(publicChatStartTask(task));
+});
+
 app.post("/api/chats", requireControlAuth, async (req, res) => {
   const projectPath = typeof req.body?.projectPath === "string" ? path.resolve(req.body.projectPath) : "";
   const title = typeof req.body?.title === "string" ? req.body.title.replace(/\s+/g, " ").trim() : "";
@@ -790,39 +954,32 @@ app.post("/api/chats", requireControlAuth, async (req, res) => {
     }
 
     const projectTitle = title || path.basename(projectPath) || "New chat";
-    const result = await startProjectChat({
-      cliPath: runner.cliPath,
-      bypassSandbox: runner.bypassSandbox,
-      skipGitRepoCheck: runner.skipGitRepoCheck,
-      projectPath,
-      projectName: projectTitle,
-      prompt,
-      settings: getRunSettings()
-    });
-
-    pushEvent("action", "New Codex chat started in project", {
-      action: "chat-create",
+    const task = startChatInBackground({
+      mode: "chat",
       route: "POST /api/chats",
       request: requestContext(req),
       projectPath,
-      chatId: result.chat.id,
-      title: projectTitle,
-      logPaths: result.logPaths
+      projectName: projectTitle,
+      prompt
     });
 
-    res.status(201).json({
+    res.status(202).json({
       ok: true,
-      message: "New chat started in project",
-      projectPath: result.projectPath,
-      chat: result.chat,
-      logPaths: result.logPaths
+      accepted: true,
+      pendingId: task.id,
+      status: task.status,
+      message: "Chat start accepted on target laptop",
+      projectPath: task.projectPath,
+      projectName: task.projectName,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not start chat in project";
     const missing = error && typeof error === "object" && "code" in error && error.code === "ENOENT";
 
     pushEvent("error", message, {
-      action: "chat-create-failed",
+      action: "chat-create-rejected",
       route: "POST /api/chats",
       request: requestContext(req),
       projectPath,
@@ -845,43 +1002,37 @@ app.post("/api/projects", requireControlAuth, async (req, res) => {
       return;
     }
 
-    const result = await startProjectChat({
-      cliPath: runner.cliPath,
-      bypassSandbox: runner.bypassSandbox,
-      skipGitRepoCheck: runner.skipGitRepoCheck,
+    const task = startChatInBackground({
+      mode: "project",
+      route: "POST /api/projects",
+      request: requestContext(req),
       projectPath,
       projectName: title || folderName,
       prompt,
       createDirectory: true,
-      settings: getRunSettings()
-    });
-
-    pushEvent("action", "New project folder and Codex chat started", {
-      action: "project-create",
-      route: "POST /api/projects",
-      request: requestContext(req),
       root,
-      folderName,
-      projectPath,
-      chatId: result.chat.id,
-      logPaths: result.logPaths
+      folderName
     });
 
-    res.status(201).json({
+    res.status(202).json({
       ok: true,
-      message: "New project folder and chat started",
+      accepted: true,
+      pendingId: task.id,
+      status: task.status,
+      message: "Project creation accepted on target laptop",
       root,
       folderName,
-      projectPath: result.projectPath,
-      chat: result.chat,
-      logPaths: result.logPaths
+      projectPath: task.projectPath,
+      projectName: task.projectName,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not create project";
     const exists = error && typeof error === "object" && "code" in error && error.code === "EEXIST";
 
     pushEvent("error", message, {
-      action: "project-create-failed",
+      action: "project-create-rejected",
       route: "POST /api/projects",
       request: requestContext(req),
       root: getDefaultProjectsRoot(),

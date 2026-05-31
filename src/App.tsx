@@ -86,6 +86,9 @@ type BridgeEvent = {
   detail?: {
     action?: string;
     chatId?: string;
+    pendingId?: string;
+    status?: string;
+    chat?: ChatDetail;
     job?: CodexRunJob;
   };
 };
@@ -197,16 +200,23 @@ type ChatIndex = {
 
 type ProjectChatStartResult = {
   ok: boolean;
+  accepted?: boolean;
+  pendingId?: string;
+  status?: "pending" | "completed" | "failed";
   message?: string;
   root?: string;
   folderName?: string;
   projectPath: string;
-  chat: ChatDetail;
+  projectName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  chat?: ChatDetail;
   logPaths?: {
     stdout: string;
     stderr: string;
     lastMessage: string;
   };
+  error?: string;
 };
 
 type ChatMutationResult = {
@@ -326,6 +336,14 @@ const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
 const socketStaleMs = 45000;
+
+function isTemporaryChatId(chatId: string | null | undefined) {
+  return Boolean(chatId && (chatId.startsWith("optimistic-fork-") || chatId.startsWith("pending-chat-")));
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 function formatRelative(value: string) {
   const ms = Date.parse(value);
@@ -856,7 +874,7 @@ function readStoredSelectedChatId() {
 
 function rememberSelectedChatId(chatId: string | null) {
   try {
-    if (chatId?.startsWith("optimistic-fork-")) {
+    if (isTemporaryChatId(chatId)) {
       return;
     }
 
@@ -2319,7 +2337,7 @@ export function App() {
       const index = await apiFetch<ChatIndex>("/api/chats");
       setChatIndex(index);
       setSelectedChatId((current) => {
-        const next = current && chatIndexContainsChat(index, current) ? current : firstChatId(index);
+        const next = current && (isTemporaryChatId(current) || chatIndexContainsChat(index, current)) ? current : firstChatId(index);
 
         if (next) {
           selectedChatIdRef.current = next;
@@ -2699,6 +2717,121 @@ export function App() {
     return { optimisticId, optimisticChat };
   }
 
+  function selectPendingStartedChat(input: {
+    pendingId: string;
+    projectPath: string;
+    projectName: string;
+    title: string;
+    prompt?: string;
+    createdAt?: string;
+  }) {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const optimisticId = `pending-chat-${input.pendingId}`;
+    const prompt = input.prompt?.trim() ?? "";
+    const messages: ChatTranscriptMessage[] = prompt
+      ? [
+          {
+            id: `pending-prompt-${input.pendingId}`,
+            role: "user",
+            kind: "user_prompt",
+            text: prompt,
+            createdAt
+          }
+        ]
+      : [];
+    const optimisticChat: ChatDetail = {
+      id: optimisticId,
+      title: input.title,
+      projectName: input.projectName,
+      projectPath: input.projectPath,
+      createdAt,
+      updatedAt: createdAt,
+      lastPrompt: prompt ? { text: prompt, createdAt } : null,
+      lastResponse: null,
+      messages,
+      messagePage: {
+        visibleTurns: defaultChatTurns,
+        totalTurns: prompt ? 1 : 0,
+        hasMore: false
+      },
+      hasResponse: false
+    };
+
+    upsertChatSummary(optimisticChat);
+    chatDetailRequestRef.current += 1;
+    selectedChatIdRef.current = optimisticId;
+    setSelectedChatId(optimisticId);
+    setSelectedChat(optimisticChat);
+    setChatTurnLimits((current) => ({ ...current, [optimisticId]: defaultChatTurns }));
+    setProjectActionMode(null);
+    setProjectActionError("");
+    setInstructionsOpen(false);
+    setMenuOpen(false);
+    requestChatScroll();
+
+    return { optimisticId, optimisticChat };
+  }
+
+  async function waitForStartedChat(pendingId: string, optimisticId: string) {
+    const deadline = Date.now() + 4 * 60 * 1000;
+    let lastStatus: ProjectChatStartResult | null = null;
+
+    while (Date.now() < deadline) {
+      await delay(1500);
+
+      try {
+        const result = await apiFetch<ProjectChatStartResult>(`/api/chat-starts/${encodeURIComponent(pendingId)}`);
+        lastStatus = result;
+
+        if (result.status === "completed" && result.chat) {
+          removeCachedChatHistory(optimisticId);
+          upsertChatSummary(result.chat, optimisticId);
+          rememberCachedChatHistory(result.chat);
+          setNotice(result.message ?? "Chat started");
+
+          if (selectedChatIdRef.current === optimisticId) {
+            chatDetailRequestRef.current += 1;
+            selectedChatIdRef.current = result.chat.id;
+            setSelectedChatId(result.chat.id);
+            setSelectedChat(result.chat);
+            setChatTurnLimits((current) => ({
+              ...current,
+              [result.chat!.id]: Math.max(result.chat!.messagePage?.visibleTurns ?? defaultChatTurns, defaultChatTurns)
+            }));
+            requestChatScroll();
+            void loadChatJobs(result.chat.id);
+            void loadChatDetail(result.chat.id, true);
+          } else {
+            setUnreadChatIds((current) => new Set(current).add(result.chat!.id));
+          }
+
+          void loadChats();
+          return;
+        }
+
+        if (result.status === "failed") {
+          removeCachedChatHistory(optimisticId);
+          removeChatSummary(optimisticId);
+
+          if (selectedChatIdRef.current === optimisticId) {
+            selectedChatIdRef.current = null;
+            setSelectedChatId(null);
+            setSelectedChat(null);
+          }
+
+          setProjectActionError(result.error ?? result.message ?? "Could not start chat");
+          setNotice(result.error ?? result.message ?? "Could not start chat");
+          void loadChats();
+          return;
+        }
+      } catch (error) {
+        lastStatus = null;
+      }
+    }
+
+    setNotice(lastStatus?.message ?? "Chat start is still running. Refresh the chat list in a moment.");
+  }
+
   function openProjectAction(mode: "project" | "chat") {
     setProjectActionMode((current) => (current === mode ? null : mode));
     setProjectActionError("");
@@ -2829,7 +2962,25 @@ export function App() {
       setNewProjectName("");
       setNewProjectPrompt("");
       setNotice(result.message ?? "Project created");
-      await selectStartedChat(result.chat);
+      if (result.chat) {
+        await selectStartedChat(result.chat);
+        return;
+      }
+
+      if (result.accepted && result.pendingId) {
+        const pending = selectPendingStartedChat({
+          pendingId: result.pendingId,
+          projectPath: result.projectPath,
+          projectName: result.projectName ?? result.folderName ?? name,
+          title: result.projectName ?? result.folderName ?? name,
+          prompt: newProjectPrompt.trim() || undefined,
+          createdAt: result.createdAt
+        });
+        void waitForStartedChat(result.pendingId, pending.optimisticId);
+        return;
+      }
+
+      throw new Error("Project creation did not return a chat or pending request");
     } catch (error) {
       setProjectActionError(error instanceof Error ? error.message : "Could not create project");
     } finally {
@@ -2873,7 +3024,26 @@ export function App() {
       setNewChatTitle("");
       setNewChatPrompt("");
       setNotice(result.message ?? "Chat started");
-      await selectStartedChat(result.chat);
+      if (result.chat) {
+        await selectStartedChat(result.chat);
+        return;
+      }
+
+      if (result.accepted && result.pendingId) {
+        const selectedProject = projectOptions.find((project) => project.projectPath === projectPath);
+        const pending = selectPendingStartedChat({
+          pendingId: result.pendingId,
+          projectPath,
+          projectName: result.projectName ?? selectedProject?.projectName ?? title,
+          title,
+          prompt: newChatPrompt.trim() || undefined,
+          createdAt: result.createdAt
+        });
+        void waitForStartedChat(result.pendingId, pending.optimisticId);
+        return;
+      }
+
+      throw new Error("Chat start did not return a chat or pending request");
     } catch (error) {
       setProjectActionError(error instanceof Error ? error.message : "Could not start chat");
     } finally {
@@ -3114,7 +3284,7 @@ export function App() {
   }, [chatJobs, state?.runner.recentJobs]);
 
   useEffect(() => {
-    if (selectedChat && !selectedChat.id.startsWith("optimistic-fork-")) {
+    if (selectedChat && !isTemporaryChatId(selectedChat.id)) {
       rememberCachedChatHistory(selectedChat);
     }
   }, [selectedChat]);
@@ -3157,7 +3327,7 @@ export function App() {
   }, [activeRunJobKey, selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
-    if (!authenticated || !selectedChatId || selectedChatId.startsWith("optimistic-fork-")) {
+    if (!authenticated || !selectedChatId || isTemporaryChatId(selectedChatId)) {
       return;
     }
 
@@ -3386,7 +3556,7 @@ export function App() {
       void loadState();
 
       const chatId = selectedChatIdRef.current;
-      if (chatId) {
+      if (chatId && !isTemporaryChatId(chatId)) {
         void loadChatJobs(chatId);
         void loadChatDetail(chatId, true);
       }
