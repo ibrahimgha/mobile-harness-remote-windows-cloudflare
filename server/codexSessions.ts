@@ -123,6 +123,30 @@ function projectNameFromPath(projectPath: string): string {
   return path.basename(projectPath) || projectPath;
 }
 
+function normalizeProjectPath(projectPath: string): string {
+  if (!projectPath || projectPath === "Unknown project") {
+    return projectPath;
+  }
+
+  let normalized = projectPath.trim();
+
+  if (process.platform === "win32") {
+    normalized = normalized.replace(/\//g, "\\");
+
+    if (/^\\\\\?\\unc\\/i.test(normalized)) {
+      normalized = `\\\\${normalized.slice(8)}`;
+    } else if (/^\\\\\?\\/i.test(normalized)) {
+      normalized = normalized.slice(4);
+    }
+  }
+
+  try {
+    return path.resolve(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
 function idFromFilename(filePath: string): string {
   const base = path.basename(filePath, ".jsonl");
   const match = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
@@ -448,7 +472,7 @@ async function parseSessionFile(
 
       if (record.type === "session_meta" && record.payload) {
         id = record.payload.id ?? id;
-        projectPath = record.payload.cwd ?? projectPath;
+        projectPath = normalizeProjectPath(record.payload.cwd ?? projectPath);
         createdAt = record.payload.timestamp ?? record.timestamp ?? createdAt;
         const metaMs = Date.parse(createdAt ?? "");
 
@@ -870,8 +894,8 @@ export async function getChat(id: string, options: { detailTurns?: number } = {}
 }
 
 function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
+  const normalizedLeft = normalizeProjectPath(left);
+  const normalizedRight = normalizeProjectPath(right);
 
   return process.platform === "win32"
     ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()

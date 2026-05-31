@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, type Stats } from "node:fs";
+import { createWriteStream, existsSync, readdirSync, statSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -50,15 +50,52 @@ function resolveCliPath(): string {
     return configured;
   }
 
-  const localAppData = process.env.LOCALAPPDATA;
-  if (localAppData) {
-    const localCli = path.join(localAppData, "OpenAI", "Codex", "bin", process.platform === "win32" ? "codex.exe" : "codex");
-    if (existsSync(localCli)) {
-      return localCli;
+  const executableName = process.platform === "win32" ? "codex.exe" : "codex";
+  const localAppDataCandidates =
+    process.platform === "win32"
+      ? [
+          process.env.LOCALAPPDATA,
+          process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "AppData", "Local") : undefined,
+          path.join(os.homedir(), "AppData", "Local")
+        ]
+      : [process.env.LOCALAPPDATA];
+
+  for (const localAppData of localAppDataCandidates) {
+    if (!localAppData) {
+      continue;
+    }
+
+    const binDir = path.join(localAppData, "OpenAI", "Codex", "bin");
+    const directCli = path.join(binDir, executableName);
+
+    if (existsSync(directCli)) {
+      return directCli;
+    }
+
+    const nestedCli = newestNestedCodexCli(binDir, executableName);
+    if (nestedCli) {
+      return nestedCli;
     }
   }
 
   return "codex";
+}
+
+function newestNestedCodexCli(binDir: string, executableName: string): string | null {
+  let candidates: Array<{ filePath: string; mtimeMs: number }> = [];
+
+  try {
+    candidates = readdirSync(binDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(binDir, entry.name, executableName))
+      .filter((filePath) => existsSync(filePath))
+      .map((filePath) => ({ filePath, mtimeMs: statSync(filePath).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return null;
+  }
+
+  return candidates[0]?.filePath ?? null;
 }
 
 function safeSegment(value: string): string {
