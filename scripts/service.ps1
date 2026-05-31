@@ -66,6 +66,23 @@ function Get-WinGetNodeCandidates {
   }
 }
 
+function Get-CodexNodeCandidates {
+  $codexBinRoot = Join-CandidatePath -Base $env:LOCALAPPDATA -Child "OpenAI\Codex\bin"
+  if (-not $codexBinRoot -or -not (Test-Path -LiteralPath $codexBinRoot)) {
+    return @()
+  }
+
+  Get-ChildItem -LiteralPath $codexBinRoot -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $candidate = Join-Path $_.FullName "node.exe"
+      if (Test-Path -LiteralPath $candidate) {
+        Get-Item -LiteralPath $candidate
+      }
+    } |
+    Sort-Object LastWriteTime -Descending |
+    ForEach-Object { $_.FullName }
+}
+
 function Resolve-Executable {
   param(
     [string]$DisplayName,
@@ -79,6 +96,11 @@ function Resolve-Executable {
 
     $command = Get-Command $candidate -ErrorAction SilentlyContinue
     if ($command) {
+      if ($DisplayName -eq "node" -and $command.Source -like "*\WindowsApps\*") {
+        Write-ServiceLog "Ignoring WindowsApps node alias $($command.Source)"
+        continue
+      }
+
       Write-ServiceLog "Resolved $DisplayName to $($command.Source)"
       return $command.Source
     }
@@ -98,11 +120,10 @@ function Resolve-Executable {
 function Get-NodeExe {
   $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   $candidates = @(
-    "node.exe",
     (Join-CandidatePath -Base $env:ProgramFiles -Child "nodejs\node.exe"),
     (Join-CandidatePath -Base $programFilesX86 -Child "nodejs\node.exe"),
     (Join-CandidatePath -Base $env:LOCALAPPDATA -Child "Programs\nodejs\node.exe")
-  ) + @(Get-WinGetNodeCandidates -BinaryName "node.exe")
+  ) + @(Get-WinGetNodeCandidates -BinaryName "node.exe") + @(Get-CodexNodeCandidates) + @("node.exe")
 
   return Resolve-Executable -DisplayName "node" -Candidates $candidates
 }
@@ -135,13 +156,22 @@ function Get-CloudflaredExe {
 }
 
 function Test-WatchdogTaskInstalled {
-  $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if ($null -ne $task) {
-    return $true
+  try {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -ne $task) {
+      return $true
+    }
+  } catch {
+    Write-ServiceLog "Get-ScheduledTask status check failed: $($_.Exception.Message)"
   }
 
-  $null = & schtasks.exe /Query /TN $TaskName 2>$null
-  return $LASTEXITCODE -eq 0
+  try {
+    $null = & schtasks.exe /Query /TN $TaskName 2>$null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    Write-ServiceLog "schtasks.exe status check failed: $($_.Exception.Message)"
+    return $false
+  }
 }
 
 function Test-RemoteDisabled {
@@ -198,6 +228,41 @@ function Test-Pid {
   }
 
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Get-PidAgeSeconds {
+  param([Nullable[int]]$ProcessId)
+
+  if ($null -eq $ProcessId) {
+    return [double]::PositiveInfinity
+  }
+
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    return ((Get-Date) - $process.StartTime).TotalSeconds
+  } catch {
+    return [double]::PositiveInfinity
+  }
+}
+
+function Test-LocalHealth {
+  try {
+    $health = Invoke-RestMethod -Uri "http://localhost:8787/api/health" -TimeoutSec 8
+    return [bool]$health.ok
+  } catch {
+    Write-ServiceLog "Local health check failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Test-PublicHealth {
+  try {
+    $health = Invoke-RestMethod -Uri "https://$PublicHost/api/health" -TimeoutSec 15
+    return [bool]$health.ok
+  } catch {
+    Write-ServiceLog "Public health check failed: $($_.Exception.Message)"
+    return $false
+  }
 }
 
 function Stop-PidFile {
@@ -290,6 +355,22 @@ function Start-Remote {
   $tunnelPid = Read-Pid -Path $TunnelPidFile
   $appRunning = Test-Pid -ProcessId $appPid
   $tunnelRunning = Test-Pid -ProcessId $tunnelPid
+
+  if ($appRunning -and (Get-PidAgeSeconds -ProcessId $appPid) -gt 25 -and -not (Test-LocalHealth)) {
+    Write-Host "Codex window remote app is running but unhealthy; restarting it."
+    Write-ServiceLog "App pid=$appPid failed local health check; restarting"
+    Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile
+    $appPid = $null
+    $appRunning = $false
+  }
+
+  if ($tunnelRunning -and $appRunning -and (Get-PidAgeSeconds -ProcessId $tunnelPid) -gt 35 -and -not (Test-PublicHealth)) {
+    Write-Host "Cloudflare tunnel is running but public health failed; restarting it."
+    Write-ServiceLog "Tunnel pid=$tunnelPid failed public health check; restarting"
+    Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile
+    $tunnelPid = $null
+    $tunnelRunning = $false
+  }
 
   if ($appRunning -and $tunnelRunning) {
     Write-Host "Codex window remote app is already running (pid $appPid)"
