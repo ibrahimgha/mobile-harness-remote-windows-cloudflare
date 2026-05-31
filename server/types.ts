@@ -139,6 +139,8 @@ export type ChatTranscriptMessage = ChatMessageExcerpt & {
   durationMs?: number;
 };
 
+export type ChatMessageViewMode = "all" | "final" | "codex";
+
 export type ChatSummary = {
   id: string;
   title: string;

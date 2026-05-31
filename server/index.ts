@@ -21,7 +21,7 @@ import {
 } from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
-import type { BridgeEvent, BridgeState, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
+import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
   getPushPublicKey,
@@ -167,6 +167,20 @@ function requestContext(req: express.Request): Record<string, unknown> {
     forwardedFor: req.header("x-forwarded-for")?.split(",")[0]?.trim(),
     userAgent: req.header("user-agent")?.slice(0, 240)
   };
+}
+
+function queryStringValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : undefined;
+  }
+
+  return typeof value === "string" ? value : undefined;
+}
+
+function chatMessageViewModeFromQuery(value: unknown): ChatMessageViewMode {
+  const mode = queryStringValue(value);
+
+  return mode === "all" || mode === "final" || mode === "codex" ? mode : "codex";
 }
 
 function describeError(error: unknown): Record<string, unknown> {
@@ -1045,10 +1059,12 @@ app.post("/api/projects", requireControlAuth, async (req, res) => {
 app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const turns = Number(Array.isArray(req.query.turns) ? req.query.turns[0] : req.query.turns);
+  const messageMode = chatMessageViewModeFromQuery(req.query.mode);
 
   try {
     const chat = await getChat(chatId, {
-      detailTurns: Number.isFinite(turns) ? turns : undefined
+      detailTurns: Number.isFinite(turns) ? turns : undefined,
+      messageMode
     });
 
     if (!chat) {

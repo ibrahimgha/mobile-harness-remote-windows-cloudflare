@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import type { ChatDetail, ChatMessageExcerpt, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
+import type { ChatDetail, ChatMessageExcerpt, ChatMessageViewMode, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
 const sessionIndexPath = process.env.CODEX_SESSION_INDEX ?? path.join(os.homedir(), ".codex", "session_index.jsonl");
@@ -33,6 +33,7 @@ type ParsedSession = ChatDetail & {
 type ParseSessionOptions = {
   maxTailBytes?: number;
   detailTurns?: number;
+  messageMode?: ChatMessageViewMode;
 };
 
 export function clearSessionCache() {
@@ -109,6 +110,26 @@ function isPromptText(text: string): boolean {
 
 function isHeartbeatText(text: string): boolean {
   return /^(\*\*)?heartbeat(\*\*)?\s*:/i.test(text.trim());
+}
+
+function isFinalCodexMessage(message: ChatTranscriptMessage) {
+  return message.role === "assistant" && (message.isFinal || message.kind === "assistant_final" || !message.kind);
+}
+
+function messageIncludedInMode(message: ChatTranscriptMessage, mode: ChatMessageViewMode) {
+  if (mode === "all") {
+    return true;
+  }
+
+  if (message.role === "user" || message.kind === "task_complete" || message.kind === "forked_from") {
+    return true;
+  }
+
+  if (mode === "final") {
+    return isFinalCodexMessage(message);
+  }
+
+  return message.role === "assistant";
 }
 
 function transcriptId(kind: string, createdAt: string, index: number): string {
@@ -427,6 +448,7 @@ async function parseSessionFile(
 ): Promise<ParsedSession | null> {
   const maxTailBytes = typeof options === "number" ? options : options.maxTailBytes ?? tailBytes;
   const detailTurns = typeof options === "number" ? defaultDetailTurns : clampDetailTurns(options.detailTurns);
+  const messageMode = typeof options === "number" ? "all" : options.messageMode ?? "all";
   const stat = await fs.stat(filePath);
   const fallbackId = idFromFilename(filePath);
   let id = fallbackId;
@@ -441,10 +463,14 @@ async function parseSessionFile(
   let newestRecordMs = Number.NaN;
   const transcriptMessages: ChatTranscriptMessage[] = [];
   const appendTranscriptMessage = (message: Omit<ChatTranscriptMessage, "id"> & { id?: string }) => {
-    transcriptMessages.push({
+    const nextMessage: ChatTranscriptMessage = {
       ...message,
       id: message.id ?? transcriptId(message.kind ?? message.role, message.createdAt, transcriptMessages.length)
-    });
+    };
+
+    if (messageIncludedInMode(nextMessage, messageMode)) {
+      transcriptMessages.push(nextMessage);
+    }
   };
 
   const headBuffer = await readFileSlice(filePath, 0, Math.min(stat.size, headBytes));
@@ -553,6 +579,10 @@ async function parseSessionFile(
         return;
       }
 
+      if (messageMode !== "all" && record.type === "response_item" && /tool|function_call|web_search/.test(payload.type)) {
+        return;
+      }
+
       if (record.type === "response_item" && payload.type === "function_call") {
         appendTranscriptMessage({
           role: "tool",
@@ -658,6 +688,10 @@ async function parseSessionFile(
       }
 
       if (record.type === "event_msg" && /_(end|complete|completed)$/i.test(payload.type)) {
+        if (messageMode !== "all") {
+          return;
+        }
+
         if (payload.success === false) {
           const output = [payload.stdout, payload.stderr, payload.output, payload.error?.message]
             .map(textFromUnknown)
@@ -817,7 +851,7 @@ async function readSessions(maxTailBytes = summaryTailBytes): Promise<ParsedSess
 
   for (let offset = 0; offset < files.length; offset += parseConcurrency) {
     const batch = await Promise.allSettled(
-      files.slice(offset, offset + parseConcurrency).map((filePath) => parseSessionFile(filePath, index, maxTailBytes))
+      files.slice(offset, offset + parseConcurrency).map((filePath) => parseSessionFile(filePath, index, { maxTailBytes, messageMode: "codex" }))
     );
 
     for (const result of batch) {
@@ -889,7 +923,7 @@ export async function listChats(): Promise<{ projects: ChatProjectGroup[]; total
   };
 }
 
-export async function getChat(id: string, options: { detailTurns?: number } = {}): Promise<ChatDetail | null> {
+export async function getChat(id: string, options: { detailTurns?: number; messageMode?: ChatMessageViewMode } = {}): Promise<ChatDetail | null> {
   const filePath = await findSessionFile(id);
 
   if (!filePath) {
@@ -898,7 +932,8 @@ export async function getChat(id: string, options: { detailTurns?: number } = {}
 
   const session = await parseSessionFile(filePath, await readSessionIndex(), {
     maxTailBytes: Number.POSITIVE_INFINITY,
-    detailTurns: options.detailTurns
+    detailTurns: options.detailTurns,
+    messageMode: options.messageMode ?? "codex"
   });
 
   if (!session) {

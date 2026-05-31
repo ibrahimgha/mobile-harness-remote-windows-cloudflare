@@ -185,6 +185,7 @@ type ChatDetail = {
 type CachedChatHistory = {
   chat: ChatDetail;
   cachedAt: string;
+  mode?: ChatMessageViewMode;
 };
 
 type ChatProjectGroup = {
@@ -330,7 +331,8 @@ const chatHistoryCacheKey = "chat-history-cache-v1";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
-const chatMessageViewModeOrder: ChatMessageViewMode[] = ["all", "final", "codex"];
+const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
+const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
 const maxCachedChatHistories = 20;
 const defaultChatTurns = 10;
 const chatTurnPageSize = 10;
@@ -923,6 +925,20 @@ function cachedAtMs(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function cachedChatMode(item: CachedChatHistory): ChatMessageViewMode {
+  return isChatMessageViewMode(item.mode) ? item.mode : "all";
+}
+
+function cachedChatCanSatisfyMode(item: CachedChatHistory, mode: ChatMessageViewMode) {
+  const cachedMode = cachedChatMode(item);
+
+  if (cachedMode === mode || cachedMode === "all") {
+    return true;
+  }
+
+  return mode === "final" && cachedMode === "codex";
+}
+
 function readCachedChatHistories(): CachedChatHistory[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(chatHistoryCacheKey) ?? "[]");
@@ -943,8 +959,8 @@ function readCachedChatHistories(): CachedChatHistory[] {
   }
 }
 
-function getCachedChatHistory(chatId: string) {
-  return readCachedChatHistories().find((item) => item.chat.id === chatId)?.chat ?? null;
+function getCachedChatHistory(chatId: string, mode: ChatMessageViewMode = defaultChatMessageViewMode) {
+  return readCachedChatHistories().find((item) => item.chat.id === chatId && cachedChatCanSatisfyMode(item, mode))?.chat ?? null;
 }
 
 function newestCachedChatHistory() {
@@ -977,10 +993,10 @@ function rememberSelectedChatId(chatId: string | null) {
   }
 }
 
-function rememberCachedChatHistory(chat: ChatDetail) {
+function rememberCachedChatHistory(chat: ChatDetail, mode: ChatMessageViewMode = defaultChatMessageViewMode) {
   const next = [
-    { chat, cachedAt: new Date().toISOString() },
-    ...readCachedChatHistories().filter((item) => item.chat.id !== chat.id)
+    { chat, mode, cachedAt: new Date().toISOString() },
+    ...readCachedChatHistories().filter((item) => !(item.chat.id === chat.id && cachedChatMode(item) === mode))
   ]
     .sort((a, b) => cachedAtMs(b.cachedAt) - cachedAtMs(a.cachedAt))
     .slice(0, maxCachedChatHistories);
@@ -1853,6 +1869,7 @@ export function App() {
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
+  const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
 
@@ -1878,7 +1895,7 @@ export function App() {
       (state?.runner.recentJobs ?? []).filter((job) => job.chatId === selectedChatId)
     );
   }, [chatJobs, selectedChatId, state?.runner.recentJobs]);
-  const selectedChatMessageViewMode = selectedChatId ? (chatMessageViewModes[selectedChatId] ?? "all") : "all";
+  const selectedChatMessageViewMode = selectedChatId ? (chatMessageViewModes[selectedChatId] ?? defaultChatMessageViewMode) : defaultChatMessageViewMode;
   const selectedChatMessageViewMeta = chatMessageViewModeMeta(selectedChatMessageViewMode);
   const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
   const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
@@ -2485,10 +2502,11 @@ export function App() {
   }, []);
 
   const loadChatDetail = useCallback(
-    async (chatId: string, quiet = false, requestedTurns?: number) => {
+    async (chatId: string, quiet = false, requestedTurns?: number, requestedMode?: ChatMessageViewMode) => {
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
-      const cachedDetail = getCachedChatHistory(chatId);
+      const messageMode = requestedMode ?? chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode;
+      const cachedDetail = getCachedChatHistory(chatId, messageMode);
       const turns = Math.max(1, requestedTurns ?? chatTurnLimitsRef.current[chatId] ?? defaultChatTurns);
 
       if (!quiet) {
@@ -2509,7 +2527,9 @@ export function App() {
       }
 
       try {
-        const detail = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(chatId)}?turns=${encodeURIComponent(String(turns))}`);
+        const detail = await apiFetch<ChatDetail>(
+          `/api/chats/${encodeURIComponent(chatId)}?turns=${encodeURIComponent(String(turns))}&mode=${encodeURIComponent(messageMode)}`
+        );
 
         if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
           return;
@@ -2674,11 +2694,18 @@ export function App() {
       return;
     }
 
-    setChatMessageViewModes((current) => ({
-      ...current,
-      [chatId]: nextChatMessageViewMode(current[chatId] ?? "all")
-    }));
-  }, []);
+    const nextMode = nextChatMessageViewMode(chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode);
+    setChatMessageViewModes((current) => {
+      const next = {
+        ...current,
+        [chatId]: nextMode
+      };
+      chatMessageViewModesRef.current = next;
+      return next;
+    });
+    setSelectedChat((current) => getCachedChatHistory(chatId, nextMode) ?? current);
+    void loadChatDetail(chatId, true, undefined, nextMode);
+  }, [loadChatDetail]);
 
   const loadMoreMessages = useCallback(async () => {
     const chatId = selectedChatIdRef.current;
@@ -3265,7 +3292,7 @@ export function App() {
     if (selectedChatIdRef.current !== chatId) {
       chatDetailRequestRef.current += 1;
       selectedChatIdRef.current = chatId;
-      setSelectedChat(getCachedChatHistory(chatId));
+      setSelectedChat(getCachedChatHistory(chatId, chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode));
       setSelectedChatId(chatId);
     }
 
@@ -3421,6 +3448,7 @@ export function App() {
   }, [localCommandQueue]);
 
   useEffect(() => {
+    chatMessageViewModesRef.current = chatMessageViewModes;
     localStorage.setItem(chatMessageViewModesKey, JSON.stringify(chatMessageViewModes));
   }, [chatMessageViewModes]);
 
@@ -3430,9 +3458,9 @@ export function App() {
 
   useEffect(() => {
     if (selectedChat && !isTemporaryChatId(selectedChat.id)) {
-      rememberCachedChatHistory(selectedChat);
+      rememberCachedChatHistory(selectedChat, selectedChatMessageViewMode);
     }
-  }, [selectedChat]);
+  }, [selectedChat, selectedChatMessageViewMode]);
 
   useEffect(
     () => () => {
