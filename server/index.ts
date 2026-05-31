@@ -14,6 +14,7 @@ import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import { getDefaultProjectsRoot, resolveNewProjectPath, startProjectChat } from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
+import { forkChatSession, renameChatSession } from "./sessionForker.js";
 import type { BridgeEvent, BridgeState, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
@@ -918,14 +919,76 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   }
 });
 
+app.patch("/api/chats/:id", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const title = typeof req.body?.title === "string" ? req.body.title : "";
+
+  try {
+    const result = await renameChatSession(chatId, title);
+
+    pushEvent("action", "Codex chat renamed", {
+      action: "chat-rename",
+      route: "PATCH /api/chats/:id",
+      request: requestContext(req),
+      chatId,
+      title: result.chat.title
+    });
+
+    res.json({
+      ok: true,
+      message: "Chat renamed",
+      chat: result.chat
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not rename chat";
+
+    pushEvent("error", message, {
+      action: "chat-rename-failed",
+      route: "PATCH /api/chats/:id",
+      request: requestContext(req),
+      chatId,
+      error: describeError(error)
+    });
+    res.status(message === "Chat was not found" ? 404 : 400).json({ ok: false, message });
+  }
+});
+
 app.post("/api/chats/:id/fork", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  pushEvent("status", "Remote chat forking is disabled", {
-    action: "chat-fork-disabled",
-    request: requestContext(req),
-    sourceChatId: chatId
-  });
-  res.status(410).json({ ok: false, message: "Forking chats from the remote is disabled" });
+  const name = typeof req.body?.name === "string" ? req.body.name : "";
+
+  try {
+    const result = await forkChatSession(chatId, name);
+
+    pushEvent("action", "Codex chat forked", {
+      action: "chat-fork",
+      route: "POST /api/chats/:id/fork",
+      request: requestContext(req),
+      sourceChatId: chatId,
+      chatId: result.chat.id,
+      title: result.chat.title,
+      sessionPath: result.sessionPath
+    });
+
+    res.status(201).json({
+      ok: true,
+      message: "Chat forked",
+      sourceChatId: chatId,
+      chat: result.chat,
+      sessionPath: result.sessionPath
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not fork chat";
+
+    pushEvent("error", message, {
+      action: "chat-fork-failed",
+      route: "POST /api/chats/:id/fork",
+      request: requestContext(req),
+      sourceChatId: chatId,
+      error: describeError(error)
+    });
+    res.status(message === "Source chat session file was not found" ? 404 : 400).json({ ok: false, message });
+  }
 });
 
 app.get("/api/chats/:id/uploads", requireControlAuth, async (req, res) => {

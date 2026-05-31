@@ -11,6 +11,7 @@ import {
   FileText,
   Folder,
   FolderPlus,
+  GitFork,
   ListChecks,
   Loader2,
   LogOut,
@@ -18,6 +19,7 @@ import {
   MessageSquarePlus,
   MonitorUp,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   Send,
@@ -204,6 +206,14 @@ type ProjectChatStartResult = {
     stderr: string;
     lastMessage: string;
   };
+};
+
+type ChatMutationResult = {
+  ok: boolean;
+  message?: string;
+  sourceChatId?: string;
+  sessionPath?: string;
+  chat: ChatDetail;
 };
 
 type ApiResult = {
@@ -1676,6 +1686,10 @@ export function App() {
   const [newChatTitle, setNewChatTitle] = useState("");
   const [newChatPrompt, setNewChatPrompt] = useState("");
   const [newChatProjectPath, setNewChatProjectPath] = useState("");
+  const [chatActionMode, setChatActionMode] = useState<"rename" | "fork" | null>(null);
+  const [chatActionName, setChatActionName] = useState("");
+  const [chatActionBusy, setChatActionBusy] = useState(false);
+  const [chatActionError, setChatActionError] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
@@ -2511,6 +2525,8 @@ export function App() {
       setChatTurnLimits((current) => ({ ...current, [chat.id]: Math.max(chat.messagePage?.visibleTurns ?? defaultChatTurns, defaultChatTurns) }));
       setProjectActionMode(null);
       setProjectActionError("");
+      setChatActionMode(null);
+      setChatActionError("");
       setInstructionsOpen(false);
       setMenuOpen(false);
       requestChatScroll();
@@ -2527,10 +2543,75 @@ export function App() {
   function openProjectAction(mode: "project" | "chat") {
     setProjectActionMode((current) => (current === mode ? null : mode));
     setProjectActionError("");
+    setChatActionMode(null);
+    setChatActionError("");
     setInstructionsOpen(false);
 
     if (mode === "chat" && !newChatProjectPath) {
       setNewChatProjectPath(selectedChat?.projectPath ?? projectOptions[0]?.projectPath ?? "");
+    }
+  }
+
+  function openChatAction(mode: "rename" | "fork") {
+    if (!selectedChat) {
+      return;
+    }
+
+    setChatActionMode((current) => (current === mode ? null : mode));
+    setChatActionName(mode === "rename" ? selectedChat.title : `${selectedChat.title} fork`);
+    setChatActionError("");
+    setProjectActionMode(null);
+    setProjectActionError("");
+    setInstructionsOpen(false);
+  }
+
+  async function submitChatAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedChat || !chatActionMode || chatActionBusy) {
+      return;
+    }
+
+    const name = chatActionName.replace(/\s+/g, " ").trim();
+
+    if (!name) {
+      setChatActionError("Chat name is required");
+      return;
+    }
+
+    const mode = chatActionMode;
+
+    setChatActionBusy(true);
+    setChatActionError("");
+
+    try {
+      const result = await apiFetch<ChatMutationResult>(
+        mode === "rename" ? `/api/chats/${encodeURIComponent(selectedChat.id)}` : `/api/chats/${encodeURIComponent(selectedChat.id)}/fork`,
+        {
+          method: mode === "rename" ? "PATCH" : "POST",
+          body: JSON.stringify(mode === "rename" ? { title: name } : { name })
+        }
+      );
+
+      setNotice(result.message ?? (mode === "rename" ? "Chat renamed" : "Chat forked"));
+      setChatActionMode(null);
+      setChatActionName("");
+
+      if (mode === "fork") {
+        await selectStartedChat(result.chat);
+        return;
+      }
+
+      rememberCachedChatHistory(result.chat);
+      selectedChatIdRef.current = result.chat.id;
+      setSelectedChatId(result.chat.id);
+      setSelectedChat(result.chat);
+      await loadChats();
+      void loadChatDetail(result.chat.id, true);
+    } catch (error) {
+      setChatActionError(error instanceof Error ? error.message : mode === "rename" ? "Could not rename chat" : "Could not fork chat");
+    } finally {
+      setChatActionBusy(false);
     }
   }
 
@@ -2670,6 +2751,8 @@ export function App() {
     setInstructionsOpen(false);
     setProjectActionMode(null);
     setProjectActionError("");
+    setChatActionMode(null);
+    setChatActionError("");
   }
 
   function selectChat(chatId: string) {
@@ -3898,6 +3981,28 @@ export function App() {
           </div>
           <div className="chat-topbar-actions">
             <button
+              className={`icon-button ${chatActionMode === "rename" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => openChatAction("rename")}
+              disabled={!selectedChat || chatActionBusy}
+              aria-label="Rename chat"
+              aria-pressed={chatActionMode === "rename"}
+              title="Rename chat"
+            >
+              <Pencil size={18} />
+            </button>
+            <button
+              className={`icon-button ${chatActionMode === "fork" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => openChatAction("fork")}
+              disabled={!selectedChat || chatActionBusy}
+              aria-label="Fork chat"
+              aria-pressed={chatActionMode === "fork"}
+              title="Fork chat"
+            >
+              <GitFork size={18} />
+            </button>
+            <button
               className="icon-button"
               type="button"
               onClick={refreshSelectedChat}
@@ -3919,6 +4024,30 @@ export function App() {
             </div>
           </div>
         </header>
+
+        {chatActionMode && selectedChat ? (
+          <form className="chat-action-panel" onSubmit={submitChatAction} aria-label={chatActionMode === "rename" ? "Rename chat" : "Fork chat"}>
+            <label>
+              <span>{chatActionMode === "rename" ? "New chat name" : "Fork name"}</span>
+              <input
+                value={chatActionName}
+                onChange={(event) => setChatActionName(event.currentTarget.value)}
+                disabled={chatActionBusy}
+                autoComplete="off"
+              />
+            </label>
+            {chatActionError ? <p>{chatActionError}</p> : null}
+            <div className="chat-action-buttons">
+              <button className="ghost-button" type="button" onClick={() => setChatActionMode(null)} disabled={chatActionBusy}>
+                Cancel
+              </button>
+              <button type="submit" disabled={chatActionBusy}>
+                {chatActionBusy ? <Loader2 className="spin" size={15} /> : chatActionMode === "rename" ? <Pencil size={15} /> : <GitFork size={15} />}
+                {chatActionMode === "rename" ? "Rename" : "Fork"}
+              </button>
+            </div>
+          </form>
+        ) : null}
 
         <div className="chat-content">
           {chatShellIsLoading ? (

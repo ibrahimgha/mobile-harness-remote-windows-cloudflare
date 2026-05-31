@@ -11,13 +11,17 @@ export type ForkChatResult = {
   sessionPath: string;
 };
 
+export type RenameChatResult = {
+  chat: ChatDetail;
+};
+
 const maxForkNameLength = Number(process.env.CODEX_FORK_NAME_MAX_CHARS ?? 120);
 
-function cleanForkName(value: string): string {
+function cleanChatName(value: string): string {
   const name = value.replace(/\s+/g, " ").trim().slice(0, maxForkNameLength);
 
   if (!name) {
-    throw new Error("Fork name is required");
+    throw new Error("Chat name is required");
   }
 
   return name;
@@ -91,7 +95,7 @@ function rewriteSessionFile(raw: string, oldId: string, newId: string, nowIso: s
 }
 
 export async function forkChatSession(sourceChatId: string, rawName: string): Promise<ForkChatResult> {
-  const name = cleanForkName(rawName);
+  const name = cleanChatName(rawName);
   const sourcePath = await findSessionFile(sourceChatId);
 
   if (!sourcePath) {
@@ -126,5 +130,27 @@ export async function forkChatSession(sourceChatId: string, rawName: string): Pr
     chat,
     sourceChatId,
     sessionPath: targetPath
+  };
+}
+
+export async function renameChatSession(chatId: string, rawName: string): Promise<RenameChatResult> {
+  const name = cleanChatName(rawName);
+  const chat = await getChat(chatId);
+
+  if (!chat) {
+    throw new Error("Chat was not found");
+  }
+
+  const renamedAt = new Date().toISOString();
+  await ensureSessionIndexEntry(chatId, name, renamedAt);
+  await promoteChatForDesktop({ ...chat, updatedAt: renamedAt }, name, chat.projectPath);
+  clearSessionCache();
+
+  return {
+    chat: (await getChat(chatId)) ?? {
+      ...chat,
+      title: name,
+      updatedAt: renamedAt
+    }
   };
 }
