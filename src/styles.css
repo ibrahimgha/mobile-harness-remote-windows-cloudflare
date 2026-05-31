@@ -774,6 +774,26 @@ p {
   align-self: flex-start;
 }
 
+.chat-bubble.is-tool {
+  align-self: flex-start;
+  max-width: min(86%, 960px);
+  border-color: #d7d0ef;
+  background: #fbfaff;
+}
+
+.chat-bubble.is-system {
+  align-self: center;
+  max-width: min(84%, 880px);
+  border-color: #cfe2d8;
+  background: #f8fbf8;
+  box-shadow: none;
+}
+
+.chat-bubble.is-assistant_commentary {
+  border-color: #cfe2d8;
+  background: #fbfdfb;
+}
+
 .chat-bubble.is-error {
   border-color: #f0b2aa;
   background: var(--red-soft);
@@ -781,6 +801,14 @@ p {
 
 .chat-bubble.is-error .bubble-meta {
   color: var(--red);
+}
+
+.chat-bubble.is-tool .bubble-meta {
+  color: var(--violet);
+}
+
+.chat-bubble.is-system .bubble-meta {
+  color: var(--muted);
 }
 
 .bubble-meta {
@@ -834,6 +862,8 @@ p {
 }
 
 .chat-bubble.is-assistant .bubble-copy-button,
+.chat-bubble.is-tool .bubble-copy-button,
+.chat-bubble.is-system .bubble-copy-button,
 .chat-bubble.is-error .bubble-copy-button {
   border-color: var(--line);
   color: var(--teal-strong);

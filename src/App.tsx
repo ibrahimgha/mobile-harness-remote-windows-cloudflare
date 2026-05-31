@@ -121,8 +121,21 @@ type ChatMessageExcerpt = {
 
 type ChatTranscriptMessage = ChatMessageExcerpt & {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool" | "system";
+  kind?:
+    | "user_prompt"
+    | "assistant_commentary"
+    | "assistant_final"
+    | "tool_call"
+    | "tool_output"
+    | "error"
+    | "task_complete";
   isFinal?: boolean;
+  label?: string;
+  toolName?: string;
+  callId?: string;
+  status?: string;
+  durationMs?: number;
 };
 
 type VisibleChatMessage = ChatTranscriptMessage & {
@@ -347,7 +360,7 @@ function formatDate(value: string) {
 function responseRunDuration(messages: ChatTranscriptMessage[], responseIndex: number) {
   const response = messages[responseIndex];
 
-  if (!response || response.role !== "assistant") {
+  if (!response || response.role !== "assistant" || response.kind === "assistant_commentary") {
     return "";
   }
 
@@ -360,6 +373,74 @@ function responseRunDuration(messages: ChatTranscriptMessage[], responseIndex: n
   }
 
   return "";
+}
+
+function formatDurationMs(durationMs: number | undefined) {
+  if (!Number.isFinite(durationMs) || !durationMs) {
+    return "";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function chatMessageLabel(message: VisibleChatMessage) {
+  if (message.isRunFailure) {
+    return "Codex run failed";
+  }
+
+  if (message.label) {
+    return message.label;
+  }
+
+  if (message.role === "user") {
+    return "You";
+  }
+
+  if (message.role === "assistant") {
+    return message.kind === "assistant_commentary" ? "Codex update" : "Codex";
+  }
+
+  if (message.role === "tool") {
+    return message.kind === "tool_call" ? "Tool call" : "Tool output";
+  }
+
+  return "System";
+}
+
+function chatMessageEmptyText(message: VisibleChatMessage) {
+  if (message.role === "user") {
+    return "No prompt text.";
+  }
+
+  if (message.role === "tool") {
+    return "No tool details.";
+  }
+
+  if (message.role === "system") {
+    return "No system details.";
+  }
+
+  return "No response text.";
+}
+
+function chatMessageClassName(message: VisibleChatMessage) {
+  return [
+    "chat-bubble",
+    `is-${message.role}`,
+    message.kind ? `is-${message.kind}` : "",
+    message.isRunFailure || message.kind === "error" ? "is-error" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function firstChatId(index: ChatIndex | null) {
@@ -547,8 +628,14 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       other &&
       message.id === other.id &&
       message.role === other.role &&
+      message.kind === other.kind &&
       message.createdAt === other.createdAt &&
       message.text === other.text &&
+      (message.label ?? "") === (other.label ?? "") &&
+      (message.toolName ?? "") === (other.toolName ?? "") &&
+      (message.callId ?? "") === (other.callId ?? "") &&
+      (message.status ?? "") === (other.status ?? "") &&
+      (message.durationMs ?? 0) === (other.durationMs ?? 0) &&
       Boolean(message.isFinal) === Boolean(other.isFinal)
     );
   });
@@ -1800,6 +1887,8 @@ export function App() {
       fallback.push({
         id: "last-prompt",
         role: "user",
+        kind: "user_prompt",
+        label: "You",
         text: selectedChat.lastPrompt.text,
         createdAt: selectedChat.lastPrompt.createdAt
       });
@@ -1809,6 +1898,8 @@ export function App() {
       fallback.push({
         id: "last-response",
         role: "assistant",
+        kind: "assistant_final",
+        label: "Codex",
         text: selectedChat.lastResponse.text,
         createdAt: selectedChat.lastResponse.createdAt,
         isFinal: true
@@ -2815,6 +2906,11 @@ export function App() {
         if (job) {
           rememberJob(job);
 
+          if (job.chatId === selectedChatIdRef.current) {
+            void loadChatJobs(job.chatId);
+            void loadChatDetail(job.chatId, true);
+          }
+
           if (job.status === "completed" || job.status === "failed") {
             if (notificationStatusRef.current === "local") {
               void localNotificationBodyForJob(job).then((body) =>
@@ -2830,10 +2926,7 @@ export function App() {
 
             void loadChats();
 
-            if (job.chatId === selectedChatIdRef.current) {
-              void loadChatJobs(job.chatId);
-              void loadChatDetail(job.chatId, true);
-            } else {
+            if (job.chatId !== selectedChatIdRef.current) {
               setUnreadChatIds((current) => {
                 if (current.has(job.chatId)) {
                   return current;
@@ -3590,12 +3683,25 @@ export function App() {
               {visibleMessages.length ? (
                 visibleMessages.map((message, index) => {
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
+                  const completeDuration = message.kind === "task_complete" ? formatDurationMs(message.durationMs) : "";
+                  const showFinalFallbackSeparator =
+                    message.role === "assistant" &&
+                    message.isFinal &&
+                    visibleMessages[index + 1]?.kind !== "task_complete";
+
+                  if (message.kind === "task_complete") {
+                    return (
+                      <div className="run-complete-separator" role="separator" aria-label="Run complete" key={message.id}>
+                        <span>{completeDuration ? `Run complete ${completeDuration}` : "Run complete"}</span>
+                      </div>
+                    );
+                  }
 
                   return (
                     <Fragment key={message.id}>
-                      <article className={`chat-bubble is-${message.role} ${message.isRunFailure ? "is-error" : ""}`}>
+                      <article className={chatMessageClassName(message)}>
                         <div className="bubble-meta">
-                          <span>{message.isRunFailure ? "Codex run failed" : message.role === "user" ? "You" : "Codex"}</span>
+                          <span>{chatMessageLabel(message)}</span>
                           <time>{formatDate(message.createdAt)}</time>
                           {runDuration ? (
                             <span className="bubble-duration" title="Run duration">
@@ -3609,13 +3715,13 @@ export function App() {
                         </div>
                         <FormattedMessage
                           text={message.text}
-                          emptyText={message.role === "user" ? "No prompt text." : "No response text."}
+                          emptyText={chatMessageEmptyText(message)}
                           token={token}
                           collapseLocalImages={message.role === "user"}
                           basePath={selectedChat.projectPath}
                         />
                       </article>
-                      {message.role === "assistant" && message.isFinal ? (
+                      {showFinalFallbackSeparator ? (
                         <div className="run-complete-separator" role="separator" aria-label="Run complete">
                           <span>Run complete</span>
                         </div>

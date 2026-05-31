@@ -15,6 +15,7 @@ const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTE
 const parseConcurrency = Math.max(1, Number(process.env.CODEX_SESSION_PARSE_CONCURRENCY ?? 8) || 8);
 const defaultDetailTurns = Math.max(1, Number(process.env.CODEX_CHAT_DETAIL_TURNS ?? 10) || 10);
 const maxDetailTurns = Math.max(defaultDetailTurns, Number(process.env.CODEX_CHAT_DETAIL_MAX_TURNS ?? 200) || 200);
+const maxEventTextLength = Math.max(1000, Number(process.env.CODEX_CHAT_EVENT_TEXT_BYTES ?? 12000) || 12000);
 
 let summarySessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
 
@@ -60,6 +61,32 @@ function textFromContent(content: unknown): string {
     .trim();
 }
 
+function textFromUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function clampEventText(text: string): string {
+  const normalized = text.trimEnd();
+
+  if (normalized.length <= maxEventTextLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxEventTextLength)}\n\n[Output truncated in remote view]`;
+}
+
 function previewText(text: string, fallback: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
 
@@ -84,8 +111,8 @@ function isHeartbeatText(text: string): boolean {
   return /^(\*\*)?heartbeat(\*\*)?\s*:/i.test(text.trim());
 }
 
-function transcriptId(role: ChatTranscriptMessage["role"], createdAt: string, index: number): string {
-  return `${role}-${Date.parse(createdAt) || 0}-${index}`;
+function transcriptId(kind: string, createdAt: string, index: number): string {
+  return `${Date.parse(createdAt) || 0}-${String(index).padStart(6, "0")}-${kind}`;
 }
 
 function projectNameFromPath(projectPath: string): string {
@@ -306,6 +333,69 @@ function paginateTranscriptMessages(messages: ChatTranscriptMessage[], requested
   };
 }
 
+function tryParseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatToolCallText(toolName: string, input: unknown): string {
+  const parsed = tryParseJsonObject(input);
+
+  if (parsed && typeof parsed.command === "string") {
+    return `\`\`\`powershell\n${parsed.command}\n\`\`\``;
+  }
+
+  if (parsed && typeof parsed.mermaidSyntax === "string") {
+    return `\`\`\`mermaid\n${parsed.mermaidSyntax}\n\`\`\``;
+  }
+
+  if (parsed && typeof parsed.prompt === "string") {
+    return parsed.prompt;
+  }
+
+  const text = textFromUnknown(input);
+  if (!text) {
+    return toolName;
+  }
+
+  return text.trim().startsWith("{") || text.trim().startsWith("[") ? `\`\`\`json\n${text}\n\`\`\`` : clampEventText(text);
+}
+
+function formatStructuredToolText(value: unknown): string {
+  const text = textFromUnknown(value);
+
+  if (!text) {
+    return "No details.";
+  }
+
+  const clamped = clampEventText(text);
+
+  return clamped.trim().startsWith("{") || clamped.trim().startsWith("[") ? `\`\`\`json\n${clamped}\n\`\`\`` : clamped;
+}
+
+function formatToolOutputText(output: unknown): string {
+  const text = textFromUnknown(output);
+
+  if (!text) {
+    return "No output.";
+  }
+
+  const clamped = clampEventText(text);
+  return clamped.trimStart().startsWith("```") ? clamped : `\`\`\`text\n${clamped}\n\`\`\``;
+}
+
 async function parseSessionFile(
   filePath: string,
   index: Map<string, IndexedSession>,
@@ -326,6 +416,12 @@ async function parseSessionFile(
   let lastFinalAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let newestRecordMs = Number.NaN;
   const transcriptMessages: ChatTranscriptMessage[] = [];
+  const appendTranscriptMessage = (message: Omit<ChatTranscriptMessage, "id"> & { id?: string }) => {
+    transcriptMessages.push({
+      ...message,
+      id: message.id ?? transcriptId(message.kind ?? message.role, message.createdAt, transcriptMessages.length)
+    });
+  };
 
   const headBuffer = await readFileSlice(filePath, 0, Math.min(stat.size, headBytes));
 
@@ -369,7 +465,7 @@ async function parseSessionFile(
   }
 
   const consumeTranscriptLine = (line: string) => {
-    if (!line.includes('"payload":{"type":"message"')) {
+    if (!line.includes('"payload"') && !line.includes('"type":"error"') && !line.includes('"type":"turn.failed"')) {
       return;
     }
 
@@ -382,6 +478,29 @@ async function parseSessionFile(
           role?: string;
           phase?: string;
           content?: unknown;
+          message?: unknown;
+          name?: string;
+          arguments?: unknown;
+          input?: unknown;
+          output?: unknown;
+          call_id?: string;
+          status?: string;
+          stdout?: unknown;
+          stderr?: unknown;
+          success?: boolean;
+          duration_ms?: number;
+          time_to_first_token_ms?: number;
+          last_agent_message?: unknown;
+          action?: unknown;
+          query?: unknown;
+          changes?: unknown;
+          error?: {
+            message?: unknown;
+          };
+        };
+        message?: unknown;
+        error?: {
+          message?: unknown;
         };
       };
       const recordMs = Date.parse(record.timestamp ?? "");
@@ -390,27 +509,154 @@ async function parseSessionFile(
         newestRecordMs = Number.isFinite(newestRecordMs) ? Math.max(newestRecordMs, recordMs) : recordMs;
       }
 
-      if (record.payload?.type !== "message") {
+      const timestamp = record.timestamp ?? new Date(stat.mtimeMs).toISOString();
+      const payload = record.payload;
+
+      if (record.type === "error" || record.type === "turn.failed") {
+        appendTranscriptMessage({
+          role: "system",
+          kind: "error",
+          label: "Codex error",
+          text: clampEventText(textFromUnknown(record.message ?? record.error?.message ?? "Codex run failed")),
+          createdAt: timestamp
+        });
         return;
       }
 
-      const text = textFromContent(record.payload.content);
-      const timestamp = record.timestamp ?? new Date(stat.mtimeMs).toISOString();
+      if (!payload?.type) {
+        return;
+      }
 
-      if (record.payload.role === "user" && isPromptText(text)) {
+      if (record.type === "response_item" && payload.type === "function_call") {
+        appendTranscriptMessage({
+          role: "tool",
+          kind: "tool_call",
+          label: payload.name ? `Tool call: ${payload.name}` : "Tool call",
+          toolName: payload.name,
+          callId: payload.call_id,
+          status: payload.status,
+          text: formatToolCallText(payload.name ?? "tool", payload.arguments),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "response_item" && payload.type === "custom_tool_call") {
+        appendTranscriptMessage({
+          role: "tool",
+          kind: "tool_call",
+          label: payload.name ? `Tool call: ${payload.name}` : "Tool call",
+          toolName: payload.name,
+          callId: payload.call_id,
+          status: payload.status,
+          text: formatToolCallText(payload.name ?? "tool", payload.input),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "response_item" && payload.type === "function_call_output") {
+        appendTranscriptMessage({
+          role: "tool",
+          kind: "tool_output",
+          label: "Tool output",
+          callId: payload.call_id,
+          status: payload.status,
+          text: formatToolOutputText(payload.output),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "response_item" && payload.type === "custom_tool_call_output") {
+        appendTranscriptMessage({
+          role: "tool",
+          kind: "tool_output",
+          label: "Tool output",
+          callId: payload.call_id,
+          status: payload.status,
+          text: formatToolOutputText(payload.output),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "response_item" && payload.type === "web_search_call") {
+        appendTranscriptMessage({
+          role: "tool",
+          kind: "tool_call",
+          label: "Web search",
+          status: payload.status,
+          text: formatStructuredToolText(payload.action ?? payload.query ?? payload),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "event_msg" && payload.type === "task_complete") {
+        appendTranscriptMessage({
+          role: "system",
+          kind: "task_complete",
+          label: "Run complete",
+          durationMs: payload.duration_ms,
+          text: payload.duration_ms ? `Completed in ${Math.round(payload.duration_ms / 1000)}s` : "Run complete",
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "event_msg" && payload.type === "error") {
+        appendTranscriptMessage({
+          role: "system",
+          kind: "error",
+          label: "Codex error",
+          text: clampEventText(textFromUnknown(payload.message ?? payload.error?.message ?? "Codex error")),
+          createdAt: timestamp
+        });
+        return;
+      }
+
+      if (record.type === "event_msg" && /_(end|complete|completed)$/i.test(payload.type)) {
+        if (payload.success === false) {
+          const output = [payload.stdout, payload.stderr, payload.output, payload.error?.message]
+            .map(textFromUnknown)
+            .filter(Boolean)
+            .join("\n");
+
+          appendTranscriptMessage({
+            role: "tool",
+            kind: "error",
+            label: payload.type.replace(/_/g, " "),
+            status: payload.status,
+            text: formatToolOutputText(output || "Tool reported failure."),
+            createdAt: timestamp
+          });
+        }
+
+        return;
+      }
+
+      if (payload.type !== "message") {
+        return;
+      }
+
+      const text = textFromContent(payload.content);
+
+      if (payload.role === "user" && isPromptText(text)) {
         lastPrompt = { text, createdAt: timestamp };
         lastAssistantAfterPrompt = null;
         lastFinalAssistantAfterPrompt = null;
-        transcriptMessages.push({
-          id: transcriptId("user", timestamp, transcriptMessages.length),
+        appendTranscriptMessage({
           role: "user",
+          kind: "user_prompt",
+          label: "You",
           text,
           createdAt: timestamp
         });
       }
 
-      if (record.payload.role === "assistant" && text) {
-        const isFinalAnswer = record.payload.phase === "final_answer" || !record.payload.phase;
+      if (payload.role === "assistant" && text) {
+        const isFinalAnswer = payload.phase === "final_answer" || !payload.phase;
         const isDisplayableAssistant = isFinalAnswer || !isHeartbeatText(text);
 
         if (!isDisplayableAssistant) {
@@ -423,9 +669,10 @@ async function parseSessionFile(
           lastAssistantAfterPrompt = lastAssistant;
         }
 
-        transcriptMessages.push({
-          id: transcriptId("assistant", timestamp, transcriptMessages.length),
+        appendTranscriptMessage({
           role: "assistant",
+          kind: isFinalAnswer ? "assistant_final" : "assistant_commentary",
+          label: isFinalAnswer ? "Codex" : "Codex update",
           text,
           createdAt: timestamp,
           isFinal: isFinalAnswer

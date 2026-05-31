@@ -121,8 +121,21 @@ export type ChatMessageExcerpt = {
 
 export type ChatTranscriptMessage = ChatMessageExcerpt & {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool" | "system";
+  kind?:
+    | "user_prompt"
+    | "assistant_commentary"
+    | "assistant_final"
+    | "tool_call"
+    | "tool_output"
+    | "error"
+    | "task_complete";
   isFinal?: boolean;
+  label?: string;
+  toolName?: string;
+  callId?: string;
+  status?: string;
+  durationMs?: number;
 };
 
 export type ChatSummary = {
