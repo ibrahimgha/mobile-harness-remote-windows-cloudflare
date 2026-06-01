@@ -41,6 +41,10 @@ const transcriptVerifyAttempts = Number(process.env.CODEX_TRANSCRIPT_VERIFY_ATTE
 const transcriptVerifyDelayMs = Number(process.env.CODEX_TRANSCRIPT_VERIFY_DELAY_MS ?? 350);
 const postTurnCompletedGraceMs = Number(process.env.CODEX_POST_TURN_COMPLETED_GRACE_MS ?? 15000);
 const reconcileLogBytes = Number(process.env.CODEX_RECONCILE_LOG_BYTES ?? 2 * 1024 * 1024);
+const stdoutLineBufferLimit = Math.max(
+  64 * 1024,
+  Number(process.env.CODEX_STDOUT_LINE_BUFFER_BYTES ?? 4 * 1024 * 1024) || 4 * 1024 * 1024
+);
 const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
 const recoveredLogJobsLimit = Number(process.env.CODEX_RECOVERED_LOG_JOBS_LIMIT ?? 20);
 
@@ -468,6 +472,7 @@ export class CodexRunner {
       const stdout = createWriteStream(job.logPaths.stdout, { flags: "a" });
       const stderr = createWriteStream(job.logPaths.stderr, { flags: "a" });
       let stdoutBuffer = "";
+      let stdoutBufferTruncated = false;
       let completed = false;
       let childClosed = false;
       let completionPromise: Promise<void> | undefined;
@@ -568,6 +573,18 @@ export class CodexRunner {
 
         for (const line of lines) {
           handleLine(line);
+        }
+
+        if (stdoutBuffer.length > stdoutLineBufferLimit) {
+          const droppedChars = stdoutBuffer.length - stdoutLineBufferLimit;
+          stdoutBuffer = stdoutBuffer.slice(-stdoutLineBufferLimit);
+
+          if (!stdoutBufferTruncated) {
+            stdoutBufferTruncated = true;
+            stderr.write(
+              `[remote] Codex stdout line exceeded ${stdoutLineBufferLimit} chars; dropped ${droppedChars} buffered chars while continuing to write the full stdout log.\n`
+            );
+          }
         }
       });
       child.stderr.pipe(stderr);

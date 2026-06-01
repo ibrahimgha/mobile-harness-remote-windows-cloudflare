@@ -11,6 +11,10 @@ const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? 300);
 const cacheMs = Number(process.env.CODEX_SESSION_CACHE_MS ?? 5000);
 const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024);
 const summaryTailBytes = Number(process.env.CODEX_SESSION_SUMMARY_TAIL_BYTES ?? 768 * 1024);
+const detailTailBytes = Math.max(
+  summaryTailBytes,
+  Number(process.env.CODEX_CHAT_DETAIL_BYTES ?? tailBytes) || tailBytes
+);
 const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTES ?? 256 * 1024) || 256 * 1024);
 const parseConcurrency = Math.max(1, Number(process.env.CODEX_SESSION_PARSE_CONCURRENCY ?? 8) || 8);
 const defaultDetailTurns = Math.max(1, Number(process.env.CODEX_CHAT_DETAIL_TURNS ?? 10) || 10);
@@ -931,7 +935,7 @@ export async function getChat(id: string, options: { detailTurns?: number; messa
   }
 
   const session = await parseSessionFile(filePath, await readSessionIndex(), {
-    maxTailBytes: Number.POSITIVE_INFINITY,
+    maxTailBytes: detailTailBytes,
     detailTurns: options.detailTurns,
     messageMode: options.messageMode ?? "codex"
   });
