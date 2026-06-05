@@ -30,9 +30,31 @@ function Ensure-Directories {
 function Write-ServiceLog {
   param([string]$Message)
 
-  Ensure-Directories
-  $timestamp = Get-Date -Format "o"
-  Add-Content -LiteralPath $ServiceLog -Value "$timestamp $Message" -Encoding utf8
+  try {
+    Ensure-Directories
+    $timestamp = Get-Date -Format "o"
+    $line = "$timestamp $Message"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes("$line`r`n")
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+      try {
+        $stream = [System.IO.File]::Open($ServiceLog, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        try {
+          $stream.Write($bytes, 0, $bytes.Length)
+        } finally {
+          $stream.Dispose()
+        }
+        return
+      } catch {
+        if ($attempt -eq 5) {
+          return
+        }
+        Start-Sleep -Milliseconds (100 * $attempt)
+      }
+    }
+  } catch {
+    return
+  }
 }
 
 function Join-CandidatePath {
@@ -247,7 +269,7 @@ function Get-PidAgeSeconds {
 
 function Test-LocalHealth {
   try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/health" -TimeoutSec 8
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/live" -TimeoutSec 8
     return [bool]$health.ok
   } catch {
     Write-ServiceLog "Local health check failed: $($_.Exception.Message)"
@@ -257,7 +279,7 @@ function Test-LocalHealth {
 
 function Test-PublicHealth {
   try {
-    $health = Invoke-RestMethod -Uri "https://$PublicHost/api/health" -TimeoutSec 15
+    $health = Invoke-RestMethod -Uri "https://$PublicHost/api/live" -TimeoutSec 15
     return [bool]$health.ok
   } catch {
     Write-ServiceLog "Public health check failed: $($_.Exception.Message)"
@@ -434,7 +456,7 @@ function Show-Status {
   Write-Host "Public URL: https://$PublicHost"
 
   try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/health" -TimeoutSec 15
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/live" -TimeoutSec 15
     Write-Host "Health: $($health.ok)"
   } catch {
     Write-Host "Health: unavailable"

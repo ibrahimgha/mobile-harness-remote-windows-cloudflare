@@ -14,3 +14,4 @@ servicePath = fso.BuildPath(scriptDir, "service.ps1")
 command = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " & Chr(34) & servicePath & Chr(34) & " watchdog"
 
 shell.Run command, 0, False
+WScript.Quit 0

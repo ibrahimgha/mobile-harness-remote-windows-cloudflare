@@ -649,6 +649,14 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
   next();
 }
 
+app.get("/api/live", (_req, res) => {
+  res.json({
+    ok: true,
+    uptimeSeconds: Math.round(process.uptime()),
+    clients: wss.clients.size
+  });
+});
+
 app.get("/api/health", async (_req, res) => {
   const checks = {
     chatIndex: {
