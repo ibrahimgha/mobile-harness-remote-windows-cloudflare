@@ -26,7 +26,6 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
-  Square,
   Wifi,
   WifiOff,
   X
@@ -38,6 +37,7 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   isValidElement,
   memo,
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -672,7 +672,9 @@ function supportedAudioMimeType() {
     return "";
   }
 
-  return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"].find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+  return ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/webm"].find((type) =>
+    MediaRecorder.isTypeSupported(type)
+  ) ?? "";
 }
 
 function formatBytes(bytes: number) {
@@ -773,6 +775,10 @@ function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optim
   });
 }
 
+function dedupeMessagesById(messages: ChatTranscriptMessage[]) {
+  return [...messages.reduce((byId, message) => byId.set(message.id, message), new Map<string, ChatTranscriptMessage>()).values()];
+}
+
 function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incoming: ChatDetail) {
   if (!current || current.id !== incoming.id) {
     return incoming;
@@ -791,7 +797,7 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
     return incoming;
   }
 
-  const messages = [...incomingMessages, ...optimisticMessages]
+  const messages = dedupeMessagesById([...incomingMessages, ...optimisticMessages])
     .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
     .slice(-20);
   const lastOptimisticPrompt = optimisticMessages[optimisticMessages.length - 1];
@@ -1037,6 +1043,13 @@ function newestCachedChatHistory() {
   return readCachedChatHistories()[0]?.chat ?? null;
 }
 
+function cacheableChatDetail(chat: ChatDetail): ChatDetail {
+  return {
+    ...chat,
+    messages: (chat.messages ?? []).filter((message) => !isOptimisticVoiceNoteMessage(message))
+  };
+}
+
 function readStoredSelectedChatId() {
   try {
     const value = localStorage.getItem(selectedChatIdKey)?.trim();
@@ -1064,8 +1077,9 @@ function rememberSelectedChatId(chatId: string | null) {
 }
 
 function rememberCachedChatHistory(chat: ChatDetail, mode: ChatMessageViewMode = defaultChatMessageViewMode) {
+  const cacheableChat = cacheableChatDetail(chat);
   const next = [
-    { chat, mode, cachedAt: new Date().toISOString() },
+    { chat: cacheableChat, mode, cachedAt: new Date().toISOString() },
     ...readCachedChatHistories().filter((item) => !(item.chat.id === chat.id && cachedChatMode(item) === mode))
   ]
     .sort((a, b) => cachedAtMs(b.cachedAt) - cachedAtMs(a.cachedAt))
@@ -1609,7 +1623,19 @@ function VoiceNotePlayer({ message }: { message: VisibleChatMessage }) {
       <audio controls src={message.voiceNoteUrl}>
         Voice note
       </audio>
-      <span>{message.voiceNoteMimeType || "audio recording"}</span>
+    </div>
+  );
+}
+
+function DictationWaveform({ processing }: { processing: boolean }) {
+  return (
+    <div className={`dictation-waveform ${processing ? "is-processing" : ""}`} aria-live="polite">
+      <span>{processing ? "Processing" : "Recording"}</span>
+      <div className="dictation-bars" aria-hidden="true">
+        {Array.from({ length: 22 }, (_value, index) => (
+          <i key={index} style={{ "--bar-index": index } as CSSProperties} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -4403,7 +4429,19 @@ export function App() {
   }
 
   function sendPromptFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0 || sending || dictationRecording || dictationProcessing || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (dictationRecording) {
+      event.preventDefault();
+      sendHandledOnPointerDownRef.current = true;
+      event.currentTarget.blur();
+      stopDictation();
+      return;
+    }
+
+    if (sending || dictationProcessing || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
       return;
     }
 
@@ -4416,6 +4454,11 @@ export function App() {
   function sendPromptFromClick() {
     if (sendHandledOnPointerDownRef.current) {
       sendHandledOnPointerDownRef.current = false;
+      return;
+    }
+
+    if (dictationRecording) {
+      stopDictation();
       return;
     }
 
@@ -5080,49 +5123,55 @@ export function App() {
             <button
               className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
               type="button"
-              onClick={() => (dictationRecording ? stopDictation() : void startDictation())}
-              disabled={!selectedChatId || sending || dictationProcessing}
-              aria-label={dictationRecording ? "Stop dictation" : dictationProcessing ? "Processing dictation" : "Start dictation"}
-              title={dictationRecording ? "Stop dictation" : dictationProcessing ? "Processing dictation" : "Start dictation"}
+              onClick={() => void startDictation()}
+              disabled={!selectedChatId || sending || dictationRecording || dictationProcessing}
+              aria-label={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
+              title={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
             >
-              {dictationProcessing ? <Loader2 className="spin" size={18} /> : dictationRecording ? <Square size={15} /> : <Mic size={18} />}
+              {dictationProcessing ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
             </button>
-            <div
-              ref={composerEditorRef}
-              className="composer-editor"
-              role="textbox"
-              aria-label="New prompt"
-              aria-multiline="true"
-              aria-disabled={!selectedChatId || sending}
-              data-placeholder="New prompt"
-              data-disabled={!selectedChatId || sending ? "true" : "false"}
-              contentEditable={Boolean(selectedChatId && !sending)}
-              suppressContentEditableWarning
-              inputMode="text"
-              autoCapitalize="sentences"
-              autoCorrect="on"
-              spellCheck={false}
-              data-form-type="other"
-              data-lpignore="true"
-              data-1p-ignore="true"
-              onInput={(event) => {
-                setDraft(textFromComposerEditor(event.currentTarget));
-                setComposerExpanded(composerShouldExpand(event.currentTarget));
-              }}
-              onPaste={(event) => {
-                event.preventDefault();
-                document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
-              }}
-              onKeyDown={sendPromptFromKeyboard}
-            />
+            {dictationRecording || dictationProcessing ? (
+              <DictationWaveform processing={dictationProcessing} />
+            ) : (
+              <div
+                ref={composerEditorRef}
+                className="composer-editor"
+                role="textbox"
+                aria-label="New prompt"
+                aria-multiline="true"
+                aria-disabled={!selectedChatId || sending}
+                data-placeholder="New prompt"
+                data-disabled={!selectedChatId || sending ? "true" : "false"}
+                contentEditable={Boolean(selectedChatId && !sending)}
+                suppressContentEditableWarning
+                inputMode="text"
+                autoCapitalize="sentences"
+                autoCorrect="on"
+                spellCheck={false}
+                data-form-type="other"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                onInput={(event) => {
+                  setDraft(textFromComposerEditor(event.currentTarget));
+                  setComposerExpanded(composerShouldExpand(event.currentTarget));
+                }}
+                onPaste={(event) => {
+                  event.preventDefault();
+                  document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+                }}
+                onKeyDown={sendPromptFromKeyboard}
+              />
+            )}
             <button
               className="send-button"
               type="button"
               onPointerDown={sendPromptFromPointer}
               onClick={sendPromptFromClick}
-              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending || dictationRecording || dictationProcessing}
+              disabled={!selectedChatId || dictationProcessing || sending || (!dictationRecording && !draft.trim() && !pendingAttachments.length)}
+              aria-label={dictationRecording ? "Stop and send dictation" : "Send prompt"}
+              title={dictationRecording ? "Stop and send dictation" : "Send prompt"}
             >
-              {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              {sending || dictationProcessing ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
               Send
             </button>
             {pendingAttachments.length ? (

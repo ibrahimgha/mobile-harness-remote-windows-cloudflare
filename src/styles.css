@@ -1357,6 +1357,60 @@ p {
   color: var(--red);
 }
 
+.dictation-waveform {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 4px;
+  color: var(--teal-strong);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.dictation-waveform.is-processing {
+  color: var(--muted);
+}
+
+.dictation-bars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 28px;
+  overflow: hidden;
+}
+
+.dictation-bars i {
+  display: block;
+  width: 3px;
+  height: calc(8px + (var(--bar-index) % 7) * 3px);
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.8;
+  animation: waveformPulse 950ms ease-in-out infinite;
+  animation-delay: calc(var(--bar-index) * -70ms);
+}
+
+.dictation-waveform.is-processing .dictation-bars i {
+  animation-duration: 1400ms;
+  opacity: 0.45;
+}
+
+@keyframes waveformPulse {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+
+  50% {
+    transform: scaleY(1.2);
+  }
+}
+
 .voice-note-player {
   display: grid;
   gap: 6px;
@@ -1366,12 +1420,6 @@ p {
 .voice-note-player audio {
   width: min(360px, 100%);
   max-width: 100%;
-}
-
-.voice-note-player span {
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 0.74rem;
-  font-weight: 700;
 }
 
 .attachment-list {
@@ -2308,6 +2356,21 @@ p {
 
   .composer.is-expanded .composer-field {
     border-radius: 16px;
+  }
+
+  .dictation-waveform {
+    min-height: 36px;
+    gap: 6px;
+    font-size: 0.74rem;
+  }
+
+  .dictation-bars {
+    gap: 2px;
+    height: 24px;
+  }
+
+  .dictation-bars i {
+    width: 2px;
   }
 
   .composer .attach-button,
