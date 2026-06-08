@@ -1319,7 +1319,7 @@ p {
 
 .composer-field {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 46px;
+  grid-template-columns: 42px 42px minmax(0, 1fr) 46px;
   align-items: end;
   gap: 6px;
   min-width: 0;
@@ -1329,7 +1329,8 @@ p {
   background: var(--surface);
 }
 
-.composer .attach-button {
+.composer .attach-button,
+.composer .dictation-button {
   width: 42px;
   min-height: 42px;
   height: 42px;
@@ -1342,11 +1343,35 @@ p {
 
 .composer .attach-button:hover:not(:disabled),
 .composer .attach-button:active,
-.composer .attach-button:focus-visible {
+.composer .attach-button:focus-visible,
+.composer .dictation-button:hover:not(:disabled),
+.composer .dictation-button:active,
+.composer .dictation-button:focus-visible {
   color: var(--teal-strong);
   border-color: transparent;
   background: transparent;
   box-shadow: none;
+}
+
+.composer .dictation-button.is-recording {
+  color: var(--red);
+}
+
+.voice-note-player {
+  display: grid;
+  gap: 6px;
+  min-width: min(260px, 100%);
+}
+
+.voice-note-player audio {
+  width: min(360px, 100%);
+  max-width: 100%;
+}
+
+.voice-note-player span {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 .attachment-list {
@@ -2264,7 +2289,7 @@ p {
   }
 
   .composer-field {
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-columns: 34px 34px minmax(0, 1fr) 34px;
     gap: 4px;
     padding: 3px;
     border-radius: 24px;
@@ -2285,7 +2310,8 @@ p {
     border-radius: 16px;
   }
 
-  .composer .attach-button {
+  .composer .attach-button,
+  .composer .dictation-button {
     width: 34px;
     min-width: 34px;
     min-height: 36px;

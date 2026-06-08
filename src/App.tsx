@@ -18,6 +18,7 @@ import {
   LogOut,
   Menu,
   MessageSquarePlus,
+  Mic,
   MonitorUp,
   Paperclip,
   Pencil,
@@ -25,6 +26,7 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Square,
   Wifi,
   WifiOff,
   X
@@ -139,13 +141,16 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
     | "tool_output"
     | "error"
     | "task_complete"
-    | "forked_from";
+    | "forked_from"
+    | "voice_note";
   isFinal?: boolean;
   label?: string;
   toolName?: string;
   callId?: string;
   status?: string;
   durationMs?: number;
+  voiceNoteUrl?: string;
+  voiceNoteMimeType?: string;
 };
 
 type VisibleChatMessage = ChatTranscriptMessage & {
@@ -251,6 +256,23 @@ type RunSettingsResult = {
 type PendingAttachment = {
   id: string;
   file: File;
+};
+
+type DictationVoiceNote = {
+  url: string;
+  mimeType: string;
+};
+
+type SpeechRecognitionLike = EventTarget & {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
 };
 
 type LocalQueuedCommand = {
@@ -619,6 +641,40 @@ function notificationResponseSummary(text: string, fallback: string) {
   return words.length > 10 ? `${summary}...` : summary;
 }
 
+function cleanDictatedPrompt(text: string) {
+  return text
+    .replace(/\bnew line\b/gi, "\n")
+    .replace(/\bnew paragraph\b/gi, "\n\n")
+    .replace(/\bcomma\b/gi, ",")
+    .replace(/\bperiod\b/gi, ".")
+    .replace(/\bfull stop\b/gi, ".")
+    .replace(/\bquestion mark\b/gi, "?")
+    .replace(/\bexclamation mark\b/gi, "!")
+    .replace(/\s+([,.?!])/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function speechRecognitionConstructor() {
+  const candidate = window as typeof window & {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+
+  return candidate.SpeechRecognition ?? candidate.webkitSpeechRecognition;
+}
+
+function supportedAudioMimeType() {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+
+  return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"].find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) {
     return `${bytes} B`;
@@ -687,8 +743,16 @@ function optimisticPromptId(createdAt: string) {
   return `optimistic-user-${Date.parse(createdAt) || Date.now()}`;
 }
 
+function optimisticVoiceNoteId(createdAt: string) {
+  return `optimistic-voice-${Date.parse(createdAt) || Date.now()}`;
+}
+
 function isOptimisticPromptMessage(message: ChatTranscriptMessage) {
   return message.role === "user" && message.id.startsWith("optimistic-user-");
+}
+
+function isOptimisticVoiceNoteMessage(message: ChatTranscriptMessage) {
+  return message.kind === "voice_note" && message.id.startsWith("optimistic-voice-");
 }
 
 function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
@@ -715,9 +779,13 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
   }
 
   const incomingMessages = incoming.messages ?? [];
-  const optimisticMessages = (current.messages ?? []).filter(
-    (message) => isOptimisticPromptMessage(message) && !serverContainsOptimisticPrompt(incomingMessages, message)
-  );
+  const optimisticMessages = (current.messages ?? []).filter((message) => {
+    if (isOptimisticVoiceNoteMessage(message)) {
+      return true;
+    }
+
+    return isOptimisticPromptMessage(message) && !serverContainsOptimisticPrompt(incomingMessages, message);
+  });
 
   if (!optimisticMessages.length) {
     return incoming;
@@ -785,6 +853,8 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       (message.callId ?? "") === (other.callId ?? "") &&
       (message.status ?? "") === (other.status ?? "") &&
       (message.durationMs ?? 0) === (other.durationMs ?? 0) &&
+      (message.voiceNoteUrl ?? "") === (other.voiceNoteUrl ?? "") &&
+      (message.voiceNoteMimeType ?? "") === (other.voiceNoteMimeType ?? "") &&
       Boolean(message.isFinal) === Boolean(other.isFinal)
     );
   });
@@ -1529,6 +1599,21 @@ const FormattedMessage = memo(function FormattedMessage({
   );
 });
 
+function VoiceNotePlayer({ message }: { message: VisibleChatMessage }) {
+  if (!message.voiceNoteUrl) {
+    return <div className="message-empty">Voice note unavailable.</div>;
+  }
+
+  return (
+    <div className="voice-note-player">
+      <audio controls src={message.voiceNoteUrl}>
+        Voice note
+      </audio>
+      <span>{message.voiceNoteMimeType || "audio recording"}</span>
+    </div>
+  );
+}
+
 function JobStatusIcon({ job }: { job: CodexRunJob }) {
   if (job.status === "running") {
     return <Loader2 className="spin" size={15} />;
@@ -1859,6 +1944,7 @@ export function App() {
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [chatActionError, setChatActionError] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [dictationRecording, setDictationRecording] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -1867,6 +1953,12 @@ export function App() {
   const localQueueSendingRef = useRef(false);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const dictationStreamRef = useRef<MediaStream | null>(null);
+  const dictationChunksRef = useRef<Blob[]>([]);
+  const dictationRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const dictationFinalTranscriptRef = useRef("");
+  const dictationTranscriptRef = useRef("");
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
@@ -3219,11 +3311,41 @@ export function App() {
     }
   }
 
-  const applyOptimisticPrompt = useCallback((chatId: string, text: string, createdAt: string, messageId = optimisticPromptId(createdAt)) => {
+  const applyOptimisticPrompt = useCallback((
+    chatId: string,
+    text: string,
+    createdAt: string,
+    messageId = optimisticPromptId(createdAt),
+    voiceNote?: DictationVoiceNote
+  ) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
         return current;
       }
+
+      const newMessages: ChatTranscriptMessage[] = [];
+
+      if (voiceNote) {
+        newMessages.push({
+          id: optimisticVoiceNoteId(createdAt),
+          role: "user" as const,
+          kind: "voice_note",
+          label: "Voice note",
+          text: "Voice note",
+          createdAt,
+          voiceNoteUrl: voiceNote.url,
+          voiceNoteMimeType: voiceNote.mimeType
+        });
+      }
+
+      newMessages.push({
+        id: messageId,
+        role: "user" as const,
+        kind: "user_prompt",
+        label: voiceNote ? "Transcribed prompt" : "You",
+        text,
+        createdAt
+      });
 
       return {
         ...current,
@@ -3232,12 +3354,7 @@ export function App() {
         lastResponse: null,
         messages: [
           ...(current.messages ?? []),
-          {
-            id: messageId,
-            role: "user" as const,
-            text,
-            createdAt
-          }
+          ...newMessages
         ].slice(-20),
         hasResponse: false
       };
@@ -3467,6 +3584,12 @@ export function App() {
       if (promptReceiptClearTimerRef.current !== undefined) {
         window.clearTimeout(promptReceiptClearTimerRef.current);
       }
+
+      dictationRecognitionRef.current?.abort();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      dictationStreamRef.current?.getTracks().forEach((track) => track.stop());
     },
     []
   );
@@ -3733,10 +3856,18 @@ export function App() {
         void loadChatJobs(chatId);
         void loadChatDetail(chatId, true);
       }
+
+      const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
+
+      for (const queuedChatId of queuedChatIds) {
+        if (queuedChatId && queuedChatId !== chatId && !isTemporaryChatId(queuedChatId)) {
+          void loadChatJobs(queuedChatId);
+        }
+      }
     }, 5000);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChatJobs, loadState]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
 
   useEffect(() => {
     if (!authenticated || localQueueSendingRef.current) {
@@ -4023,8 +4154,139 @@ export function App() {
     return result.files;
   }
 
-  async function sendPrompt() {
-    if (sending || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+  function stopDictationTracks() {
+    dictationStreamRef.current?.getTracks().forEach((track) => track.stop());
+    dictationStreamRef.current = null;
+  }
+
+  function stopDictation() {
+    dictationRecognitionRef.current?.stop();
+    dictationRecognitionRef.current = null;
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+
+    stopDictationTracks();
+    setDictationRecording(false);
+  }
+
+  async function startDictation() {
+    if (!selectedChatId || sending || dictationRecording) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setNotice("Audio recording is not supported in this browser.");
+      return;
+    }
+
+    const SpeechRecognition = speechRecognitionConstructor();
+
+    if (!SpeechRecognition) {
+      setNotice("Speech transcription is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = supportedAudioMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const recognition = new SpeechRecognition();
+
+      dictationStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      dictationRecognitionRef.current = recognition;
+      dictationChunksRef.current = [];
+      dictationFinalTranscriptRef.current = "";
+      dictationTranscriptRef.current = "";
+
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = navigator.language || "en-US";
+      recognition.onresult = (event) => {
+        let interim = "";
+
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const transcript = result?.[0]?.transcript ?? "";
+
+          if (result?.isFinal) {
+            dictationFinalTranscriptRef.current = `${dictationFinalTranscriptRef.current} ${transcript}`.trim();
+          } else {
+            interim = `${interim} ${transcript}`.trim();
+          }
+        }
+
+        const cleaned = cleanDictatedPrompt(`${dictationFinalTranscriptRef.current} ${interim}`.trim());
+        dictationTranscriptRef.current = cleaned;
+
+        if (cleaned) {
+          setDraft(cleaned);
+          if (composerEditorRef.current) {
+            syncComposerEditorText(composerEditorRef.current, cleaned);
+            setComposerExpanded(composerShouldExpand(composerEditorRef.current));
+          }
+        }
+      };
+      recognition.onerror = (event) => {
+        setNotice(event.error ? `Dictation error: ${event.error}` : "Dictation error");
+      };
+      recognition.onend = () => {
+        dictationRecognitionRef.current = null;
+      };
+
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) {
+          dictationChunksRef.current.push(event.data);
+        }
+      });
+
+      recorder.addEventListener(
+        "stop",
+        () => {
+          const blob = new Blob(dictationChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+          const transcript = cleanDictatedPrompt(dictationTranscriptRef.current || dictationFinalTranscriptRef.current);
+
+          mediaRecorderRef.current = null;
+          stopDictationTracks();
+          setDictationRecording(false);
+
+          if (!transcript) {
+            setNotice("No speech was transcribed. Try recording again.");
+            return;
+          }
+
+          const voiceNote = {
+            url: URL.createObjectURL(blob),
+            mimeType: blob.type || "audio recording"
+          };
+
+          void sendPrompt({ textOverride: transcript, voiceNote });
+        },
+        { once: true }
+      );
+
+      recorder.start();
+      recognition.start();
+      setDictationRecording(true);
+      setNotice("Recording dictation...");
+    } catch (error) {
+      stopDictationTracks();
+      mediaRecorderRef.current = null;
+      dictationRecognitionRef.current = null;
+      setDictationRecording(false);
+      setNotice(error instanceof Error ? error.message : "Could not start dictation");
+    }
+  }
+
+  async function sendPrompt(options: { textOverride?: string; voiceNote?: DictationVoiceNote } = {}) {
+    const outgoingDraft = options.textOverride ?? draft;
+    const outgoingAttachments = options.textOverride ? [] : pendingAttachments;
+
+    if (sending || !selectedChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
       return;
     }
 
@@ -4035,14 +4297,12 @@ export function App() {
     let receiptId: string | undefined;
 
     setSending(true);
-    setNotice(pendingAttachments.length ? "Uploading files..." : "");
+    setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
     try {
-      const uploadedFiles = await uploadAttachments(selectedChatId);
-      const promptText = promptWithUploadedFiles(draft, uploadedFiles);
+      const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(selectedChatId) : [];
+      const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
       const optimisticMessageId = optimisticPromptId(optimisticAt);
-
-      applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId);
 
       const sameChatHasLocalQueue = localCommandQueue.some(
         (command) => command.chatId === selectedChatId && isLocalCommandBlocking(command)
@@ -4065,6 +4325,7 @@ export function App() {
         ]);
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
+        applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
         receiptId = startPromptReceipt(selectedChatId, promptText);
         setNotice("Sending to target laptop...");
         const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
@@ -4084,7 +4345,9 @@ export function App() {
       if (composerEditorRef.current) {
         syncComposerEditorText(composerEditorRef.current, "");
       }
-      setPendingAttachments([]);
+      if (!options.textOverride) {
+        setPendingAttachments([]);
+      }
       void loadState();
       window.setTimeout(() => {
         void loadChats();
@@ -4105,7 +4368,7 @@ export function App() {
   }
 
   function sendPromptFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0 || sending || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+    if (event.button !== 0 || sending || dictationRecording || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
       return;
     }
 
@@ -4134,6 +4397,7 @@ export function App() {
       event.nativeEvent.isComposing ||
       window.matchMedia("(pointer: coarse)").matches ||
       sending ||
+      dictationRecording ||
       !selectedChatId ||
       (!draft.trim() && !pendingAttachments.length)
     ) {
@@ -4145,6 +4409,7 @@ export function App() {
   }
 
   function logout() {
+    stopDictation();
     localStorage.removeItem(tokenKey);
     setToken("");
     setLoginToken("");
@@ -4631,17 +4896,21 @@ export function App() {
                               {runDuration}
                             </span>
                           ) : null}
-                          {message.role === "user" ? (
+                          {message.role === "user" && message.kind !== "voice_note" ? (
                             <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
                           ) : null}
                         </div>
-                        <FormattedMessage
-                          text={message.text}
-                          emptyText={chatMessageEmptyText(message)}
-                          token={token}
-                          collapseLocalImages={message.role === "user"}
-                          basePath={selectedChat.projectPath}
-                        />
+                        {message.kind === "voice_note" ? (
+                          <VoiceNotePlayer message={message} />
+                        ) : (
+                          <FormattedMessage
+                            text={message.text}
+                            emptyText={chatMessageEmptyText(message)}
+                            token={token}
+                            collapseLocalImages={message.role === "user"}
+                            basePath={selectedChat.projectPath}
+                          />
+                        )}
                       </article>
                       {showFinalFallbackSeparator ? (
                         <div className="run-complete-separator" role="separator" aria-label="Run complete">
@@ -4766,11 +5035,21 @@ export function App() {
               className="attach-button"
               type="button"
               onClick={openAttachmentPicker}
-              disabled={!selectedChatId || sending || pendingAttachments.length >= maxAttachmentFiles}
+              disabled={!selectedChatId || sending || dictationRecording || pendingAttachments.length >= maxAttachmentFiles}
               aria-label="Attach files"
               title="Attach files"
             >
               <Paperclip size={18} />
+            </button>
+            <button
+              className={`dictation-button ${dictationRecording ? "is-recording" : ""}`}
+              type="button"
+              onClick={() => (dictationRecording ? stopDictation() : void startDictation())}
+              disabled={!selectedChatId || sending}
+              aria-label={dictationRecording ? "Stop dictation" : "Start dictation"}
+              title={dictationRecording ? "Stop dictation" : "Start dictation"}
+            >
+              {dictationRecording ? <Square size={15} /> : <Mic size={18} />}
             </button>
             <div
               ref={composerEditorRef}
@@ -4805,7 +5084,7 @@ export function App() {
               type="button"
               onPointerDown={sendPromptFromPointer}
               onClick={sendPromptFromClick}
-              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending}
+              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending || dictationRecording}
             >
               {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
               Send
