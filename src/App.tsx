@@ -1945,6 +1945,7 @@ export function App() {
   const [chatActionError, setChatActionError] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [dictationRecording, setDictationRecording] = useState(false);
+  const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -4159,22 +4160,49 @@ export function App() {
     dictationStreamRef.current = null;
   }
 
+  function currentDictationTranscript() {
+    return cleanDictatedPrompt(
+      dictationTranscriptRef.current ||
+        dictationFinalTranscriptRef.current ||
+        (composerEditorRef.current ? textFromComposerEditor(composerEditorRef.current) : "")
+    );
+  }
+
+  async function waitForDictationTranscript(timeoutMs = 2200) {
+    const startedAt = Date.now();
+    let bestTranscript = currentDictationTranscript();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      await delay(120);
+      const nextTranscript = currentDictationTranscript();
+
+      if (nextTranscript) {
+        bestTranscript = nextTranscript;
+      }
+    }
+
+    return bestTranscript;
+  }
+
   function stopDictation() {
     dictationRecognitionRef.current?.stop();
     dictationRecognitionRef.current = null;
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
+      setDictationProcessing(true);
+      setNotice("Processing dictation...");
       recorder.stop();
       return;
     }
 
     stopDictationTracks();
     setDictationRecording(false);
+    setDictationProcessing(false);
   }
 
   async function startDictation() {
-    if (!selectedChatId || sending || dictationRecording) {
+    if (!selectedChatId || sending || dictationRecording || dictationProcessing) {
       return;
     }
 
@@ -4246,16 +4274,18 @@ export function App() {
 
       recorder.addEventListener(
         "stop",
-        () => {
+        async () => {
           const blob = new Blob(dictationChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-          const transcript = cleanDictatedPrompt(dictationTranscriptRef.current || dictationFinalTranscriptRef.current);
 
           mediaRecorderRef.current = null;
           stopDictationTracks();
           setDictationRecording(false);
 
+          const transcript = await waitForDictationTranscript();
+
           if (!transcript) {
             setNotice("No speech was transcribed. Try recording again.");
+            setDictationProcessing(false);
             return;
           }
 
@@ -4264,7 +4294,11 @@ export function App() {
             mimeType: blob.type || "audio recording"
           };
 
-          void sendPrompt({ textOverride: transcript, voiceNote });
+          try {
+            await sendPrompt({ textOverride: transcript, voiceNote });
+          } finally {
+            setDictationProcessing(false);
+          }
         },
         { once: true }
       );
@@ -4278,6 +4312,7 @@ export function App() {
       mediaRecorderRef.current = null;
       dictationRecognitionRef.current = null;
       setDictationRecording(false);
+      setDictationProcessing(false);
       setNotice(error instanceof Error ? error.message : "Could not start dictation");
     }
   }
@@ -4368,7 +4403,7 @@ export function App() {
   }
 
   function sendPromptFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0 || sending || dictationRecording || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+    if (event.button !== 0 || sending || dictationRecording || dictationProcessing || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
       return;
     }
 
@@ -4398,6 +4433,7 @@ export function App() {
       window.matchMedia("(pointer: coarse)").matches ||
       sending ||
       dictationRecording ||
+      dictationProcessing ||
       !selectedChatId ||
       (!draft.trim() && !pendingAttachments.length)
     ) {
@@ -5035,21 +5071,21 @@ export function App() {
               className="attach-button"
               type="button"
               onClick={openAttachmentPicker}
-              disabled={!selectedChatId || sending || dictationRecording || pendingAttachments.length >= maxAttachmentFiles}
+              disabled={!selectedChatId || sending || dictationRecording || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
               aria-label="Attach files"
               title="Attach files"
             >
               <Paperclip size={18} />
             </button>
             <button
-              className={`dictation-button ${dictationRecording ? "is-recording" : ""}`}
+              className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
               type="button"
               onClick={() => (dictationRecording ? stopDictation() : void startDictation())}
-              disabled={!selectedChatId || sending}
-              aria-label={dictationRecording ? "Stop dictation" : "Start dictation"}
-              title={dictationRecording ? "Stop dictation" : "Start dictation"}
+              disabled={!selectedChatId || sending || dictationProcessing}
+              aria-label={dictationRecording ? "Stop dictation" : dictationProcessing ? "Processing dictation" : "Start dictation"}
+              title={dictationRecording ? "Stop dictation" : dictationProcessing ? "Processing dictation" : "Start dictation"}
             >
-              {dictationRecording ? <Square size={15} /> : <Mic size={18} />}
+              {dictationProcessing ? <Loader2 className="spin" size={18} /> : dictationRecording ? <Square size={15} /> : <Mic size={18} />}
             </button>
             <div
               ref={composerEditorRef}
@@ -5084,7 +5120,7 @@ export function App() {
               type="button"
               onPointerDown={sendPromptFromPointer}
               onClick={sendPromptFromClick}
-              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending || dictationRecording}
+              disabled={!selectedChatId || (!draft.trim() && !pendingAttachments.length) || sending || dictationRecording || dictationProcessing}
             >
               {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
               Send
