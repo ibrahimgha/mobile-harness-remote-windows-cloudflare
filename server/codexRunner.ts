@@ -282,7 +282,6 @@ export class CodexRunner {
   private readonly jobTexts = new Map<string, string>();
   private readonly runningChatIds = new Set<string>();
 
-  readonly cliPath = resolveCliPath();
   readonly bypassSandbox = shouldBypassSandbox();
   readonly skipGitRepoCheck = shouldSkipGitRepoCheck();
   readonly simulationMode = isSimulationMode();
@@ -293,6 +292,10 @@ export class CodexRunner {
 
   get mode() {
     return this.simulationMode ? "simulation" : "codex-cli";
+  }
+
+  get cliPath() {
+    return resolveCliPath();
   }
 
   get activeJobs() {
@@ -445,7 +448,9 @@ export class CodexRunner {
     await fs.mkdir(path.dirname(job.logPaths.stdout), { recursive: true });
     job.status = "running";
     job.startedAt = new Date().toISOString();
-    job.command = [this.cliPath, ...this.argsForJob(job)];
+    const cliPath = this.cliPath;
+    const args = this.argsForJob(job);
+    job.command = [cliPath, ...args];
     job.message = this.simulationMode
       ? "Simulating Codex CLI run"
       : job.kind === "steer"
@@ -477,7 +482,7 @@ export class CodexRunner {
       let childClosed = false;
       let completionPromise: Promise<void> | undefined;
       let postCompletionKillTimer: ReturnType<typeof setTimeout> | undefined;
-      const child = spawn(this.cliPath, this.argsForJob(job), {
+      const child = spawn(cliPath, args, {
         cwd: existsSync(job.projectPath) ? job.projectPath : os.homedir(),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
