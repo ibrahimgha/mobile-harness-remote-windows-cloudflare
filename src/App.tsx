@@ -706,6 +706,18 @@ function readFileAsBase64(file: File) {
   });
 }
 
+function readBlobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener("load", () => {
+      resolve(typeof reader.result === "string" ? reader.result : "");
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read audio recording")));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function isLocalCommandDue(command: LocalQueuedCommand) {
   const retryAt = command.retryAfter ? Date.parse(command.retryAfter) : Number.NaN;
 
@@ -755,6 +767,10 @@ function isOptimisticPromptMessage(message: ChatTranscriptMessage) {
 
 function isOptimisticVoiceNoteMessage(message: ChatTranscriptMessage) {
   return message.kind === "voice_note" && message.id.startsWith("optimistic-voice-");
+}
+
+function isPersistentVoiceNoteMessage(message: ChatTranscriptMessage) {
+  return isOptimisticVoiceNoteMessage(message) && Boolean(message.voiceNoteUrl?.startsWith("data:"));
 }
 
 function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
@@ -1046,7 +1062,7 @@ function newestCachedChatHistory() {
 function cacheableChatDetail(chat: ChatDetail): ChatDetail {
   return {
     ...chat,
-    messages: (chat.messages ?? []).filter((message) => !isOptimisticVoiceNoteMessage(message))
+    messages: (chat.messages ?? []).filter((message) => !isOptimisticVoiceNoteMessage(message) || isPersistentVoiceNoteMessage(message))
   };
 }
 
@@ -4317,8 +4333,9 @@ export function App() {
             return;
           }
 
+          const voiceNoteUrl = await readBlobAsDataUrl(blob).catch(() => URL.createObjectURL(blob));
           const voiceNote = {
-            url: URL.createObjectURL(blob),
+            url: voiceNoteUrl,
             mimeType: blob.type || "audio recording"
           };
 
