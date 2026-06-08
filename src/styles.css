@@ -1391,11 +1391,14 @@ p {
   border-radius: 999px;
   background: currentColor;
   opacity: 0.8;
-  animation: waveformPulse 950ms ease-in-out infinite;
+  transform: scaleY(var(--bar-level, 0.25));
+  transform-origin: center;
+  transition: transform 90ms linear;
   animation-delay: calc(var(--bar-index) * -70ms);
 }
 
 .dictation-waveform.is-processing .dictation-bars i {
+  animation: waveformPulse 1400ms ease-in-out infinite;
   animation-duration: 1400ms;
   opacity: 0.45;
 }

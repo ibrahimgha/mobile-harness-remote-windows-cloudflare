@@ -39,6 +39,7 @@ import {
   memo,
   type CSSProperties,
   type ReactNode,
+  type Ref,
   useCallback,
   useEffect,
   useMemo,
@@ -1643,11 +1644,11 @@ function VoiceNotePlayer({ message }: { message: VisibleChatMessage }) {
   );
 }
 
-function DictationWaveform({ processing }: { processing: boolean }) {
+function DictationWaveform({ processing, barsRef }: { processing: boolean; barsRef?: Ref<HTMLDivElement> }) {
   return (
     <div className={`dictation-waveform ${processing ? "is-processing" : ""}`} aria-live="polite">
       <span>{processing ? "Processing" : "Recording"}</span>
-      <div className="dictation-bars" aria-hidden="true">
+      <div className="dictation-bars" aria-hidden="true" ref={barsRef}>
         {Array.from({ length: 22 }, (_value, index) => {
           const barHeight = 8 + (index % 7) * 3;
 
@@ -2004,6 +2005,10 @@ export function App() {
   const dictationRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationFinalTranscriptRef = useRef("");
   const dictationTranscriptRef = useRef("");
+  const dictationBarsRef = useRef<HTMLDivElement | null>(null);
+  const dictationAudioContextRef = useRef<AudioContext | null>(null);
+  const dictationAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const dictationWaveformFrameRef = useRef<number | undefined>(undefined);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
@@ -3634,7 +3639,7 @@ export function App() {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
       }
-      dictationStreamRef.current?.getTracks().forEach((track) => track.stop());
+      stopDictationTracks();
     },
     []
   );
@@ -4199,7 +4204,88 @@ export function App() {
     return result.files;
   }
 
+  function resetDictationWaveformBars() {
+    dictationBarsRef.current?.querySelectorAll("i").forEach((bar) => {
+      bar.style.setProperty("--bar-level", "0.25");
+    });
+  }
+
+  function stopDictationWaveform() {
+    if (dictationWaveformFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(dictationWaveformFrameRef.current);
+      dictationWaveformFrameRef.current = undefined;
+    }
+
+    dictationAudioSourceRef.current?.disconnect();
+    dictationAudioSourceRef.current = null;
+
+    const audioContext = dictationAudioContextRef.current;
+    dictationAudioContextRef.current = null;
+    if (audioContext && audioContext.state !== "closed") {
+      void audioContext.close().catch(() => undefined);
+    }
+
+    resetDictationWaveformBars();
+  }
+
+  function startDictationWaveform(stream: MediaStream) {
+    stopDictationWaveform();
+
+    const AudioContextCtor =
+      window.AudioContext ?? (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (!AudioContextCtor) {
+      return;
+    }
+
+    try {
+      const audioContext = new AudioContextCtor();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.78;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      source.connect(analyser);
+
+      dictationAudioContextRef.current = audioContext;
+      dictationAudioSourceRef.current = source;
+      void audioContext.resume().catch(() => undefined);
+
+      const update = () => {
+        analyser.getByteFrequencyData(data);
+
+        const bars = Array.from(dictationBarsRef.current?.querySelectorAll("i") ?? []);
+        const barCount = bars.length;
+        if (barCount) {
+          const bucketSize = Math.max(2, Math.floor((data.length * 0.72) / barCount));
+
+          bars.forEach((bar, index) => {
+            const start = index * bucketSize;
+            const end = Math.min(data.length, start + bucketSize);
+            let total = 0;
+
+            for (let dataIndex = start; dataIndex < end; dataIndex += 1) {
+              total += data[dataIndex] ?? 0;
+            }
+
+            const average = total / Math.max(1, end - start);
+            const level = Math.max(0.18, Math.min(1.35, average / 145));
+            bar.style.setProperty("--bar-level", level.toFixed(3));
+          });
+        }
+
+        dictationWaveformFrameRef.current = window.requestAnimationFrame(update);
+      };
+
+      update();
+    } catch {
+      stopDictationWaveform();
+    }
+  }
+
   function stopDictationTracks() {
+    stopDictationWaveform();
     dictationStreamRef.current?.getTracks().forEach((track) => track.stop());
     dictationStreamRef.current = null;
   }
@@ -4274,6 +4360,7 @@ export function App() {
       dictationChunksRef.current = [];
       dictationFinalTranscriptRef.current = "";
       dictationTranscriptRef.current = "";
+      startDictationWaveform(stream);
 
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -5150,7 +5237,7 @@ export function App() {
               {dictationProcessing ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
             </button>
             {dictationRecording || dictationProcessing ? (
-              <DictationWaveform processing={dictationProcessing} />
+              <DictationWaveform processing={dictationProcessing} barsRef={dictationBarsRef} />
             ) : (
               <div
                 ref={composerEditorRef}
