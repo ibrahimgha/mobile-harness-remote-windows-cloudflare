@@ -1386,7 +1386,7 @@ p {
 .dictation-bars i {
   display: block;
   width: 3px;
-  height: calc(8px + (var(--bar-index) % 7) * 3px);
+  height: var(--bar-height);
   flex: 0 0 auto;
   border-radius: 999px;
   background: currentColor;

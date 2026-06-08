@@ -1632,9 +1632,11 @@ function DictationWaveform({ processing }: { processing: boolean }) {
     <div className={`dictation-waveform ${processing ? "is-processing" : ""}`} aria-live="polite">
       <span>{processing ? "Processing" : "Recording"}</span>
       <div className="dictation-bars" aria-hidden="true">
-        {Array.from({ length: 22 }, (_value, index) => (
-          <i key={index} style={{ "--bar-index": index } as CSSProperties} />
-        ))}
+        {Array.from({ length: 22 }, (_value, index) => {
+          const barHeight = 8 + (index % 7) * 3;
+
+          return <i key={index} style={{ "--bar-index": index, "--bar-height": `${barHeight}px` } as CSSProperties} />;
+        })}
       </div>
     </div>
   );
