@@ -259,6 +259,22 @@ type PendingAttachment = {
   file: File;
 };
 
+type AttachmentUploadStatus = {
+  status: "idle" | "uploading" | "uploaded" | "failed";
+  progress: number;
+  message?: string;
+  uploadedFile?: UploadedPromptFile;
+};
+
+type FileUploadChunkResult = {
+  ok: boolean;
+  complete: boolean;
+  receivedBytes?: number;
+  file?: UploadedPromptFile;
+  files?: UploadedPromptFile[];
+  message?: string;
+};
+
 type DictationVoiceNote = {
   url: string;
   mimeType: string;
@@ -305,11 +321,6 @@ type UploadedPromptFile = {
   path: string;
   relativePath: string;
   uploadedAt: string;
-};
-
-type FileUploadResult = {
-  ok: boolean;
-  files: UploadedPromptFile[];
 };
 
 type ShortcutInstructionFile = {
@@ -360,7 +371,9 @@ const maxCachedChatHistories = 20;
 const defaultChatTurns = 10;
 const chatTurnPageSize = 10;
 const maxAttachmentFiles = 5;
-const maxAttachmentBytes = 10 * 1024 * 1024;
+const maxAttachmentBytes = 512 * 1024 * 1024;
+const maxAttachmentTotalBytes = 1024 * 1024 * 1024;
+const attachmentChunkBytes = 8 * 1024 * 1024;
 const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
@@ -690,21 +703,6 @@ function formatBytes(bytes: number) {
 
   const megabytes = kilobytes / 1024;
   return `${megabytes.toFixed(megabytes >= 10 ? 1 : 2)} MB`;
-}
-
-function readFileAsBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.addEventListener("load", () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const comma = result.indexOf(",");
-
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    });
-    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read file")));
-    reader.readAsDataURL(file);
-  });
 }
 
 function readBlobAsDataUrl(blob: Blob) {
@@ -1963,6 +1961,7 @@ export function App() {
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
   const [refreshingChat, setRefreshingChat] = useState(false);
@@ -3522,6 +3521,7 @@ export function App() {
 
     closeMobileMenuPanels();
     setPendingAttachments([]);
+    setAttachmentUploadStatuses({});
   }, [selectedChatId]);
 
   useEffect(() => {
@@ -4020,6 +4020,7 @@ export function App() {
     setLocalCommandQueue((current) => current.filter((item) => item.id !== command.id));
     setDraft(command.text);
     setPendingAttachments([]);
+    setAttachmentUploadStatuses({});
     setNotice("");
     selectChat(nextChatId);
 
@@ -4125,22 +4126,32 @@ export function App() {
     const rejectedCount = files.length - accepted.length;
     const tooLarge = accepted.filter((file) => file.size > maxAttachmentBytes);
     const valid = accepted.filter((file) => file.size <= maxAttachmentBytes);
+    const nextTotalBytes = pendingAttachments.reduce((total, attachment) => total + attachment.file.size, 0) + valid.reduce((total, file) => total + file.size, 0);
 
     if (tooLarge.length > 0) {
       setNotice(`Files must be ${formatBytes(maxAttachmentBytes)} or smaller.`);
+    } else if (nextTotalBytes > maxAttachmentTotalBytes) {
+      setNotice(`Attached files must be ${formatBytes(maxAttachmentTotalBytes)} or smaller in total.`);
+      return;
     } else if (rejectedCount > 0) {
       setNotice(`Attach up to ${maxAttachmentFiles} files at a time.`);
     } else {
       setNotice("");
     }
 
+    const nextAttachments = valid.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
+      file
+    }));
+
     setPendingAttachments((current) => [
       ...current,
-      ...valid.map((file) => ({
-        id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
-        file
-      }))
+      ...nextAttachments
     ]);
+    setAttachmentUploadStatuses((current) => ({
+      ...current,
+      ...Object.fromEntries(nextAttachments.map((attachment) => [attachment.id, { status: "idle" as const, progress: 0 }]))
+    }));
   }
 
   function openAttachmentPicker() {
@@ -4180,6 +4191,154 @@ export function App() {
 
   function removeAttachment(id: string) {
     setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+    setAttachmentUploadStatuses((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function updateAttachmentUploadStatus(id: string, patch: Partial<AttachmentUploadStatus>) {
+    setAttachmentUploadStatuses((current) => ({
+      ...current,
+      [id]: {
+        ...(current[id] ?? { status: "idle", progress: 0 }),
+        ...patch
+      }
+    }));
+  }
+
+  function uploadAttachmentChunk({
+    chatId,
+    attachment,
+    uploadedAt,
+    fileIndex,
+    chunkIndex,
+    totalChunks,
+    start,
+    end
+  }: {
+    chatId: string;
+    attachment: PendingAttachment;
+    uploadedAt: string;
+    fileIndex: number;
+    chunkIndex: number;
+    totalChunks: number;
+    start: number;
+    end: number;
+  }) {
+    const { file } = attachment;
+    const chunk = file.slice(start, end, file.type || "application/octet-stream");
+    const params = new URLSearchParams({
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      index: String(fileIndex),
+      chunkIndex: String(chunkIndex),
+      totalChunks: String(totalChunks),
+      totalSize: String(file.size),
+      uploadedAt
+    });
+
+    return new Promise<FileUploadChunkResult>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", `/api/chats/${encodeURIComponent(chatId)}/files/chunk?${params.toString()}`);
+      xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+      if (token) {
+        xhr.setRequestHeader("x-control-token", token);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        const loaded = event.lengthComputable ? event.loaded : Math.min(chunk.size, event.loaded || 0);
+        const progress = file.size ? Math.min(99, Math.round(((start + loaded) / file.size) * 100)) : 0;
+        updateAttachmentUploadStatus(attachment.id, {
+          status: "uploading",
+          progress,
+          message: `Uploading ${chunkIndex + 1}/${totalChunks}`
+        });
+      };
+      xhr.onload = () => {
+        let payload: FileUploadChunkResult | null = null;
+
+        try {
+          payload = JSON.parse(xhr.responseText || "{}") as FileUploadChunkResult;
+        } catch {
+          reject(new Error("Upload returned an invalid response"));
+          return;
+        }
+
+        if (xhr.status < 200 || xhr.status >= 300 || !payload.ok) {
+          reject(new Error(payload.message ?? `Upload failed with HTTP ${xhr.status}`));
+          return;
+        }
+
+        resolve(payload);
+      };
+      xhr.onerror = () => reject(new Error("Network error while uploading file"));
+      xhr.onabort = () => reject(new Error("Upload was interrupted"));
+      xhr.ontimeout = () => reject(new Error("Upload timed out"));
+      xhr.send(chunk);
+    });
+  }
+
+  async function uploadAttachmentFile(chatId: string, attachment: PendingAttachment, fileIndex: number, uploadedAt: string) {
+    const { file } = attachment;
+
+    if (!file.size) {
+      throw new Error(`${file.name} is empty`);
+    }
+
+    if (file.size > maxAttachmentBytes) {
+      throw new Error(`${file.name} must be ${formatBytes(maxAttachmentBytes)} or smaller`);
+    }
+
+    const totalChunks = Math.max(1, Math.ceil(file.size / attachmentChunkBytes));
+    updateAttachmentUploadStatus(attachment.id, {
+      status: "uploading",
+      progress: 0,
+      message: totalChunks > 1 ? `Uploading 1/${totalChunks}` : "Uploading"
+    });
+
+    try {
+      let uploadedFile: UploadedPromptFile | undefined;
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const start = chunkIndex * attachmentChunkBytes;
+        const end = Math.min(file.size, start + attachmentChunkBytes);
+        const result = await uploadAttachmentChunk({
+          chatId,
+          attachment,
+          uploadedAt,
+          fileIndex,
+          chunkIndex,
+          totalChunks,
+          start,
+          end
+        });
+
+        if (result.complete) {
+          uploadedFile = result.file ?? result.files?.[0];
+        }
+      }
+
+      if (!uploadedFile) {
+        throw new Error("Upload finished without a saved file path");
+      }
+
+      updateAttachmentUploadStatus(attachment.id, {
+        status: "uploaded",
+        progress: 100,
+        message: "Uploaded",
+        uploadedFile
+      });
+      return uploadedFile;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed";
+      updateAttachmentUploadStatus(attachment.id, {
+        status: "failed",
+        message
+      });
+      throw error;
+    }
   }
 
   async function uploadAttachments(chatId: string) {
@@ -4187,21 +4346,42 @@ export function App() {
       return [];
     }
 
-    const files = await Promise.all(
-      pendingAttachments.map(async ({ file }) => ({
-        name: file.name,
-        type: file.type || "application/octet-stream",
-        size: file.size,
-        data: await readFileAsBase64(file)
-      }))
-    );
+    const totalBytes = pendingAttachments.reduce((total, attachment) => total + attachment.file.size, 0);
+    if (totalBytes > maxAttachmentTotalBytes) {
+      throw new Error(`Attached files must be ${formatBytes(maxAttachmentTotalBytes)} or smaller in total`);
+    }
 
-    const result = await apiFetch<FileUploadResult>(`/api/chats/${encodeURIComponent(chatId)}/files`, {
-      method: "POST",
-      body: JSON.stringify({ files })
-    });
+    const uploadedAt = new Date().toISOString();
+    const uploadedFiles: UploadedPromptFile[] = [];
 
-    return result.files;
+    for (const [index, attachment] of pendingAttachments.entries()) {
+      const status = attachmentUploadStatuses[attachment.id];
+
+      if (status?.uploadedFile) {
+        uploadedFiles.push(status.uploadedFile);
+        continue;
+      }
+
+      uploadedFiles.push(await uploadAttachmentFile(chatId, attachment, index, uploadedAt));
+    }
+
+    return uploadedFiles;
+  }
+
+  async function retryAttachmentUpload(attachment: PendingAttachment) {
+    if (!selectedChatId || sending) {
+      return;
+    }
+
+    const fileIndex = Math.max(0, pendingAttachments.findIndex((candidate) => candidate.id === attachment.id));
+    setNotice(`Retrying ${attachment.file.name}...`);
+
+    try {
+      await uploadAttachmentFile(selectedChatId, attachment, fileIndex, new Date().toISOString());
+      setNotice("Upload ready. Press Send to submit the prompt.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Upload failed");
+    }
   }
 
   function resetDictationWaveformBars() {
@@ -4514,6 +4694,7 @@ export function App() {
       }
       if (!options.textOverride) {
         setPendingAttachments([]);
+        setAttachmentUploadStatuses({});
       }
       void loadState();
       window.setTimeout(() => {
@@ -4610,6 +4791,7 @@ export function App() {
     setProjectActionMode(null);
     setProjectActionError("");
     setPendingAttachments([]);
+    setAttachmentUploadStatuses({});
   }
 
   function toggleProject(projectPath: string) {
@@ -5282,22 +5464,52 @@ export function App() {
             </button>
             {pendingAttachments.length ? (
               <div className="attachment-list" aria-label="Files to send">
-                {pendingAttachments.map((attachment) => (
-                  <span key={attachment.id} className="attachment-chip">
-                    <span className="attachment-copy">
-                      <strong>{attachment.file.name}</strong>
-                      <small>{formatBytes(attachment.file.size)}</small>
+                {pendingAttachments.map((attachment) => {
+                  const uploadStatus = attachmentUploadStatuses[attachment.id] ?? { status: "idle", progress: 0 };
+                  const statusText =
+                    uploadStatus.status === "uploading"
+                      ? uploadStatus.message ?? `Uploading ${uploadStatus.progress}%`
+                      : uploadStatus.status === "uploaded"
+                        ? "Uploaded"
+                        : uploadStatus.status === "failed"
+                          ? uploadStatus.message ?? "Upload failed"
+                          : "";
+
+                  return (
+                    <span key={attachment.id} className={`attachment-chip is-${uploadStatus.status}`}>
+                      <span className="attachment-copy">
+                        <strong>{attachment.file.name}</strong>
+                        <small>{formatBytes(attachment.file.size)}</small>
+                        {uploadStatus.status !== "idle" ? (
+                          <span className="attachment-upload-status">
+                            <span className="attachment-progress" aria-hidden="true">
+                              <span style={{ width: `${Math.max(0, Math.min(100, uploadStatus.progress))}%` }} />
+                            </span>
+                            <small>{statusText}</small>
+                          </span>
+                        ) : null}
+                      </span>
+                      {uploadStatus.status === "failed" ? (
+                        <button
+                          className="attachment-retry-button"
+                          type="button"
+                          onClick={() => void retryAttachmentUpload(attachment)}
+                          disabled={sending}
+                        >
+                          Retry
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(attachment.id)}
+                        aria-label={`Remove ${attachment.file.name}`}
+                        disabled={sending && uploadStatus.status === "uploading"}
+                      >
+                        <X size={14} />
+                      </button>
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(attachment.id)}
-                      aria-label={`Remove ${attachment.file.name}`}
-                      disabled={sending}
-                    >
-                      <X size={14} />
-                    </button>
-                  </span>
-                ))}
+                  );
+                })}
               </div>
             ) : null}
           </div>

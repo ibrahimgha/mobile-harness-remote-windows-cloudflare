@@ -2,6 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -40,8 +41,9 @@ const tokenRequired = controlEnabled || controlToken.length > 0;
 const promptDelivery = "cli" as const;
 const maxPromptLength = Number(process.env.REMOTE_PROMPT_MAX_CHARS ?? 12000);
 const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
-const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024);
-const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 20 * 1024 * 1024);
+const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 512 * 1024 * 1024);
+const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 1024 * 1024 * 1024);
+const maxUploadChunkBytes = Number(process.env.REMOTE_UPLOAD_CHUNK_BYTES ?? 16 * 1024 * 1024);
 const socketHeartbeatMs = Math.max(5000, Number(process.env.SOCKET_HEARTBEAT_MS ?? 25000) || 25000);
 const shortcutInstructionsRoot = path.resolve(
   process.env.SHORTCUT_INSTRUCTIONS_DIR ?? path.join(os.homedir(), "shortcut-instructions")
@@ -357,6 +359,47 @@ function uploadRootForProject(projectPath: string, chatId: string, createdAt: Da
   const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
 
   return path.join(basePath, ".codex-remote", "uploads", safeSegment(chatId), timestamp);
+}
+
+function uploadDateFromQuery(value: unknown): Date {
+  const raw = queryStringValue(value);
+  const parsed = raw ? new Date(raw) : null;
+
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
+function numberFromQuery(value: unknown, fallback: number): number {
+  const raw = queryStringValue(value);
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function writeRequestBodyToFile(req: express.Request, absolutePath: string, flags: "w" | "a", maxBytes: number): Promise<number> {
+  const output = fs.createWriteStream(absolutePath, { flags });
+  let bytesWritten = 0;
+
+  try {
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytesWritten += buffer.byteLength;
+
+      if (bytesWritten > maxBytes) {
+        throw new Error(`Each upload chunk must be ${Math.round(maxBytes / 1024 / 1024)} MB or smaller`);
+      }
+
+      if (!output.write(buffer)) {
+        await once(output, "drain");
+      }
+    }
+
+    output.end();
+    await once(output, "finish");
+    return bytesWritten;
+  } catch (error) {
+    output.destroy();
+    throw error;
+  }
 }
 
 function uploadRootsForChat(projectPath: string, chatId: string): string[] {
@@ -1194,6 +1237,121 @@ app.get("/api/chats/:id/uploads", requireControlAuth, async (req, res) => {
       error: describeError(error)
     });
     res.status(500).json({ ok: false, message });
+  }
+});
+
+app.put("/api/chats/:id/files/chunk", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const chunkIndex = numberFromQuery(req.query.chunkIndex, -1);
+  const totalChunks = numberFromQuery(req.query.totalChunks, -1);
+  const fileIndex = numberFromQuery(req.query.index, 0);
+  const totalSize = numberFromQuery(req.query.totalSize, -1);
+  const contentLength = Number.parseInt(req.header("content-length") ?? "", 10);
+  const uploadedAt = uploadDateFromQuery(req.query.uploadedAt);
+
+  if (chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) {
+    res.status(400).json({ ok: false, message: "Invalid upload chunk metadata" });
+    return;
+  }
+
+  if (totalSize <= 0 || totalSize > maxUploadBytes) {
+    res.status(400).json({ ok: false, message: `Each file must be ${Math.round(maxUploadBytes / 1024 / 1024)} MB or smaller` });
+    return;
+  }
+
+  if (Number.isFinite(contentLength) && contentLength > maxUploadChunkBytes) {
+    res.status(413).json({ ok: false, message: `Each upload chunk must be ${Math.round(maxUploadChunkBytes / 1024 / 1024)} MB or smaller` });
+    return;
+  }
+
+  let absolutePath = "";
+
+  try {
+    const chat = await getChat(chatId);
+
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    const uploadRoot = uploadRootForProject(chat.projectPath, chatId, uploadedAt);
+    await fsp.mkdir(uploadRoot, { recursive: true });
+
+    const originalName = safeUploadName(queryStringValue(req.query.name), fileIndex);
+    const storedName = `${String(fileIndex + 1).padStart(2, "0")}-${originalName}`;
+    absolutePath = path.join(uploadRoot, storedName);
+    const flags = chunkIndex === 0 ? "w" : "a";
+    const written = await writeRequestBodyToFile(req, absolutePath, flags, maxUploadChunkBytes);
+
+    if (!written) {
+      if (chunkIndex === 0) {
+        await fsp.rm(absolutePath, { force: true });
+      }
+      res.status(400).json({ ok: false, message: "Empty upload chunks are not supported" });
+      return;
+    }
+
+    const stat = await fsp.stat(absolutePath);
+    const complete = chunkIndex === totalChunks - 1;
+
+    if (!complete) {
+      res.json({ ok: true, complete: false, receivedBytes: stat.size });
+      return;
+    }
+
+    if (stat.size !== totalSize) {
+      await fsp.rm(absolutePath, { force: true });
+      res.status(400).json({ ok: false, message: "Uploaded file size did not match the expected size" });
+      return;
+    }
+
+    const relativePath = fs.existsSync(chat.projectPath)
+      ? path.relative(chat.projectPath, absolutePath)
+      : path.relative(path.join(os.homedir(), "codex-remote-uploads"), absolutePath);
+    const file: UploadedPromptFile = {
+      name: storedName,
+      originalName,
+      type: queryStringValue(req.query.type)?.slice(0, 120) || req.header("content-type")?.slice(0, 120) || "application/octet-stream",
+      size: stat.size,
+      path: absolutePath,
+      relativePath,
+      uploadedAt: uploadedAt.toISOString()
+    };
+
+    pushEvent("action", "File chunk upload completed for chat", {
+      action: "chat-file-chunk-uploaded",
+      chatId,
+      route: "PUT /api/chats/:id/files/chunk",
+      request: requestContext(req),
+      file: {
+        name: file.originalName,
+        size: file.size,
+        type: file.type,
+        path: file.path
+      }
+    });
+
+    res.json({
+      ok: true,
+      complete: true,
+      receivedBytes: stat.size,
+      file,
+      files: [file]
+    });
+  } catch (error) {
+    if (chunkIndex === 0 && absolutePath) {
+      await fsp.rm(absolutePath, { force: true }).catch(() => undefined);
+    }
+
+    const message = error instanceof Error ? error.message : "Could not upload file chunk";
+
+    pushEvent("error", message, {
+      action: "chat-file-chunk-upload-failed",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(message.includes("chunk must be") ? 413 : 500).json({ ok: false, message });
   }
 });
 
