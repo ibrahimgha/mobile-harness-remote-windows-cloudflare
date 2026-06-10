@@ -1993,6 +1993,7 @@ export function App() {
   const [durationNow, setDurationNow] = useState(Date.now());
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatContentRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const chatDetailRequestRef = useRef(0);
   const localQueueSendingRef = useRef(false);
@@ -2008,6 +2009,9 @@ export function App() {
   const dictationAudioContextRef = useRef<AudioContext | null>(null);
   const dictationAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const dictationWaveformFrameRef = useRef<number | undefined>(undefined);
+  const chatShouldAutoScrollRef = useRef(true);
+  const forceNextChatScrollRef = useRef(false);
+  const preserveChatScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
@@ -2638,7 +2642,23 @@ export function App() {
     }
   }, [apiFetch, authenticated]);
 
-  const requestChatScroll = useCallback(() => {
+  const chatIsNearBottom = useCallback((element = chatContentRef.current) => {
+    if (!element) {
+      return true;
+    }
+
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+  }, []);
+
+  const updateChatAutoScrollState = useCallback(() => {
+    chatShouldAutoScrollRef.current = chatIsNearBottom();
+  }, [chatIsNearBottom]);
+
+  const requestChatScroll = useCallback((force = true) => {
+    if (force) {
+      forceNextChatScrollRef.current = true;
+    }
+
     setChatScrollVersion((version) => version + 1);
   }, []);
 
@@ -2857,6 +2877,14 @@ export function App() {
 
     const currentLimit = chatTurnLimitsRef.current[chatId] ?? selectedChat?.messagePage?.visibleTurns ?? defaultChatTurns;
     const nextLimit = currentLimit + chatTurnPageSize;
+    const scroller = chatContentRef.current;
+
+    preserveChatScrollRef.current = scroller
+      ? {
+          scrollHeight: scroller.scrollHeight,
+          scrollTop: scroller.scrollTop
+        }
+      : null;
 
     setLoadingMoreMessages(true);
     setChatTurnLimits((current) => {
@@ -2867,10 +2895,11 @@ export function App() {
 
     try {
       await loadChatDetail(chatId, true, nextLimit);
+      requestChatScroll(false);
     } finally {
       setLoadingMoreMessages(false);
     }
-  }, [authenticated, loadChatDetail, loadingMoreMessages, selectedChat?.messagePage?.visibleTurns]);
+  }, [authenticated, loadChatDetail, loadingMoreMessages, requestChatScroll, selectedChat?.messagePage?.visibleTurns]);
 
   const openRunBoard = useCallback(() => {
     setRunBoardOpen(true);
@@ -3520,6 +3549,9 @@ export function App() {
     }
 
     closeMobileMenuPanels();
+    chatShouldAutoScrollRef.current = true;
+    forceNextChatScrollRef.current = true;
+    preserveChatScrollRef.current = null;
     setPendingAttachments([]);
     setAttachmentUploadStatuses({});
   }, [selectedChatId]);
@@ -3686,8 +3718,47 @@ export function App() {
       return;
     }
 
+    const scroller = chatContentRef.current;
+    const preservedScroll = preserveChatScrollRef.current;
+
+    if (preservedScroll) {
+      preserveChatScrollRef.current = null;
+
+      const restorePosition = () => {
+        const nextScroller = chatContentRef.current;
+        if (!nextScroller) {
+          return;
+        }
+
+        nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
+        chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
+      };
+
+      const firstFrame = window.requestAnimationFrame(() => {
+        restorePosition();
+        window.requestAnimationFrame(restorePosition);
+      });
+
+      return () => window.cancelAnimationFrame(firstFrame);
+    }
+
+    const shouldScroll = forceNextChatScrollRef.current || chatShouldAutoScrollRef.current || chatIsNearBottom(scroller);
+    forceNextChatScrollRef.current = false;
+
+    if (!shouldScroll) {
+      return;
+    }
+
     const scrollToBottom = () => {
-      chatEndRef.current?.scrollIntoView({ block: "end" });
+      const nextScroller = chatContentRef.current;
+
+      if (nextScroller) {
+        nextScroller.scrollTop = nextScroller.scrollHeight;
+      } else {
+        chatEndRef.current?.scrollIntoView({ block: "end" });
+      }
+
+      chatShouldAutoScrollRef.current = true;
     };
     const firstFrame = window.requestAnimationFrame(() => {
       scrollToBottom();
@@ -3699,7 +3770,7 @@ export function App() {
       window.cancelAnimationFrame(firstFrame);
       window.clearTimeout(imageLoadFallback);
     };
-  }, [chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, selectedChatId]);
+  }, [chatIsNearBottom, chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, selectedChatId]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5221,7 +5292,7 @@ export function App() {
           </form>
         ) : null}
 
-        <div className="chat-content">
+        <div className="chat-content" ref={chatContentRef} onScroll={updateChatAutoScrollState}>
           {chatShellIsLoading ? (
             <div className="loading-state">
               <Loader2 className="spin" size={24} />
