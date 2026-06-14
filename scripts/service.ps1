@@ -22,6 +22,7 @@ $ServerEntry = Join-Path $ProjectRoot "dist-server\server\index.js"
 $ClientEntry = Join-Path $ProjectRoot "dist\index.html"
 $WatchdogScript = Join-Path $PSScriptRoot "watchdog.vbs"
 $ServiceLog = Join-Path $LogDir "service-events.log"
+$ServiceMutexName = "Global\CodexWindowRemote-$TaskName"
 
 function Ensure-Directories {
   New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null
@@ -227,19 +228,39 @@ function Update-WatchdogTaskSettings {
   }
 }
 
-function Read-Pid {
+function Read-Pids {
   param([string]$Path)
 
   if (-not (Test-Path -LiteralPath $Path)) {
+    return @()
+  }
+
+  $values = @(Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue) |
+    ForEach-Object { "$_".Trim() } |
+    Where-Object { $_ }
+
+  $processIds = @()
+  foreach ($value in $values) {
+    $processId = 0
+    if ([int]::TryParse($value, [ref]$processId)) {
+      $processIds += $processId
+    } else {
+      Write-ServiceLog "Ignoring invalid pid file entry '$value' in $Path"
+    }
+  }
+
+  return $processIds
+}
+
+function Read-Pid {
+  param([string]$Path)
+
+  $processIds = @(Read-Pids -Path $Path)
+  if ($processIds.Count -eq 0) {
     return $null
   }
 
-  $value = (Get-Content -LiteralPath $Path -Raw).Trim()
-  if (-not $value) {
-    return $null
-  }
-
-  return [int]$value
+  return [int]$processIds[-1]
 }
 
 function Test-Pid {
@@ -293,16 +314,23 @@ function Stop-PidFile {
     [string]$Path
   )
 
-  $processId = Read-Pid -Path $Path
-  if (Test-Pid -ProcessId $processId) {
-    Stop-Process -Id $processId -Force
-    Write-Host "Stopped $Name (pid $processId)"
-    Write-ServiceLog "Stopped $Name pid=$processId"
-  } else {
-    Write-Host "$Name is not running"
-    if ($null -ne $processId) {
+  $processIds = @(Read-Pids -Path $Path)
+  $stoppedAny = $false
+
+  foreach ($processId in $processIds | Select-Object -Unique) {
+    if (Test-Pid -ProcessId $processId) {
+      Stop-Process -Id $processId -Force
+      Write-Host "Stopped $Name (pid $processId)"
+      Write-ServiceLog "Stopped $Name pid=$processId"
+      $stoppedAny = $true
+    } elseif ($null -ne $processId) {
       Write-ServiceLog "$Name was not running; removed stale pid=$processId"
-    } else {
+    }
+  }
+
+  if (-not $stoppedAny) {
+    Write-Host "$Name is not running"
+    if ($processIds.Count -eq 0) {
       Write-ServiceLog "$Name was not running; no pid file"
     }
   }
@@ -530,28 +558,52 @@ function Uninstall-StartupTask {
   Write-ServiceLog "Removed startup task/watchdog $TaskName"
 }
 
-switch ($Command) {
-  "install" {
-    Install-StartupTask
+function Invoke-WithServiceLock {
+  param([scriptblock]$Body)
+
+  $mutex = New-Object System.Threading.Mutex($false, $ServiceMutexName)
+  $acquired = $false
+
+  try {
+    $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(55))
+    if (-not $acquired) {
+      Write-ServiceLog "Timed out waiting for service lock $ServiceMutexName"
+      throw "Timed out waiting for another Codex window remote service action to finish."
+    }
+
+    & $Body
+  } finally {
+    if ($acquired) {
+      $mutex.ReleaseMutex()
+    }
+    $mutex.Dispose()
   }
-  "uninstall" {
-    Uninstall-StartupTask
-  }
-  "start" {
-    Start-Remote
-  }
-  "watchdog" {
-    Start-Remote -FromWatchdog
-  }
-  "stop" {
-    Stop-Remote
-  }
-  "restart" {
-    Enable-Remote
-    Stop-Remote
-    Start-Remote
-  }
-  "status" {
-    Show-Status
+}
+
+Invoke-WithServiceLock {
+  switch ($Command) {
+    "install" {
+      Install-StartupTask
+    }
+    "uninstall" {
+      Uninstall-StartupTask
+    }
+    "start" {
+      Start-Remote
+    }
+    "watchdog" {
+      Start-Remote -FromWatchdog
+    }
+    "stop" {
+      Stop-Remote
+    }
+    "restart" {
+      Enable-Remote
+      Stop-Remote
+      Start-Remote
+    }
+    "status" {
+      Show-Status
+    }
   }
 }
