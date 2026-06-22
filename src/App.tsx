@@ -2675,11 +2675,20 @@ export function App() {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 140;
   }, []);
 
+  const updateScrollToBottomVisibility = useCallback(
+    (element = chatContentRef.current) => {
+      const shouldShow = Boolean(selectedChatIdRef.current) && !chatIsNearBottom(element);
+      setShowScrollToBottom(shouldShow);
+
+      return shouldShow;
+    },
+    [chatIsNearBottom]
+  );
+
   const updateChatAutoScrollState = useCallback(() => {
-    const isNearBottom = chatIsNearBottom();
+    const isNearBottom = !updateScrollToBottomVisibility();
     chatShouldAutoScrollRef.current = isNearBottom;
-    setShowScrollToBottom(Boolean(selectedChatIdRef.current) && !isNearBottom);
-  }, [chatIsNearBottom]);
+  }, [updateScrollToBottomVisibility]);
 
   const scrollChatToBottom = useCallback(() => {
     const scroller = chatContentRef.current;
@@ -3771,9 +3780,8 @@ export function App() {
         }
 
         nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
-        const isNearBottom = chatIsNearBottom(nextScroller);
+        const isNearBottom = !updateScrollToBottomVisibility(nextScroller);
         chatShouldAutoScrollRef.current = isNearBottom;
-        setShowScrollToBottom(!isNearBottom);
       };
 
       const firstFrame = window.requestAnimationFrame(() => {
@@ -3788,7 +3796,7 @@ export function App() {
     forceNextChatScrollRef.current = false;
 
     if (!shouldScroll) {
-      setShowScrollToBottom(Boolean(selectedChatId) && !chatIsNearBottom(scroller));
+      updateScrollToBottomVisibility(scroller);
       return;
     }
 
@@ -3805,7 +3813,28 @@ export function App() {
       window.cancelAnimationFrame(firstFrame);
       window.clearTimeout(imageLoadFallback);
     };
-  }, [chatIsNearBottom, chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, scrollChatToBottom, selectedChatId]);
+  }, [
+    chatIsNearBottom,
+    chatScrollVersion,
+    chatShellIsLoading,
+    lastVisibleMessageId,
+    scrollChatToBottom,
+    selectedChatId,
+    updateScrollToBottomVisibility
+  ]);
+
+  useEffect(() => {
+    if (!selectedChatId || chatShellIsLoading) {
+      setShowScrollToBottom(false);
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      updateScrollToBottomVisibility();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
