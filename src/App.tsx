@@ -1951,6 +1951,7 @@ export function App() {
     readChatMessageViewModes()
   );
   const [chatScrollVersion, setChatScrollVersion] = useState(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
@@ -2651,8 +2652,23 @@ export function App() {
   }, []);
 
   const updateChatAutoScrollState = useCallback(() => {
-    chatShouldAutoScrollRef.current = chatIsNearBottom();
+    const isNearBottom = chatIsNearBottom();
+    chatShouldAutoScrollRef.current = isNearBottom;
+    setShowScrollToBottom(Boolean(selectedChatIdRef.current) && !isNearBottom);
   }, [chatIsNearBottom]);
+
+  const scrollChatToBottom = useCallback(() => {
+    const scroller = chatContentRef.current;
+
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+    } else {
+      chatEndRef.current?.scrollIntoView({ block: "end" });
+    }
+
+    chatShouldAutoScrollRef.current = true;
+    setShowScrollToBottom(false);
+  }, []);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -3731,7 +3747,9 @@ export function App() {
         }
 
         nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
-        chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
+        const isNearBottom = chatIsNearBottom(nextScroller);
+        chatShouldAutoScrollRef.current = isNearBottom;
+        setShowScrollToBottom(!isNearBottom);
       };
 
       const firstFrame = window.requestAnimationFrame(() => {
@@ -3746,19 +3764,12 @@ export function App() {
     forceNextChatScrollRef.current = false;
 
     if (!shouldScroll) {
+      setShowScrollToBottom(Boolean(selectedChatId) && !chatIsNearBottom(scroller));
       return;
     }
 
     const scrollToBottom = () => {
-      const nextScroller = chatContentRef.current;
-
-      if (nextScroller) {
-        nextScroller.scrollTop = nextScroller.scrollHeight;
-      } else {
-        chatEndRef.current?.scrollIntoView({ block: "end" });
-      }
-
-      chatShouldAutoScrollRef.current = true;
+      scrollChatToBottom();
     };
     const firstFrame = window.requestAnimationFrame(() => {
       scrollToBottom();
@@ -3770,7 +3781,7 @@ export function App() {
       window.cancelAnimationFrame(firstFrame);
       window.clearTimeout(imageLoadFallback);
     };
-  }, [chatIsNearBottom, chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, selectedChatId]);
+  }, [chatIsNearBottom, chatScrollVersion, chatShellIsLoading, lastVisibleMessageId, scrollChatToBottom, selectedChatId]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5371,6 +5382,18 @@ export function App() {
             </div>
           )}
         </div>
+
+        {selectedChat && showScrollToBottom ? (
+          <button
+            className="scroll-to-bottom-button"
+            type="button"
+            onClick={scrollChatToBottom}
+            aria-label="Scroll to latest message"
+            title="Scroll to latest message"
+          >
+            <ChevronDown size={20} strokeWidth={2.2} />
+          </button>
+        ) : null}
 
         {selectedQueueCount ? (
           <section className="command-queue" aria-labelledby="command-queue-title">
