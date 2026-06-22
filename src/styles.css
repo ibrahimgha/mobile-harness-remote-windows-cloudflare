@@ -2388,7 +2388,9 @@ p {
   }
 
   .scroll-to-bottom-button {
-    bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+    position: fixed;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    z-index: 60;
     width: 34px;
     min-width: 34px;
     height: 34px;

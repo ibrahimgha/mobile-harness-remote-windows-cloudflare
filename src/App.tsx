@@ -5460,7 +5460,7 @@ export function App() {
           )}
         </div>
 
-        {selectedChat && showScrollToBottom ? (
+        {selectedChat && showScrollToBottom && !menuOpen ? (
           <button
             className="scroll-to-bottom-button"
             type="button"
