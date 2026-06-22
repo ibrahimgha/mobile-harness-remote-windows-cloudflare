@@ -24,6 +24,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Send,
   ShieldCheck,
   Wifi,
@@ -1955,6 +1956,7 @@ export function App() {
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [sidebarSearch, setSidebarSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [, setNotice] = useState("");
@@ -2044,6 +2046,28 @@ export function App() {
   const selectedChatMessageViewMode = selectedChatId ? (chatMessageViewModes[selectedChatId] ?? defaultChatMessageViewMode) : defaultChatMessageViewMode;
   const selectedChatMessageViewMeta = chatMessageViewModeMeta(selectedChatMessageViewMode);
   const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
+  const normalizedSidebarSearch = sidebarSearch.trim().toLowerCase();
+  const filteredProjectGroups = useMemo(() => {
+    if (!chatIndex || !normalizedSidebarSearch) {
+      return chatIndex?.projects ?? [];
+    }
+
+    return chatIndex.projects
+      .map((project) => {
+        const projectMatches = project.projectName.toLowerCase().includes(normalizedSidebarSearch);
+        const chats = projectMatches
+          ? project.chats
+          : project.chats.filter((chat) => chat.title.toLowerCase().includes(normalizedSidebarSearch));
+
+        return chats.length
+          ? {
+              ...project,
+              chats
+            }
+          : null;
+      })
+      .filter((project): project is ChatProjectGroup => Boolean(project));
+  }, [chatIndex, normalizedSidebarSearch]);
   const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
@@ -5008,6 +5032,23 @@ export function App() {
           onChange={updateRunSettings}
         />
 
+        <label className="sidebar-search" aria-label="Search projects and chats">
+          <Search size={16} />
+          <input
+            value={sidebarSearch}
+            onChange={(event) => setSidebarSearch(event.currentTarget.value)}
+            placeholder="Search projects or chats"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {sidebarSearch ? (
+            <button type="button" onClick={() => setSidebarSearch("")} aria-label="Clear sidebar search">
+              <X size={15} />
+            </button>
+          ) : null}
+        </label>
+
         {projectActionMode ? (
           <form
             className="new-project-panel"
@@ -5142,67 +5183,74 @@ export function App() {
           </div>
         ) : (
           <div className="project-list">
-            {chatIndex?.projects.map((project) => {
-              const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
-              const isCollapsed = collapsedProjects.has(project.projectPath);
-              const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
+            {filteredProjectGroups.length ? (
+              filteredProjectGroups.map((project) => {
+                const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
+                const isCollapsed = !normalizedSidebarSearch && collapsedProjects.has(project.projectPath);
+                const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
 
-              return (
-                <section key={project.projectPath} className="project-group">
-                  <button
-                    type="button"
-                    className="project-heading"
-                    aria-expanded={!isCollapsed}
-                    aria-controls={listId}
-                    onClick={() => toggleProject(project.projectPath)}
-                  >
-                    <ChevronIcon className="project-chevron" size={16} />
-                    <Folder size={16} />
-                    <span className="project-copy">
-                      <span className="project-title">{project.projectName}</span>
-                      <span className="project-path" title={project.projectPath}>
-                        {project.projectPath}
+                return (
+                  <section key={project.projectPath} className="project-group">
+                    <button
+                      type="button"
+                      className="project-heading"
+                      aria-expanded={!isCollapsed}
+                      aria-controls={listId}
+                      onClick={() => toggleProject(project.projectPath)}
+                    >
+                      <ChevronIcon className="project-chevron" size={16} />
+                      <Folder size={16} />
+                      <span className="project-copy">
+                        <span className="project-title">{project.projectName}</span>
+                        <span className="project-path" title={project.projectPath}>
+                          {project.projectPath}
+                        </span>
                       </span>
-                    </span>
-                    <span className="project-count">{project.chats.length}</span>
-                  </button>
-                  {!isCollapsed ? (
-                    <div id={listId} className="chat-list">
-                      {project.chats.map((chat) => {
-                        const activeJob = activeJobsByChatId.get(chat.id);
-                        const hasUnread = unreadChatIds.has(chat.id);
+                      <span className="project-count">{project.chats.length}</span>
+                    </button>
+                    {!isCollapsed ? (
+                      <div id={listId} className="chat-list">
+                        {project.chats.map((chat) => {
+                          const activeJob = activeJobsByChatId.get(chat.id);
+                          const hasUnread = unreadChatIds.has(chat.id);
 
-                        return (
-                          <button
-                            key={chat.id}
-                            type="button"
-                            className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""} ${hasUnread ? "has-unread" : ""}`}
-                            onClick={() => selectChat(chat.id)}
-                          >
-                            <span className="chat-title-row">
-                              <span className="chat-title-text">{chat.title}</span>
-                              {hasUnread ? <span className="chat-unread-dot" aria-label="Unread completed response" /> : null}
-                            </span>
-                            <span className="chat-meta">
-                              <small>{formatRelative(chat.updatedAt)}</small>
-                              {activeJob ? (
-                                <span
-                                  className={`chat-active-indicator ${activeJob.running ? "is-running" : ""}`}
-                                  title={`${activeJob.count} active command${activeJob.count === 1 ? "" : "s"}`}
-                                >
-                                  <Loader2 className="spin" size={13} />
-                                  {activeJob.count > 1 ? <span>{activeJob.count}</span> : null}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </section>
-              );
-            })}
+                          return (
+                            <button
+                              key={chat.id}
+                              type="button"
+                              className={`chat-link ${selectedChatId === chat.id ? "is-active" : ""} ${hasUnread ? "has-unread" : ""}`}
+                              onClick={() => selectChat(chat.id)}
+                            >
+                              <span className="chat-title-row">
+                                <span className="chat-title-text">{chat.title}</span>
+                                {hasUnread ? <span className="chat-unread-dot" aria-label="Unread completed response" /> : null}
+                              </span>
+                              <span className="chat-meta">
+                                <small>{formatRelative(chat.updatedAt)}</small>
+                                {activeJob ? (
+                                  <span
+                                    className={`chat-active-indicator ${activeJob.running ? "is-running" : ""}`}
+                                    title={`${activeJob.count} active command${activeJob.count === 1 ? "" : "s"}`}
+                                  >
+                                    <Loader2 className="spin" size={13} />
+                                    {activeJob.count > 1 ? <span>{activeJob.count}</span> : null}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </section>
+                );
+              })
+            ) : (
+              <div className="sidebar-empty-state">
+                <Search size={20} />
+                <span>No matching projects or chats</span>
+              </div>
+            )}
           </div>
         )}
       </aside>
