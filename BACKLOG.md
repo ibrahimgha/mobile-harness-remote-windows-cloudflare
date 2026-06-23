@@ -15,3 +15,6 @@
     - Make sure the route is behind the same authentication.
     - Add this only; do not implement it yet.
 - [ ] The side menu poking issue
+  - Reference screenshots:
+    - `C:\Users\ibrah\mobile-harness-remote-windows-cloudflare\.codex-remote\uploads\019e4c6a-96ee-7792-8502-218647747aa1\2026-06-23T20-17-15-690Z\01-IMG_5538.jpeg`
+    - `C:\Users\ibrah\mobile-harness-remote-windows-cloudflare\.codex-remote\uploads\019e4c6a-96ee-7792-8502-218647747aa1\2026-06-23T20-17-15-690Z\02-IMG_5540.jpeg`
