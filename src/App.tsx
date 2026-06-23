@@ -362,13 +362,17 @@ type ChatMessageViewMode = "all" | "final" | "codex";
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
 const localCommandQueueKey = "local-command-queue";
-const chatHistoryCacheKey = "chat-history-cache-v1";
+const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
+const chatHistoryCacheKey = "chat-history-cache-v2";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
 const maxCachedChatHistories = 20;
+const maxCachedChatStorageBytes = 2 * 1024 * 1024;
+const maxCachedChatBytes = 160 * 1024;
+const maxCachedMessageTextLength = 16000;
 const defaultChatTurns = 10;
 const chatTurnPageSize = 10;
 const maxAttachmentFiles = 5;
@@ -1033,7 +1037,14 @@ function cachedChatCanSatisfyMode(item: CachedChatHistory, mode: ChatMessageView
 
 function readCachedChatHistories(): CachedChatHistory[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(chatHistoryCacheKey) ?? "[]");
+    const raw = localStorage.getItem(chatHistoryCacheKey) ?? "[]";
+
+    if (raw.length > maxCachedChatStorageBytes) {
+      localStorage.removeItem(chatHistoryCacheKey);
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
 
     if (!Array.isArray(parsed)) {
       return [];
@@ -1059,11 +1070,83 @@ function newestCachedChatHistory() {
   return readCachedChatHistories()[0]?.chat ?? null;
 }
 
-function cacheableChatDetail(chat: ChatDetail): ChatDetail {
+function trimCachedMessage(message: ChatTranscriptMessage): ChatTranscriptMessage {
+  const text =
+    message.text.length > maxCachedMessageTextLength
+      ? `${message.text.slice(0, maxCachedMessageTextLength)}\n\n[Cached preview truncated. Refresh this chat for the full message.]`
+      : message.text;
+
   return {
-    ...chat,
-    messages: (chat.messages ?? []).filter((message) => !isOptimisticVoiceNoteMessage(message) || isPersistentVoiceNoteMessage(message))
+    ...message,
+    text,
+    voiceNoteUrl: undefined,
+    voiceNoteMimeType: undefined
   };
+}
+
+function cacheableChatDetail(chat: ChatDetail): ChatDetail {
+  const cacheable: ChatDetail = {
+    ...chat,
+    lastPrompt: chat.lastPrompt
+      ? {
+          ...chat.lastPrompt,
+          text:
+            chat.lastPrompt.text.length > maxCachedMessageTextLength
+              ? `${chat.lastPrompt.text.slice(0, maxCachedMessageTextLength)}\n\n[Cached preview truncated. Refresh this chat for the full prompt.]`
+              : chat.lastPrompt.text
+        }
+      : null,
+    lastResponse: chat.lastResponse
+      ? {
+          ...chat.lastResponse,
+          text:
+            chat.lastResponse.text.length > maxCachedMessageTextLength
+              ? `${chat.lastResponse.text.slice(0, maxCachedMessageTextLength)}\n\n[Cached preview truncated. Refresh this chat for the full response.]`
+              : chat.lastResponse.text
+        }
+      : null,
+    messages: (chat.messages ?? [])
+      .filter((message) => !isOptimisticVoiceNoteMessage(message))
+      .slice(-20)
+      .map(trimCachedMessage)
+  };
+
+  let serialized = JSON.stringify(cacheable);
+
+  if (serialized.length <= maxCachedChatBytes) {
+    return cacheable;
+  }
+
+  const compact = {
+    ...cacheable,
+    messages: cacheable.messages.slice(-8)
+  };
+  serialized = JSON.stringify(compact);
+
+  if (serialized.length <= maxCachedChatBytes) {
+    return compact;
+  }
+
+  return {
+    ...compact,
+    messages: compact.messages.slice(-4).map((message) => ({
+      ...message,
+      text:
+        message.text.length > 4000
+          ? `${message.text.slice(0, 4000)}\n\n[Cached preview truncated. Refresh this chat for the full message.]`
+          : message.text
+    }))
+  };
+}
+
+function cleanupLegacyChatHistoryCache() {
+  try {
+    for (const key of legacyChatHistoryCacheKeys) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    return;
+  }
 }
 
 function readStoredSelectedChatId() {
@@ -1094,7 +1177,7 @@ function rememberSelectedChatId(chatId: string | null) {
 
 function rememberCachedChatHistory(chat: ChatDetail, mode: ChatMessageViewMode = defaultChatMessageViewMode) {
   const cacheableChat = cacheableChatDetail(chat);
-  const next = [
+  let next = [
     { chat: cacheableChat, mode, cachedAt: new Date().toISOString() },
     ...readCachedChatHistories().filter((item) => !(item.chat.id === chat.id && cachedChatMode(item) === mode))
   ]
@@ -1102,6 +1185,10 @@ function rememberCachedChatHistory(chat: ChatDetail, mode: ChatMessageViewMode =
     .slice(0, maxCachedChatHistories);
 
   try {
+    while (next.length > 1 && JSON.stringify(next).length > maxCachedChatStorageBytes) {
+      next = next.slice(0, -1);
+    }
+
     localStorage.setItem(chatHistoryCacheKey, JSON.stringify(next));
   } catch {
     try {
@@ -2028,6 +2115,10 @@ export function App() {
     }),
     [token]
   );
+
+  useEffect(() => {
+    cleanupLegacyChatHistoryCache();
+  }, []);
 
   useEffect(() => {
     chatTurnLimitsRef.current = chatTurnLimits;

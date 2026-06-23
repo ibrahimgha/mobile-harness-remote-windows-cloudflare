@@ -1668,8 +1668,19 @@ app.use((error: unknown, req: express.Request, res: express.Response, next: expr
 });
 
 if (fs.existsSync(path.join(staticDir, "index.html"))) {
-  app.use(express.static(staticDir));
+  app.use(
+    express.static(staticDir, {
+      setHeaders(res, filePath) {
+        const fileName = path.basename(filePath);
+
+        if (fileName === "index.html" || fileName === "sw.js" || fileName === "manifest.webmanifest") {
+          res.setHeader("Cache-Control", "no-store, max-age=0");
+        }
+      }
+    })
+  );
   app.get(/.*/, (_req, res) => {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
     res.sendFile(path.join(staticDir, "index.html"));
   });
 }
