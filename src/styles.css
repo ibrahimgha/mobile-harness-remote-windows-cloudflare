@@ -574,7 +574,7 @@ p {
 
 .instruction-file-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   padding: 9px;
@@ -589,19 +589,36 @@ p {
   white-space: nowrap;
 }
 
-.instruction-file pre {
-  max-height: 320px;
-  margin: 0;
-  overflow: auto;
-  padding: 10px;
-  color: var(--ink);
-  background: var(--surface);
-  font-family:
-    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 0.78rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
+.instruction-file-actions {
+  display: inline-flex;
+  gap: 7px;
+}
+
+.instruction-file-actions .icon-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+}
+
+.instruction-file-open {
+  display: flex;
+  width: calc(100% - 18px);
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  margin: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--teal-strong);
+  background: var(--surface-soft);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.instruction-file-open:hover {
+  border-color: #a8d8cd;
+  background: var(--mint);
 }
 
 .instructions-error {
@@ -611,6 +628,132 @@ p {
 
 .instructions-empty {
   padding: 10px;
+}
+
+.markdown-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: grid;
+  place-items: center;
+  padding: max(18px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
+  background: rgba(15, 23, 18, 0.34);
+}
+
+.markdown-viewer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(920px, 100%);
+  max-height: min(820px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcfa;
+  box-shadow: 0 24px 70px rgba(15, 23, 18, 0.24);
+}
+
+.markdown-viewer-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.markdown-viewer-header h2 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-viewer-header p {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-viewer-header .icon-button {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+}
+
+.markdown-viewer-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  color: var(--ink);
+  font-size: 0.94rem;
+  line-height: 1.6;
+}
+
+.markdown-viewer-body > * + * {
+  margin-top: 0.85em;
+}
+
+.markdown-viewer-body h1,
+.markdown-viewer-body h2,
+.markdown-viewer-body h3 {
+  line-height: 1.2;
+}
+
+.markdown-viewer-body h1 {
+  font-size: 1.45rem;
+}
+
+.markdown-viewer-body h2 {
+  font-size: 1.2rem;
+}
+
+.markdown-viewer-body h3 {
+  font-size: 1.05rem;
+}
+
+.markdown-viewer-body ul,
+.markdown-viewer-body ol {
+  padding-left: 1.35rem;
+}
+
+.markdown-viewer-body pre {
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5f6f1;
+}
+
+.markdown-viewer-body code {
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.86em;
+}
+
+.markdown-viewer-body :not(pre) > code {
+  padding: 0.12em 0.35em;
+  border-radius: 5px;
+  background: #eef1eb;
+}
+
+.markdown-viewer-body table {
+  display: block;
+  overflow: auto;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.markdown-viewer-body th,
+.markdown-viewer-body td {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
 }
 
 .project-group {
@@ -2389,12 +2532,14 @@ p {
 
   .scroll-to-bottom-button {
     position: fixed;
-    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-    z-index: 60;
-    width: 34px;
-    min-width: 34px;
-    height: 34px;
-    min-height: 34px;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    z-index: 90;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    border-color: rgba(0, 0, 0, 0.18);
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.18);
   }
 
   .chat-bubble {

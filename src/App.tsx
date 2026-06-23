@@ -2065,6 +2065,7 @@ export function App() {
   const [instructionsLoading, setInstructionsLoading] = useState(false);
   const [instructionsError, setInstructionsError] = useState("");
   const [shortcutInstructions, setShortcutInstructions] = useState<ShortcutInstructionsResult | null>(null);
+  const [selectedInstructionFile, setSelectedInstructionFile] = useState<ShortcutInstructionFile | null>(null);
   const [projectActionMode, setProjectActionMode] = useState<"project" | "chat" | null>(null);
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [projectActionError, setProjectActionError] = useState("");
@@ -2763,12 +2764,13 @@ export function App() {
       return true;
     }
 
-    return element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
   }, []);
 
   const updateScrollToBottomVisibility = useCallback(
     (element = chatContentRef.current) => {
-      const shouldShow = Boolean(selectedChatIdRef.current) && !chatIsNearBottom(element);
+      const isScrollable = Boolean(element && element.scrollHeight > element.clientHeight + 24);
+      const shouldShow = Boolean(selectedChatIdRef.current) && isScrollable && !chatIsNearBottom(element);
       setShowScrollToBottom(shouldShow);
 
       return shouldShow;
@@ -3928,6 +3930,36 @@ export function App() {
   }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
 
   useEffect(() => {
+    if (!selectedChatId || chatShellIsLoading) {
+      return;
+    }
+
+    const scroller = chatContentRef.current;
+
+    if (!scroller) {
+      return;
+    }
+
+    const refreshVisibility = () => {
+      updateScrollToBottomVisibility(scroller);
+    };
+
+    scroller.addEventListener("scroll", refreshVisibility, { passive: true });
+    window.addEventListener("resize", refreshVisibility);
+    const interval = window.setInterval(refreshVisibility, 500);
+    const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(refreshVisibility) : null;
+    resizeObserver?.observe(scroller);
+    refreshVisibility();
+
+    return () => {
+      scroller.removeEventListener("scroll", refreshVisibility);
+      window.removeEventListener("resize", refreshVisibility);
+      window.clearInterval(interval);
+      resizeObserver?.disconnect();
+    };
+  }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
+
+  useEffect(() => {
     const editor = composerEditorRef.current;
 
     if (editor) {
@@ -5014,6 +5046,7 @@ export function App() {
     setSelectedChatId(null);
     setInstructionsOpen(false);
     setShortcutInstructions(null);
+    setSelectedInstructionFile(null);
     setProjectActionMode(null);
     setProjectActionError("");
     setPendingAttachments([]);
@@ -5292,11 +5325,18 @@ export function App() {
                         {formatBytes(file.size)} · updated {formatRelative(file.updatedAt)}
                       </p>
                     </div>
-                    <button className="icon-button" type="button" onClick={() => copyInstructions([file])} aria-label={`Copy ${file.name}`}>
-                      <Copy size={15} />
-                    </button>
+                    <div className="instruction-file-actions">
+                      <button className="icon-button" type="button" onClick={() => setSelectedInstructionFile(file)} aria-label={`Open ${file.name}`}>
+                        <FileText size={15} />
+                      </button>
+                      <button className="icon-button" type="button" onClick={() => copyInstructions([file])} aria-label={`Copy ${file.name}`}>
+                        <Copy size={15} />
+                      </button>
+                    </div>
                   </div>
-                  <pre>{file.content}</pre>
+                  <button className="instruction-file-open" type="button" onClick={() => setSelectedInstructionFile(file)}>
+                    Open Markdown viewer
+                  </button>
                 </article>
               ))}
             </div>
@@ -5374,6 +5414,25 @@ export function App() {
           </div>
         )}
       </aside>
+
+      {selectedInstructionFile ? (
+        <div className="markdown-viewer-overlay" role="dialog" aria-modal="true" aria-labelledby="markdown-viewer-title">
+          <section className="markdown-viewer">
+            <header className="markdown-viewer-header">
+              <div>
+                <h2 id="markdown-viewer-title">{selectedInstructionFile.relativePath}</h2>
+                <p>{selectedInstructionFile.path}</p>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setSelectedInstructionFile(null)} aria-label="Close Markdown viewer">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="markdown-viewer-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedInstructionFile.content}</ReactMarkdown>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">
