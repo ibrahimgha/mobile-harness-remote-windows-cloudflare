@@ -5780,7 +5780,7 @@ export function App() {
             title="Scroll to latest message"
             tabIndex={-1}
           >
-            <ChevronDown size={20} strokeWidth={2.2} />
+            <ChevronDown size={22} strokeWidth={2.6} />
           </button>
         ) : null}
 

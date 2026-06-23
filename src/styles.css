@@ -1092,26 +1092,28 @@ p {
 .scroll-to-bottom-button {
   position: absolute;
   left: 50%;
-  bottom: calc(92px + env(safe-area-inset-bottom, 0px));
-  z-index: 20;
+  bottom: calc(108px + env(safe-area-inset-bottom, 0px));
+  z-index: 120;
   display: inline-flex;
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
-  min-height: 44px;
+  width: 46px;
+  min-width: 46px;
+  height: 46px;
+  min-height: 46px;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.18);
   border-radius: 999px;
   color: #111827;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.1);
+  background: #ffffff;
+  box-shadow:
+    0 16px 34px rgba(15, 23, 42, 0.2),
+    0 2px 8px rgba(15, 23, 42, 0.12);
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
   transform: translate(-50%, 8px);
-  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
+  transition: opacity 160ms ease, transform 160ms ease;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   touch-action: manipulation;
@@ -2552,12 +2554,12 @@ p {
 
   .scroll-to-bottom-button {
     position: fixed;
-    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
-    z-index: 90;
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+    z-index: 130;
+    width: 46px;
+    min-width: 46px;
+    height: 46px;
+    min-height: 46px;
   }
 
   .chat-bubble {
