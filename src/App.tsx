@@ -4183,25 +4183,14 @@ export function App() {
     }
 
     const interval = window.setInterval(() => {
-      void loadState();
-
       const chatId = selectedChatIdRef.current;
       if (chatId && !isTemporaryChatId(chatId)) {
-        void loadChatJobs(chatId);
         void loadChatDetail(chatId, true);
-      }
-
-      const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
-
-      for (const queuedChatId of queuedChatIds) {
-        if (queuedChatId && queuedChatId !== chatId && !isTemporaryChatId(queuedChatId)) {
-          void loadChatJobs(queuedChatId);
-        }
       }
     }, backgroundSyncIntervalMs);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
+  }, [authenticated, loadChatDetail]);
 
   useEffect(() => {
     if (!authenticated || localQueueSendingRef.current) {
