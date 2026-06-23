@@ -2936,27 +2936,25 @@ export function App() {
     return className ? `.${className}` : element.tagName.toLowerCase();
   }, []);
 
+  const isChatScrollElement = useCallback((element: HTMLElement) => {
+    return element === chatContentRef.current || Boolean(element.closest(".chat-workspace"));
+  }, []);
+
   const findScrollableAncestor = useCallback(
     (target: EventTarget | Element | null | undefined) => {
-      if (target === document || target === window) {
-        const scroller = document.scrollingElement;
-        return scroller instanceof HTMLElement ? scroller : null;
-      }
-
       let current = target instanceof Element ? target : null;
 
       while (current) {
-        if (isScrollableElement(current)) {
+        if (isScrollableElement(current) && isChatScrollElement(current)) {
           return current;
         }
 
         current = current.parentElement;
       }
 
-      const scroller = document.scrollingElement;
-      return isScrollableElement(scroller) ? scroller : null;
+      return isScrollableElement(chatContentRef.current) ? chatContentRef.current : null;
     },
-    [isScrollableElement]
+    [isChatScrollElement, isScrollableElement]
   );
 
   const findScrollElementAtPoint = useCallback(() => {
@@ -2979,13 +2977,13 @@ export function App() {
 
   const resolveScrollElement = useCallback(
     (preferred?: HTMLElement | null) => {
-      if (isScrollableElement(preferred)) {
+      if (isScrollableElement(preferred) && isChatScrollElement(preferred)) {
         return preferred;
       }
 
       const active = activeScrollElementRef.current;
 
-      if (active && document.contains(active) && isScrollableElement(active)) {
+      if (active && document.contains(active) && isScrollableElement(active) && isChatScrollElement(active)) {
         return active;
       }
 
