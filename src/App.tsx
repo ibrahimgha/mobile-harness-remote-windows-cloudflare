@@ -379,10 +379,11 @@ const maxAttachmentFiles = 5;
 const maxAttachmentBytes = 512 * 1024 * 1024;
 const maxAttachmentTotalBytes = 1024 * 1024 * 1024;
 const attachmentChunkBytes = 8 * 1024 * 1024;
-const socketReconnectMs = 1500;
-const socketWatchdogMs = 5000;
+const debugSyncIntervalMs = 60 * 1000;
+const socketReconnectMs = debugSyncIntervalMs;
+const socketWatchdogMs = debugSyncIntervalMs;
 const socketConnectTimeoutMs = 12000;
-const socketStaleMs = 45000;
+const socketStaleMs = debugSyncIntervalMs;
 const queuedCommandSteerGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
@@ -740,7 +741,7 @@ function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | u
 }
 
 function localCommandRetryDelay(attempts: number) {
-  return Math.min(30000, 3000 * 2 ** Math.min(attempts, 3));
+  return Math.max(debugSyncIntervalMs, Math.min(30000, 3000 * 2 ** Math.min(attempts, 3)));
 }
 
 function localCommandStatusText(command: LocalQueuedCommand) {
@@ -3266,7 +3267,7 @@ export function App() {
     let lastStatus: ProjectChatStartResult | null = null;
 
     while (Date.now() < deadline) {
-      await delay(1500);
+      await delay(debugSyncIntervalMs);
 
       try {
         const result = await apiFetch<ProjectChatStartResult>(`/api/chat-starts/${encodeURIComponent(pendingId)}`);
@@ -3836,7 +3837,7 @@ export function App() {
 
     const interval = window.setInterval(() => {
       void loadShortcutInstructions();
-    }, 3000);
+    }, debugSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, instructionsOpen, loadShortcutInstructions]);
@@ -3909,7 +3910,7 @@ export function App() {
       scrollToBottom();
       window.requestAnimationFrame(scrollToBottom);
     });
-    const imageLoadFallback = window.setTimeout(scrollToBottom, 250);
+    const imageLoadFallback = window.setTimeout(scrollToBottom, debugSyncIntervalMs);
 
     return () => {
       window.cancelAnimationFrame(firstFrame);
@@ -4041,7 +4042,7 @@ export function App() {
 
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
         setSocketLive(false);
-        scheduleReconnect(0);
+        scheduleReconnect(debugSyncIntervalMs);
         return;
       }
 
@@ -4051,7 +4052,7 @@ export function App() {
       if (staleFor > staleLimit) {
         setSocketLive(false);
         socket.close();
-        scheduleReconnect(250);
+        scheduleReconnect(debugSyncIntervalMs);
       }
     };
 
@@ -4194,7 +4195,7 @@ export function App() {
           void loadChatJobs(queuedChatId);
         }
       }
-    }, 5000);
+    }, debugSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
@@ -4386,7 +4387,7 @@ export function App() {
       void loadChats();
       void loadChatJobs(selectedChatId);
       void loadChatDetail(selectedChatId, true);
-    }, 4000);
+    }, debugSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, selectedChatId, selectedJob]);
@@ -4981,7 +4982,7 @@ export function App() {
         void loadChats();
         void loadChatJobs(selectedChatId);
         void loadChatDetail(selectedChatId, true);
-      }, 1600);
+      }, debugSyncIntervalMs);
     } catch (error) {
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
