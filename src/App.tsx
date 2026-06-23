@@ -2908,6 +2908,7 @@ export function App() {
         currentScroller.scrollTop = maxScrollTop;
         currentScroller.scrollTo({ top: maxScrollTop, left: 0, behavior: "auto" });
         updateScrollDebugPosition(currentScroller);
+        return;
       }
 
       chatEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
