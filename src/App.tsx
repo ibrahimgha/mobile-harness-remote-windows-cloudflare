@@ -33,8 +33,10 @@ import {
 } from "lucide-react";
 import {
   FormEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  TouchEvent as ReactTouchEvent,
   isValidElement,
   memo,
   type CSSProperties,
@@ -2881,15 +2883,21 @@ export function App() {
 
   const updateScrollDebugPosition = useCallback((element = chatContentRef.current) => {
     if (!element) {
-      setScrollDebugPosition("chat-content 0/0 d0");
+      setScrollDebugPosition("chat 0/0 d0 | win 0 | doc 0 | vv 0/0");
       return;
     }
 
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     const scrollTop = Math.round(element.scrollTop);
     const distanceFromBottom = Math.round(maxScrollTop - element.scrollTop);
+    const windowScrollY = Math.round(window.scrollY || 0);
+    const documentScrollTop = Math.round(document.documentElement.scrollTop || document.body.scrollTop || 0);
+    const viewportOffset = Math.round(window.visualViewport?.offsetTop ?? 0);
+    const viewportHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
 
-    setScrollDebugPosition(`chat-content ${scrollTop}/${Math.round(maxScrollTop)} d${distanceFromBottom}`);
+    setScrollDebugPosition(
+      `chat ${scrollTop}/${Math.round(maxScrollTop)} d${distanceFromBottom} | win ${windowScrollY} | doc ${documentScrollTop} | vv ${viewportOffset}/${viewportHeight}`
+    );
   }, []);
 
   const updateChatAutoScrollState = useCallback(() => {
@@ -5224,12 +5232,9 @@ export function App() {
     void sendPrompt();
   }
 
-  function scrollChatToBottomFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0) {
-      return;
-    }
-
+  function activateScrollButton(event: ReactPointerEvent<HTMLButtonElement> | ReactTouchEvent<HTMLButtonElement> | ReactMouseEvent<HTMLButtonElement>) {
     event.preventDefault();
+    event.stopPropagation();
     event.currentTarget.blur();
     scrollChatToBottom();
   }
@@ -6075,7 +6080,9 @@ export function App() {
           <button
             className="scroll-to-bottom-button"
             type="button"
-            onPointerDown={scrollChatToBottomFromPointer}
+            onTouchStart={activateScrollButton}
+            onPointerDown={activateScrollButton}
+            onMouseDown={activateScrollButton}
             onClick={scrollChatToBottom}
             aria-label="Scroll to latest message"
             title="Scroll to latest message"

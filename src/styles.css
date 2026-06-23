@@ -1115,7 +1115,7 @@ p {
   position: absolute;
   left: 50%;
   bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-  z-index: 120;
+  z-index: 1000;
   display: grid;
   justify-items: center;
   gap: 2px;
@@ -1125,6 +1125,8 @@ p {
 
 .scroll-to-bottom-button {
   display: inline-flex;
+  position: relative;
+  z-index: 2;
   width: 46px;
   min-width: 46px;
   height: 46px;
@@ -1155,9 +1157,9 @@ p {
 }
 
 .scroll-position-pill {
-  max-width: 72px;
+  max-width: min(340px, calc(100vw - 24px));
   overflow: hidden;
-  padding: 1px 2px;
+  padding: 2px 4px;
   border-radius: 999px;
   color: rgba(17, 24, 39, 0.68);
   background: rgba(255, 255, 255, 0.78);
@@ -1165,7 +1167,7 @@ p {
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -2613,7 +2615,7 @@ p {
 
   .scroll-bottom-control {
     bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-    z-index: 130;
+    z-index: 1000;
   }
 
   .scroll-to-bottom-button {
