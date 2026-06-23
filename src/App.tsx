@@ -33,7 +33,6 @@ import {
 } from "lucide-react";
 import {
   FormEvent,
-  Fragment,
   PointerEvent as ReactPointerEvent,
   KeyboardEvent as ReactKeyboardEvent,
   isValidElement,
@@ -897,9 +896,7 @@ function sameChatDetailForQuietRefresh(a: ChatDetail | null, b: ChatDetail) {
   if (
     a.title !== b.title ||
     a.projectName !== b.projectName ||
-    a.projectPath !== b.projectPath ||
-    (a.messagePage?.visibleTurns ?? defaultChatTurns) !== (b.messagePage?.visibleTurns ?? defaultChatTurns) ||
-    Boolean(a.messagePage?.hasMore) !== Boolean(b.messagePage?.hasMore)
+    a.projectPath !== b.projectPath
   ) {
     return false;
   }
@@ -913,20 +910,70 @@ function sameChatDetailForQuietRefresh(a: ChatDetail | null, b: ChatDetail) {
 
     return (
       other &&
-      message.id === other.id &&
-      message.role === other.role &&
-      message.kind === other.kind &&
-      message.text === other.text &&
-      (message.label ?? "") === (other.label ?? "") &&
-      (message.toolName ?? "") === (other.toolName ?? "") &&
-      (message.callId ?? "") === (other.callId ?? "") &&
-      (message.status ?? "") === (other.status ?? "") &&
-      (message.durationMs ?? 0) === (other.durationMs ?? 0) &&
-      (message.voiceNoteUrl ?? "") === (other.voiceNoteUrl ?? "") &&
-      (message.voiceNoteMimeType ?? "") === (other.voiceNoteMimeType ?? "") &&
-      Boolean(message.isFinal) === Boolean(other.isFinal)
+      chatMessageStableSignature(message) === chatMessageStableSignature(other)
     );
   });
+}
+
+function jobStableSignature(job: CodexRunJob) {
+  return [
+    job.id,
+    job.chatId,
+    job.status,
+    job.kind ?? "",
+    job.queuePosition ?? "",
+    job.createdAt,
+    job.promptPreview,
+    job.textLength,
+    job.startedAt ?? "",
+    job.finishedAt ?? "",
+    job.exitCode ?? "",
+    job.message ?? "",
+    job.heartbeat ?? "",
+    job.codexTranscript?.message ?? "",
+    job.settings?.model ?? "",
+    job.settings?.reasoningEffort ?? "",
+    job.settings?.speed ?? ""
+  ].join("\u001f");
+}
+
+function sameJobsForRender(a: CodexRunJob[] | undefined, b: CodexRunJob[]) {
+  const current = a ?? [];
+
+  if (current.length !== b.length) {
+    return false;
+  }
+
+  return current.every((job, index) => jobStableSignature(job) === jobStableSignature(b[index]));
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
+function chatMessageStableSignature(message: ChatTranscriptMessage | VisibleChatMessage) {
+  return [
+    message.role,
+    message.kind ?? "",
+    message.text,
+    message.label ?? "",
+    message.toolName ?? "",
+    message.callId ?? "",
+    message.voiceNoteUrl ?? "",
+    message.voiceNoteMimeType ?? "",
+    message.isFinal ? "final" : ""
+  ].join("\u001f");
+}
+
+function chatMessageStableRenderKey(message: ChatTranscriptMessage | VisibleChatMessage, occurrence: number) {
+  return `${message.role}-${message.kind ?? "message"}-${stableHash(chatMessageStableSignature(message))}-${occurrence}`;
 }
 
 function localCommandDetailText(command: LocalQueuedCommand) {
@@ -2480,7 +2527,24 @@ export function App() {
     () => timelineMessages.filter((message) => messageVisibleForViewMode(message, selectedChatMessageViewMode)),
     [selectedChatMessageViewMode, timelineMessages]
   );
-  const lastVisibleMessageId = visibleMessages.at(-1)?.id ?? "";
+  const visibleMessageItems = useMemo(() => {
+    const occurrences = new Map<string, number>();
+
+    return visibleMessages.map((message) => {
+      const signature = chatMessageStableSignature(message);
+      const occurrence = occurrences.get(signature) ?? 0;
+      occurrences.set(signature, occurrence + 1);
+
+      // Do not key rendered chat bubbles by backend message.id here. Quiet polling can re-read
+      // identical transcript content with different IDs/metadata, and iOS PWAs visibly repaint
+      // the transcript when React remounts those bubbles every polling tick.
+      return {
+        message,
+        renderKey: chatMessageStableRenderKey(message, occurrence)
+      };
+    });
+  }, [visibleMessages]);
+  const lastVisibleMessageKey = visibleMessageItems.at(-1)?.renderKey ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
   const topbarProjectLabel = selectedChat?.projectName ?? selectedChatSummary?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
@@ -2870,11 +2934,13 @@ export function App() {
 
       const cachedTurns = cachedDetail?.messagePage?.visibleTurns ?? defaultChatTurns;
 
-      if (cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
+      // Cache is for foreground loads only. Applying cached detail during quiet polling causes a
+      // cache-to-server transcript bounce every interval, which is visible as flicker in iOS PWAs.
+      if (!quiet && cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
 
-          // Quiet polling is a freshness check. Do not replace the rendered chat for timestamp/metadata churn:
+          // Quiet polling is a freshness check. Do not replace the rendered chat for volatile IDs/status/metadata churn:
           // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
           if (quiet && sameChatDetailForQuietRefresh(current, next)) {
             return current;
@@ -2899,7 +2965,7 @@ export function App() {
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, detail);
 
-          // Quiet polling is a freshness check. Do not replace the rendered chat for timestamp/metadata churn:
+          // Quiet polling is a freshness check. Do not replace the rendered chat for volatile IDs/status/metadata churn:
           // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
           if (quiet && sameChatDetailForQuietRefresh(current, next)) {
             return current;
@@ -2930,10 +2996,16 @@ export function App() {
       try {
         const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`);
         replaceTrackedServerJobsForChat(chatId, result.jobs);
-        setChatJobs((current) => ({
-          ...current,
-          [chatId]: sortJobsForChat(result.jobs).slice(0, 40)
-        }));
+        setChatJobs((current) => {
+          const nextJobs = sortJobsForChat(result.jobs).slice(0, 40);
+
+          return sameJobsForRender(current[chatId], nextJobs)
+            ? current
+            : {
+                ...current,
+                [chatId]: nextJobs
+              };
+        });
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not load command queue");
       }
@@ -3974,7 +4046,7 @@ export function App() {
     chatIsNearBottom,
     chatScrollVersion,
     chatShellIsLoading,
-    lastVisibleMessageId,
+    lastVisibleMessageKey,
     scrollChatToBottom,
     selectedChatId,
     updateScrollToBottomVisibility
@@ -3995,7 +4067,7 @@ export function App() {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
+  }, [chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -4028,7 +4100,7 @@ export function App() {
       window.visualViewport?.removeEventListener("resize", refreshVisibility);
       resizeObserver?.disconnect();
     };
-  }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
+  }, [chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
@@ -5620,26 +5692,26 @@ export function App() {
                   Load 10 more
                 </button>
               ) : null}
-              {visibleMessages.length ? (
-                visibleMessages.map((message, index) => {
+              {visibleMessageItems.length ? (
+                visibleMessageItems.map(({ message, renderKey }, index) => {
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
                   const showFinalFallbackSeparator =
                     message.role === "assistant" &&
                     message.isFinal &&
-                    visibleMessages[index + 1]?.kind !== "task_complete" &&
-                    visibleMessages[index + 1]?.kind !== "forked_from";
+                    visibleMessageItems[index + 1]?.message.kind !== "task_complete" &&
+                    visibleMessageItems[index + 1]?.message.kind !== "forked_from";
 
                   if (message.kind === "task_complete" || message.kind === "forked_from") {
                     return (
-                      <div className="run-complete-separator" role="separator" aria-label={message.kind === "forked_from" ? "Forked chat" : "Run complete"} key={message.id}>
+                      <div className="run-complete-separator" role="separator" aria-label={message.kind === "forked_from" ? "Forked chat" : "Run complete"} data-render-key={renderKey} key={renderKey}>
                         <span>{separatorText(message)}</span>
                       </div>
                     );
                   }
 
                   return (
-                    <Fragment key={message.id}>
-                      <article className={chatMessageClassName(message)}>
+                    <div className="chat-message-group" data-render-key={renderKey} key={renderKey}>
+                      <article className={chatMessageClassName(message)} data-render-key={renderKey}>
                         <div className="bubble-meta">
                           <span>{chatMessageLabel(message)}</span>
                           <time>{formatDate(message.createdAt)}</time>
@@ -5666,11 +5738,11 @@ export function App() {
                         )}
                       </article>
                       {showFinalFallbackSeparator ? (
-                        <div className="run-complete-separator" role="separator" aria-label="Run complete">
+                        <div className="run-complete-separator" role="separator" aria-label="Run complete" data-render-key={`${renderKey}-complete`} key={`${renderKey}-complete`}>
                           <span>Run complete</span>
                         </div>
                       ) : null}
-                    </Fragment>
+                    </div>
                   );
                 })
               ) : (

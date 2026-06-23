@@ -1135,6 +1135,10 @@ p {
   overflow-x: hidden;
 }
 
+.chat-message-group {
+  display: contents;
+}
+
 .chat-bubble {
   width: auto;
   max-width: min(78%, 920px);
