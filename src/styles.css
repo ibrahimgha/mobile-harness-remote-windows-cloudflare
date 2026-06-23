@@ -697,6 +697,27 @@ p {
   line-height: 1.6;
 }
 
+.markdown-viewer-state,
+.markdown-viewer-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-bottom: 12px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.markdown-viewer-error {
+  color: var(--red);
+  border-color: #f0b2aa;
+  background: var(--red-soft);
+}
+
 .markdown-viewer-body > * + * {
   margin-top: 0.85em;
 }
@@ -1089,11 +1110,19 @@ p {
     #f5f6f1;
 }
 
-.scroll-to-bottom-button {
+.scroll-bottom-control {
   position: absolute;
   left: 50%;
-  bottom: calc(108px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   z-index: 120;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.scroll-to-bottom-button {
   display: inline-flex;
   width: 46px;
   min-width: 46px;
@@ -1109,34 +1138,34 @@ p {
   box-shadow:
     0 16px 34px rgba(15, 23, 42, 0.2),
     0 2px 8px rgba(15, 23, 42, 0.12);
-  opacity: 0;
-  pointer-events: none;
-  visibility: hidden;
-  transform: translate(-50%, 8px);
-  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: auto;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   touch-action: manipulation;
-}
-
-.scroll-to-bottom-button.is-visible {
-  opacity: 1;
-  pointer-events: auto;
-  visibility: visible;
-  transform: translate(-50%, 0);
 }
 
 .scroll-to-bottom-button:hover {
   background: #ffffff;
 }
 
-.scroll-to-bottom-button[hidden] {
-  display: none;
-}
-
 .scroll-to-bottom-button:focus-visible {
   outline: 2px solid rgba(16, 163, 127, 0.65);
   outline-offset: 3px;
+}
+
+.scroll-position-pill {
+  max-width: 72px;
+  overflow: hidden;
+  padding: 1px 2px;
+  border-radius: 999px;
+  color: rgba(17, 24, 39, 0.68);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1);
+  font-size: 2px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-thread {
@@ -2346,22 +2375,31 @@ p {
     inset: 0;
     z-index: 30;
     grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
-    width: 100vw;
+    width: 100%;
+    max-width: 100%;
     min-height: 0;
     height: var(--app-height, 100dvh);
     max-height: var(--app-height, 100dvh);
+    overflow-x: hidden;
     border-right: 0;
     border-bottom: 0;
     box-shadow: none;
     pointer-events: none;
-    transform: translate3d(-100%, 0, 0);
-    transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+    visibility: hidden;
+    transform: translate3d(calc(-100% - 24px), 0, 0);
+    transition:
+      transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 240ms;
     will-change: transform;
   }
 
   .remote-shell.is-menu-open .chat-sidebar {
     pointer-events: auto;
+    visibility: visible;
     transform: translate3d(0, 0, 0);
+    transition:
+      transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 0s;
   }
 
   .mobile-menu-button,
@@ -2514,8 +2552,28 @@ p {
 
 @media (max-width: 640px) {
   .sidebar-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
     min-height: calc(60px + env(safe-area-inset-top));
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  }
+
+  .sidebar-actions {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .sidebar-actions .icon-button {
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    min-height: 40px;
   }
 
   .chat-topbar {
@@ -2552,10 +2610,12 @@ p {
     padding: 10px;
   }
 
-  .scroll-to-bottom-button {
-    position: fixed;
-    bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  .scroll-bottom-control {
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
     z-index: 130;
+  }
+
+  .scroll-to-bottom-button {
     width: 46px;
     min-width: 46px;
     height: 46px;

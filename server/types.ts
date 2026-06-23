@@ -192,6 +192,7 @@ export type ShortcutInstructionFile = {
   name: string;
   path: string;
   relativePath: string;
+  mediaUrl: string;
   size: number;
   updatedAt: string;
   content: string;

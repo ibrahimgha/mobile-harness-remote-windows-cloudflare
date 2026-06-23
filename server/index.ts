@@ -368,6 +368,35 @@ function uploadDateFromQuery(value: unknown): Date {
   return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date();
 }
 
+function shortcutInstructionMediaUrl(relativePath: string): string {
+  return `/media/shortcut-instructions/${relativePath
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
+function resolveShortcutInstructionPath(rawPath: unknown): { ok: true; path: string; relativePath: string } | { ok: false; message: string } {
+  if (typeof rawPath !== "string" || !rawPath.trim()) {
+    return { ok: false, message: "Markdown path is required" };
+  }
+
+  const normalized = rawPath.trim().replace(/\\/g, "/");
+
+  if (normalized.includes("\0")) {
+    return { ok: false, message: "Markdown path is invalid" };
+  }
+
+  const resolved = path.resolve(shortcutInstructionsRoot, normalized);
+  const relativePath = path.relative(shortcutInstructionsRoot, resolved);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return { ok: false, message: "Markdown path is outside the instruction folder" };
+  }
+
+  return { ok: true, path: resolved, relativePath };
+}
+
 function numberFromQuery(value: unknown, fallback: number): number {
   const raw = queryStringValue(value);
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
@@ -522,6 +551,7 @@ async function listShortcutInstructionFiles(): Promise<ShortcutInstructionFile[]
           name: entry.name,
           path: entryPath,
           relativePath,
+          mediaUrl: shortcutInstructionMediaUrl(relativePath),
           size: stat.size,
           updatedAt: stat.mtime.toISOString(),
           content:
@@ -802,6 +832,40 @@ app.get("/api/shortcut-instructions", requireControlAuth, async (req, res) => {
       error: describeError(error)
     });
     res.status(500).json({ ok: false, message });
+  }
+});
+
+app.get(/^\/media\/shortcut-instructions\/(.+)$/, requireControlAuth, async (req, res) => {
+  const resolved = resolveShortcutInstructionPath(req.params[0]);
+
+  if (!resolved.ok) {
+    res.status(400).json({ ok: false, message: resolved.message });
+    return;
+  }
+
+  try {
+    const stat = await fsp.stat(resolved.path);
+
+    if (!stat.isFile()) {
+      res.status(404).json({ ok: false, message: "Markdown file not found" });
+      return;
+    }
+
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.send(await fsp.readFile(resolved.path, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not read markdown file";
+
+    pushEvent("error", "Markdown media file could not be served", {
+      action: "media-shortcut-instruction",
+      request: requestContext(req),
+      path: resolved.path,
+      relativePath: resolved.relativePath,
+      error: describeError(error)
+    });
+    res.status(404).json({ ok: false, message });
   }
 });
 

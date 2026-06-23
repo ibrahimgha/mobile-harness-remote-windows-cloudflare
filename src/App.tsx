@@ -327,6 +327,7 @@ type ShortcutInstructionFile = {
   name: string;
   path: string;
   relativePath: string;
+  mediaUrl: string;
   size: number;
   updatedAt: string;
   content: string;
@@ -2155,6 +2156,9 @@ export function App() {
   const [instructionsError, setInstructionsError] = useState("");
   const [shortcutInstructions, setShortcutInstructions] = useState<ShortcutInstructionsResult | null>(null);
   const [selectedInstructionFile, setSelectedInstructionFile] = useState<ShortcutInstructionFile | null>(null);
+  const [selectedInstructionContent, setSelectedInstructionContent] = useState("");
+  const [selectedInstructionLoading, setSelectedInstructionLoading] = useState(false);
+  const [selectedInstructionError, setSelectedInstructionError] = useState("");
   const [projectActionMode, setProjectActionMode] = useState<"project" | "chat" | null>(null);
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [projectActionError, setProjectActionError] = useState("");
@@ -2171,10 +2175,10 @@ export function App() {
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
+  const [scrollDebugPosition, setScrollDebugPosition] = useState("chat-content 0/0 d0");
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
-  const scrollToBottomButtonRef = useRef<HTMLButtonElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const chatDetailRequestRef = useRef(0);
   const localQueueSendingRef = useRef(false);
@@ -2875,42 +2879,23 @@ export function App() {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
   }, []);
 
-  const setScrollToBottomButtonVisible = useCallback((visible: boolean) => {
-    const button = scrollToBottomButtonRef.current;
-
-    if (!button) {
+  const updateScrollDebugPosition = useCallback((element = chatContentRef.current) => {
+    if (!element) {
+      setScrollDebugPosition("chat-content 0/0 d0");
       return;
     }
 
-    button.classList.toggle("is-visible", visible);
-    button.setAttribute("aria-hidden", visible ? "false" : "true");
-    button.tabIndex = visible ? 0 : -1;
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const scrollTop = Math.round(element.scrollTop);
+    const distanceFromBottom = Math.round(maxScrollTop - element.scrollTop);
+
+    setScrollDebugPosition(`chat-content ${scrollTop}/${Math.round(maxScrollTop)} d${distanceFromBottom}`);
   }, []);
 
-  const updateScrollToBottomVisibility = useCallback(
-    (element = chatContentRef.current) => {
-      const isScrollable = Boolean(element && element.scrollHeight > element.clientHeight + 24);
-      const distanceFromBottom = element ? element.scrollHeight - element.scrollTop - element.clientHeight : 0;
-      const currentlyVisible = Boolean(scrollToBottomButtonRef.current?.classList.contains("is-visible"));
-      const pastShowThreshold = distanceFromBottom > 160;
-      const aboveHideThreshold = distanceFromBottom > 80;
-      const shouldShow =
-        Boolean(selectedChatIdRef.current) &&
-        !menuOpenRef.current &&
-        isScrollable &&
-        (currentlyVisible ? aboveHideThreshold : pastShowThreshold);
-
-      setScrollToBottomButtonVisible(shouldShow);
-
-      return shouldShow;
-    },
-    [setScrollToBottomButtonVisible]
-  );
-
   const updateChatAutoScrollState = useCallback(() => {
-    updateScrollToBottomVisibility();
     chatShouldAutoScrollRef.current = chatIsNearBottom();
-  }, [chatIsNearBottom, updateScrollToBottomVisibility]);
+    updateScrollDebugPosition();
+  }, [chatIsNearBottom, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback(() => {
     const scroller = chatContentRef.current;
@@ -2922,8 +2907,8 @@ export function App() {
     }
 
     chatShouldAutoScrollRef.current = true;
-    setScrollToBottomButtonVisible(false);
-  }, [setScrollToBottomButtonVisible]);
+    updateScrollDebugPosition(scroller);
+  }, [updateScrollDebugPosition]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -3054,6 +3039,20 @@ export function App() {
     },
     []
   );
+
+  const openInstructionFile = useCallback((file: ShortcutInstructionFile) => {
+    setSelectedInstructionFile(file);
+    setSelectedInstructionContent("");
+    setSelectedInstructionError("");
+    setSelectedInstructionLoading(true);
+  }, []);
+
+  const closeInstructionFile = useCallback(() => {
+    setSelectedInstructionFile(null);
+    setSelectedInstructionContent("");
+    setSelectedInstructionError("");
+    setSelectedInstructionLoading(false);
+  }, []);
 
   const rememberJob = useCallback(
     (job: CodexRunJob) => {
@@ -3982,6 +3981,64 @@ export function App() {
   }, [authenticated, instructionsOpen, loadShortcutInstructions]);
 
   useEffect(() => {
+    if (!authenticated || !selectedInstructionFile) {
+      return;
+    }
+
+    let cancelled = false;
+    let loadedOnce = false;
+
+    const fetchInstructionContent = async () => {
+      if (!selectedInstructionFile.mediaUrl) {
+        setSelectedInstructionError("Instruction file does not have a media URL");
+        setSelectedInstructionLoading(false);
+        return;
+      }
+
+      if (!loadedOnce) {
+        setSelectedInstructionLoading(true);
+      }
+
+      try {
+        const response = await fetch(selectedInstructionFile.mediaUrl, {
+          headers: token ? { "x-control-token": token } : undefined
+        });
+        const text = await response.text();
+
+        if (!response.ok) {
+          throw new Error(text || "Could not load markdown file");
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        loadedOnce = true;
+        setSelectedInstructionContent((current) => (current === text ? current : text));
+        setSelectedInstructionError("");
+      } catch (error) {
+        if (!cancelled) {
+          setSelectedInstructionError(error instanceof Error ? error.message : "Could not load markdown file");
+        }
+      } finally {
+        if (!cancelled) {
+          setSelectedInstructionLoading(false);
+        }
+      }
+    };
+
+    void fetchInstructionContent();
+    const interval = window.setInterval(() => {
+      void fetchInstructionContent();
+    }, shortcutInstructionSyncIntervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [authenticated, selectedInstructionFile, token]);
+
+  useEffect(() => {
     if (selectedJob?.status !== "running" && !activeRunJobKey) {
       return;
     }
@@ -4022,7 +4079,7 @@ export function App() {
         }
 
         nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
-        updateScrollToBottomVisibility(nextScroller);
+        updateScrollDebugPosition(nextScroller);
         chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
       };
 
@@ -4038,7 +4095,7 @@ export function App() {
     forceNextChatScrollRef.current = false;
 
     if (!shouldScroll) {
-      updateScrollToBottomVisibility(scroller);
+      updateScrollDebugPosition(scroller);
       return;
     }
 
@@ -4062,22 +4119,22 @@ export function App() {
     lastVisibleMessageKey,
     scrollChatToBottom,
     selectedChatId,
-    updateScrollToBottomVisibility
+    updateScrollDebugPosition
   ]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
-      setScrollToBottomButtonVisible(false);
+      updateScrollDebugPosition();
       return;
     }
 
     const frame = window.requestAnimationFrame(() => {
-      updateScrollToBottomVisibility();
+      updateScrollDebugPosition();
       chatShouldAutoScrollRef.current = chatIsNearBottom();
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, setScrollToBottomButtonVisible, updateScrollToBottomVisibility]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollDebugPosition]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -4090,33 +4147,33 @@ export function App() {
       return;
     }
 
-    const refreshVisibility = () => {
-      updateScrollToBottomVisibility(scroller);
+    const refreshPosition = () => {
+      updateScrollDebugPosition(scroller);
       chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
     };
 
-    scroller.addEventListener("scroll", refreshVisibility, { passive: true });
-    scroller.addEventListener("touchend", refreshVisibility, { passive: true });
-    window.addEventListener("resize", refreshVisibility);
-    window.visualViewport?.addEventListener("resize", refreshVisibility);
-    const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(refreshVisibility) : null;
+    scroller.addEventListener("scroll", refreshPosition, { passive: true });
+    scroller.addEventListener("touchend", refreshPosition, { passive: true });
+    window.addEventListener("resize", refreshPosition);
+    window.visualViewport?.addEventListener("resize", refreshPosition);
+    const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(refreshPosition) : null;
     resizeObserver?.observe(scroller);
-    refreshVisibility();
+    refreshPosition();
 
     return () => {
-      scroller.removeEventListener("scroll", refreshVisibility);
-      scroller.removeEventListener("touchend", refreshVisibility);
-      window.removeEventListener("resize", refreshVisibility);
-      window.visualViewport?.removeEventListener("resize", refreshVisibility);
+      scroller.removeEventListener("scroll", refreshPosition);
+      scroller.removeEventListener("touchend", refreshPosition);
+      window.removeEventListener("resize", refreshPosition);
+      window.visualViewport?.removeEventListener("resize", refreshPosition);
       resizeObserver?.disconnect();
     };
-  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollDebugPosition]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
-    updateScrollToBottomVisibility();
     chatShouldAutoScrollRef.current = chatIsNearBottom();
-  }, [chatIsNearBottom, menuOpen, updateScrollToBottomVisibility]);
+    updateScrollDebugPosition();
+  }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5485,7 +5542,7 @@ export function App() {
                       </p>
                     </div>
                     <div className="instruction-file-actions">
-                      <button className="icon-button" type="button" onClick={() => setSelectedInstructionFile(file)} aria-label={`Open ${file.name}`}>
+                      <button className="icon-button" type="button" onClick={() => openInstructionFile(file)} aria-label={`Open ${file.name}`}>
                         <FileText size={15} />
                       </button>
                       <button className="icon-button" type="button" onClick={() => copyInstructions([file])} aria-label={`Copy ${file.name}`}>
@@ -5493,7 +5550,7 @@ export function App() {
                       </button>
                     </div>
                   </div>
-                  <button className="instruction-file-open" type="button" onClick={() => setSelectedInstructionFile(file)}>
+                  <button className="instruction-file-open" type="button" onClick={() => openInstructionFile(file)}>
                     Open Markdown viewer
                   </button>
                 </article>
@@ -5582,12 +5639,19 @@ export function App() {
                 <h2 id="markdown-viewer-title">{selectedInstructionFile.relativePath}</h2>
                 <p>{selectedInstructionFile.path}</p>
               </div>
-              <button className="icon-button" type="button" onClick={() => setSelectedInstructionFile(null)} aria-label="Close Markdown viewer">
+              <button className="icon-button" type="button" onClick={closeInstructionFile} aria-label="Close Markdown viewer">
                 <X size={18} />
               </button>
             </header>
             <div className="markdown-viewer-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedInstructionFile.content}</ReactMarkdown>
+              {selectedInstructionLoading && !selectedInstructionContent ? (
+                <div className="markdown-viewer-state">
+                  <Loader2 className="spin" size={18} />
+                  <span>Loading markdown</span>
+                </div>
+              ) : null}
+              {selectedInstructionError ? <p className="markdown-viewer-error">{selectedInstructionError}</p> : null}
+              {selectedInstructionContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedInstructionContent}</ReactMarkdown> : null}
             </div>
           </section>
         </div>
@@ -5770,18 +5834,18 @@ export function App() {
         </div>
 
         {selectedChat ? (
-          <button
-            ref={scrollToBottomButtonRef}
-            className="scroll-to-bottom-button"
-            type="button"
-            onClick={scrollChatToBottom}
-            aria-label="Scroll to latest message"
-            aria-hidden="true"
-            title="Scroll to latest message"
-            tabIndex={-1}
-          >
-            <ChevronDown size={22} strokeWidth={2.6} />
-          </button>
+          <div className="scroll-bottom-control" aria-live="off">
+            <button
+              className="scroll-to-bottom-button"
+              type="button"
+              onClick={scrollChatToBottom}
+              aria-label="Scroll to latest message"
+              title="Scroll to latest message"
+            >
+              <ChevronDown size={22} strokeWidth={2.6} />
+            </button>
+            <span className="scroll-position-pill">{scrollDebugPosition}</span>
+          </div>
         ) : null}
 
         {selectedQueueCount ? (
