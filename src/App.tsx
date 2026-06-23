@@ -379,14 +379,13 @@ const maxAttachmentFiles = 5;
 const maxAttachmentBytes = 512 * 1024 * 1024;
 const maxAttachmentTotalBytes = 1024 * 1024 * 1024;
 const attachmentChunkBytes = 8 * 1024 * 1024;
-const debugSyncIntervalMs = 60 * 1000;
-const shortcutInstructionSyncIntervalMs = debugSyncIntervalMs;
+const shortcutInstructionSyncIntervalMs = 3000;
 const backgroundSyncIntervalMs = 5000;
-const activeJobSyncIntervalMs = debugSyncIntervalMs;
-const socketReconnectMs = debugSyncIntervalMs;
-const socketWatchdogMs = debugSyncIntervalMs;
+const activeJobSyncIntervalMs = 4000;
+const socketReconnectMs = 1500;
+const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
-const socketStaleMs = debugSyncIntervalMs;
+const socketStaleMs = 45000;
 const queuedCommandSteerGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
@@ -744,7 +743,7 @@ function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | u
 }
 
 function localCommandRetryDelay(attempts: number) {
-  return Math.max(debugSyncIntervalMs, Math.min(30000, 3000 * 2 ** Math.min(attempts, 3)));
+  return Math.min(30000, 3000 * 2 ** Math.min(attempts, 3));
 }
 
 function localCommandStatusText(command: LocalQueuedCommand) {
@@ -877,6 +876,46 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       message.role === other.role &&
       message.kind === other.kind &&
       message.createdAt === other.createdAt &&
+      message.text === other.text &&
+      (message.label ?? "") === (other.label ?? "") &&
+      (message.toolName ?? "") === (other.toolName ?? "") &&
+      (message.callId ?? "") === (other.callId ?? "") &&
+      (message.status ?? "") === (other.status ?? "") &&
+      (message.durationMs ?? 0) === (other.durationMs ?? 0) &&
+      (message.voiceNoteUrl ?? "") === (other.voiceNoteUrl ?? "") &&
+      (message.voiceNoteMimeType ?? "") === (other.voiceNoteMimeType ?? "") &&
+      Boolean(message.isFinal) === Boolean(other.isFinal)
+    );
+  });
+}
+
+function sameChatDetailForQuietRefresh(a: ChatDetail | null, b: ChatDetail) {
+  if (!a || a.id !== b.id) {
+    return false;
+  }
+
+  if (
+    a.title !== b.title ||
+    a.projectName !== b.projectName ||
+    a.projectPath !== b.projectPath ||
+    (a.messagePage?.visibleTurns ?? defaultChatTurns) !== (b.messagePage?.visibleTurns ?? defaultChatTurns) ||
+    Boolean(a.messagePage?.hasMore) !== Boolean(b.messagePage?.hasMore)
+  ) {
+    return false;
+  }
+
+  if ((a.messages ?? []).length !== (b.messages ?? []).length) {
+    return false;
+  }
+
+  return (a.messages ?? []).every((message, index) => {
+    const other = b.messages[index];
+
+    return (
+      other &&
+      message.id === other.id &&
+      message.role === other.role &&
+      message.kind === other.kind &&
       message.text === other.text &&
       (message.label ?? "") === (other.label ?? "") &&
       (message.toolName ?? "") === (other.toolName ?? "") &&
@@ -2835,6 +2874,12 @@ export function App() {
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
 
+          // Quiet polling is a freshness check. Do not replace the rendered chat for timestamp/metadata churn:
+          // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
+          if (quiet && sameChatDetailForQuietRefresh(current, next)) {
+            return current;
+          }
+
           return sameChatDetailForRender(current, next) ? current : next;
         });
         if (!quiet) {
@@ -2853,6 +2898,12 @@ export function App() {
 
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, detail);
+
+          // Quiet polling is a freshness check. Do not replace the rendered chat for timestamp/metadata churn:
+          // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
+          if (quiet && sameChatDetailForQuietRefresh(current, next)) {
+            return current;
+          }
 
           return sameChatDetailForRender(current, next) ? current : next;
         });
@@ -3270,7 +3321,7 @@ export function App() {
     let lastStatus: ProjectChatStartResult | null = null;
 
     while (Date.now() < deadline) {
-      await delay(debugSyncIntervalMs);
+      await delay(1500);
 
       try {
         const result = await apiFetch<ProjectChatStartResult>(`/api/chat-starts/${encodeURIComponent(pendingId)}`);
@@ -3913,7 +3964,7 @@ export function App() {
       scrollToBottom();
       window.requestAnimationFrame(scrollToBottom);
     });
-    const imageLoadFallback = window.setTimeout(scrollToBottom, debugSyncIntervalMs);
+    const imageLoadFallback = window.setTimeout(scrollToBottom, 250);
 
     return () => {
       window.cancelAnimationFrame(firstFrame);
@@ -4045,7 +4096,7 @@ export function App() {
 
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
         setSocketLive(false);
-        scheduleReconnect(debugSyncIntervalMs);
+        scheduleReconnect(0);
         return;
       }
 
@@ -4055,7 +4106,7 @@ export function App() {
       if (staleFor > staleLimit) {
         setSocketLive(false);
         socket.close();
-        scheduleReconnect(debugSyncIntervalMs);
+        scheduleReconnect(250);
       }
     };
 
@@ -4183,14 +4234,25 @@ export function App() {
     }
 
     const interval = window.setInterval(() => {
+      void loadState();
+
       const chatId = selectedChatIdRef.current;
       if (chatId && !isTemporaryChatId(chatId)) {
+        void loadChatJobs(chatId);
         void loadChatDetail(chatId, true);
+      }
+
+      const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
+
+      for (const queuedChatId of queuedChatIds) {
+        if (queuedChatId && queuedChatId !== chatId && !isTemporaryChatId(queuedChatId)) {
+          void loadChatJobs(queuedChatId);
+        }
       }
     }, backgroundSyncIntervalMs);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
 
   useEffect(() => {
     if (!authenticated || localQueueSendingRef.current) {
@@ -4974,7 +5036,7 @@ export function App() {
         void loadChats();
         void loadChatJobs(selectedChatId);
         void loadChatDetail(selectedChatId, true);
-      }, debugSyncIntervalMs);
+      }, 1600);
     } catch (error) {
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
