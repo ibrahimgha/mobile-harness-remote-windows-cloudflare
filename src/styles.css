@@ -166,6 +166,7 @@ p {
 }
 
 .remote-shell {
+  position: relative;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   column-gap: 1px;
@@ -1161,7 +1162,7 @@ p {
   color: rgba(17, 24, 39, 0.68);
   background: rgba(255, 255, 255, 0.78);
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1);
-  font-size: 2px;
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
   text-overflow: ellipsis;

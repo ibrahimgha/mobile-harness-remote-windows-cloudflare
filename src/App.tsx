@@ -2900,11 +2900,22 @@ export function App() {
   const scrollChatToBottom = useCallback(() => {
     const scroller = chatContentRef.current;
 
-    if (scroller) {
-      scroller.scrollTop = scroller.scrollHeight;
-    } else {
-      chatEndRef.current?.scrollIntoView({ block: "end" });
-    }
+    const performScroll = () => {
+      const currentScroller = chatContentRef.current;
+
+      if (currentScroller) {
+        const maxScrollTop = Math.max(0, currentScroller.scrollHeight - currentScroller.clientHeight);
+        currentScroller.scrollTop = maxScrollTop;
+        currentScroller.scrollTo({ top: maxScrollTop, left: 0, behavior: "auto" });
+        updateScrollDebugPosition(currentScroller);
+      }
+
+      chatEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
+    };
+
+    performScroll();
+    window.requestAnimationFrame(performScroll);
+    window.setTimeout(performScroll, 80);
 
     chatShouldAutoScrollRef.current = true;
     updateScrollDebugPosition(scroller);
@@ -3042,7 +3053,7 @@ export function App() {
 
   const openInstructionFile = useCallback((file: ShortcutInstructionFile) => {
     setSelectedInstructionFile(file);
-    setSelectedInstructionContent("");
+    setSelectedInstructionContent(file.content ?? "");
     setSelectedInstructionError("");
     setSelectedInstructionLoading(true);
   }, []);
@@ -5212,6 +5223,16 @@ export function App() {
     void sendPrompt();
   }
 
+  function scrollChatToBottomFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.blur();
+    scrollChatToBottom();
+  }
+
   function sendPromptFromClick() {
     if (sendHandledOnPointerDownRef.current) {
       sendHandledOnPointerDownRef.current = false;
@@ -5833,21 +5854,6 @@ export function App() {
           )}
         </div>
 
-        {selectedChat ? (
-          <div className="scroll-bottom-control" aria-live="off">
-            <button
-              className="scroll-to-bottom-button"
-              type="button"
-              onClick={scrollChatToBottom}
-              aria-label="Scroll to latest message"
-              title="Scroll to latest message"
-            >
-              <ChevronDown size={22} strokeWidth={2.6} />
-            </button>
-            <span className="scroll-position-pill">{scrollDebugPosition}</span>
-          </div>
-        ) : null}
-
         {selectedQueueCount ? (
           <section className="command-queue" aria-labelledby="command-queue-title">
             <div className="queue-header">
@@ -6063,6 +6069,21 @@ export function App() {
         </div>
 
       </section>
+      {selectedChat ? (
+        <div className="scroll-bottom-control" aria-live="off">
+          <button
+            className="scroll-to-bottom-button"
+            type="button"
+            onPointerDown={scrollChatToBottomFromPointer}
+            onClick={scrollChatToBottom}
+            aria-label="Scroll to latest message"
+            title="Scroll to latest message"
+          >
+            <ChevronDown size={22} strokeWidth={2.6} />
+          </button>
+          <span className="scroll-position-pill">{scrollDebugPosition}</span>
+        </div>
+      ) : null}
       <RunBoard open={runBoardOpen} jobs={activeRunJobs} chatById={chatSummaryById} nowMs={durationNow} onClose={closeRunBoard} />
     </main>
   );
