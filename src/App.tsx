@@ -3935,7 +3935,8 @@ export function App() {
     }
 
     const frame = window.requestAnimationFrame(() => {
-      updateScrollToBottomVisibility();
+      const shouldShowScrollButton = updateScrollToBottomVisibility();
+      chatShouldAutoScrollRef.current = !shouldShowScrollButton;
     });
 
     return () => window.cancelAnimationFrame(frame);
@@ -3953,7 +3954,8 @@ export function App() {
     }
 
     const refreshVisibility = () => {
-      updateScrollToBottomVisibility(scroller);
+      const shouldShowScrollButton = updateScrollToBottomVisibility(scroller);
+      chatShouldAutoScrollRef.current = !shouldShowScrollButton;
     };
 
     scroller.addEventListener("scroll", refreshVisibility, { passive: true });
@@ -3975,7 +3977,8 @@ export function App() {
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
-    updateScrollToBottomVisibility();
+    const shouldShowScrollButton = updateScrollToBottomVisibility();
+    chatShouldAutoScrollRef.current = !shouldShowScrollButton;
   }, [menuOpen, updateScrollToBottomVisibility]);
 
   useEffect(() => {
