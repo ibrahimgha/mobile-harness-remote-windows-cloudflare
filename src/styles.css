@@ -1116,6 +1116,10 @@ p {
   background: #ffffff;
 }
 
+.scroll-to-bottom-button[hidden] {
+  display: none;
+}
+
 .scroll-to-bottom-button:focus-visible {
   outline: 2px solid rgba(16, 163, 127, 0.65);
   outline-offset: 3px;

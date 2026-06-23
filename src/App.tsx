@@ -2039,7 +2039,6 @@ export function App() {
     readChatMessageViewModes()
   );
   const [chatScrollVersion, setChatScrollVersion] = useState(0);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
@@ -2085,6 +2084,7 @@ export function App() {
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
+  const scrollToBottomButtonRef = useRef<HTMLButtonElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const chatDetailRequestRef = useRef(0);
   const localQueueSendingRef = useRef(false);
@@ -2103,6 +2103,7 @@ export function App() {
   const chatShouldAutoScrollRef = useRef(true);
   const forceNextChatScrollRef = useRef(false);
   const preserveChatScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const menuOpenRef = useRef(menuOpen);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
@@ -2770,8 +2771,13 @@ export function App() {
   const updateScrollToBottomVisibility = useCallback(
     (element = chatContentRef.current) => {
       const isScrollable = Boolean(element && element.scrollHeight > element.clientHeight + 24);
-      const shouldShow = Boolean(selectedChatIdRef.current) && isScrollable && !chatIsNearBottom(element);
-      setShowScrollToBottom(shouldShow);
+      const shouldShow = Boolean(selectedChatIdRef.current) && !menuOpenRef.current && isScrollable && !chatIsNearBottom(element);
+      const button = scrollToBottomButtonRef.current;
+
+      if (button) {
+        button.hidden = !shouldShow;
+        button.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+      }
 
       return shouldShow;
     },
@@ -2793,7 +2799,10 @@ export function App() {
     }
 
     chatShouldAutoScrollRef.current = true;
-    setShowScrollToBottom(false);
+    if (scrollToBottomButtonRef.current) {
+      scrollToBottomButtonRef.current.hidden = true;
+      scrollToBottomButtonRef.current.setAttribute("aria-hidden", "true");
+    }
   }, []);
 
   const requestChatScroll = useCallback((force = true) => {
@@ -3918,7 +3927,10 @@ export function App() {
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
-      setShowScrollToBottom(false);
+      if (scrollToBottomButtonRef.current) {
+        scrollToBottomButtonRef.current.hidden = true;
+        scrollToBottomButtonRef.current.setAttribute("aria-hidden", "true");
+      }
       return;
     }
 
@@ -3945,19 +3957,26 @@ export function App() {
     };
 
     scroller.addEventListener("scroll", refreshVisibility, { passive: true });
+    scroller.addEventListener("touchend", refreshVisibility, { passive: true });
     window.addEventListener("resize", refreshVisibility);
-    const interval = window.setInterval(refreshVisibility, 500);
+    window.visualViewport?.addEventListener("resize", refreshVisibility);
     const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(refreshVisibility) : null;
     resizeObserver?.observe(scroller);
     refreshVisibility();
 
     return () => {
       scroller.removeEventListener("scroll", refreshVisibility);
+      scroller.removeEventListener("touchend", refreshVisibility);
       window.removeEventListener("resize", refreshVisibility);
-      window.clearInterval(interval);
+      window.visualViewport?.removeEventListener("resize", refreshVisibility);
       resizeObserver?.disconnect();
     };
   }, [chatShellIsLoading, lastVisibleMessageId, selectedChatId, updateScrollToBottomVisibility]);
+
+  useEffect(() => {
+    menuOpenRef.current = menuOpen;
+    updateScrollToBottomVisibility();
+  }, [menuOpen, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5610,13 +5629,16 @@ export function App() {
           )}
         </div>
 
-        {selectedChat && showScrollToBottom && !menuOpen ? (
+        {selectedChat ? (
           <button
+            ref={scrollToBottomButtonRef}
             className="scroll-to-bottom-button"
             type="button"
             onClick={scrollChatToBottom}
             aria-label="Scroll to latest message"
+            aria-hidden="true"
             title="Scroll to latest message"
+            hidden
           >
             <ChevronDown size={20} strokeWidth={2.2} />
           </button>
