@@ -2188,6 +2188,8 @@ export function App() {
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
   const scrollDebugToastTimerRef = useRef<number | undefined>(undefined);
+  const activeScrollElementRef = useRef<HTMLElement | null>(null);
+  const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const dictationStreamRef = useRef<MediaStream | null>(null);
   const dictationChunksRef = useRef<Blob[]>([]);
@@ -2875,7 +2877,7 @@ export function App() {
     }
   }, [apiFetch, authenticated]);
 
-  const chatIsNearBottom = useCallback((element = chatContentRef.current) => {
+  const chatIsNearBottom = useCallback((element = activeScrollElementRef.current ?? chatContentRef.current) => {
     if (!element) {
       return true;
     }
@@ -2897,6 +2899,112 @@ export function App() {
     }, 10000);
   }, []);
 
+  const isScrollableElement = useCallback((element: Element | null | undefined): element is HTMLElement => {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    return element.scrollHeight > element.clientHeight + 1;
+  }, []);
+
+  const labelScrollElement = useCallback((element: HTMLElement) => {
+    if (element === document.scrollingElement || element === document.documentElement || element === document.body) {
+      return "doc";
+    }
+
+    if (element === chatContentRef.current || element.classList.contains("chat-content")) {
+      return "chat";
+    }
+
+    if (element.classList.contains("chat-thread")) {
+      return "thread";
+    }
+
+    if (element.classList.contains("chat-workspace")) {
+      return "workspace";
+    }
+
+    if (element.classList.contains("remote-shell")) {
+      return "shell";
+    }
+
+    if (element.id) {
+      return `#${element.id}`;
+    }
+
+    const className = Array.from(element.classList).find(Boolean);
+    return className ? `.${className}` : element.tagName.toLowerCase();
+  }, []);
+
+  const findScrollableAncestor = useCallback(
+    (target: EventTarget | Element | null | undefined) => {
+      if (target === document || target === window) {
+        const scroller = document.scrollingElement;
+        return scroller instanceof HTMLElement ? scroller : null;
+      }
+
+      let current = target instanceof Element ? target : null;
+
+      while (current) {
+        if (isScrollableElement(current)) {
+          return current;
+        }
+
+        current = current.parentElement;
+      }
+
+      const scroller = document.scrollingElement;
+      return isScrollableElement(scroller) ? scroller : null;
+    },
+    [isScrollableElement]
+  );
+
+  const findScrollElementAtPoint = useCallback(() => {
+    const point = lastScrollPointRef.current ?? {
+      x: Math.round(window.innerWidth / 2),
+      y: Math.round(window.innerHeight / 2)
+    };
+    const elements = document.elementsFromPoint(point.x, point.y);
+
+    for (const element of elements) {
+      const scroller = findScrollableAncestor(element);
+
+      if (scroller) {
+        return scroller;
+      }
+    }
+
+    return null;
+  }, [findScrollableAncestor]);
+
+  const resolveScrollElement = useCallback(
+    (preferred?: HTMLElement | null) => {
+      if (isScrollableElement(preferred)) {
+        return preferred;
+      }
+
+      const active = activeScrollElementRef.current;
+
+      if (active && document.contains(active) && isScrollableElement(active)) {
+        return active;
+      }
+
+      const pointScroller = findScrollElementAtPoint();
+
+      if (pointScroller) {
+        return pointScroller;
+      }
+
+      if (isScrollableElement(chatContentRef.current)) {
+        return chatContentRef.current;
+      }
+
+      const documentScroller = document.scrollingElement;
+      return documentScroller instanceof HTMLElement ? documentScroller : null;
+    },
+    [findScrollElementAtPoint, isScrollableElement]
+  );
+
   const describeScrollElement = useCallback((label: string, element: HTMLElement) => {
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     const scrollTop = Math.round(element.scrollTop);
@@ -2910,7 +3018,7 @@ export function App() {
     const targets: Array<{ label: string; element: HTMLElement }> = [];
 
     const addTarget = (label: string, element: Element | null | undefined) => {
-      if (!(element instanceof HTMLElement) || seen.has(element)) {
+      if (!isScrollableElement(element) || seen.has(element)) {
         return;
       }
 
@@ -2918,48 +3026,45 @@ export function App() {
       targets.push({ label, element });
     };
 
+    const activeTarget = resolveScrollElement();
+    addTarget(activeTarget ? labelScrollElement(activeTarget) : "active", activeTarget);
+    addTarget("point", findScrollElementAtPoint());
     addTarget("chat", chatContentRef.current);
     addTarget("doc", document.scrollingElement);
-    addTarget("html", document.documentElement);
-    addTarget("body", document.body);
 
     document.querySelectorAll<HTMLElement>(".chat-content, .chat-thread, .chat-workspace, .remote-shell").forEach((element) => {
-      if (element.scrollHeight > element.clientHeight + 1) {
-        const label = element.classList.contains("chat-content")
-          ? "chat"
-          : element.classList.contains("chat-thread")
-            ? "thread"
-            : element.classList.contains("chat-workspace")
-              ? "workspace"
-              : "shell";
-
-        addTarget(label, element);
-      }
+      addTarget(labelScrollElement(element), element);
     });
 
     return targets;
-  }, []);
+  }, [findScrollElementAtPoint, isScrollableElement, labelScrollElement, resolveScrollElement]);
 
-  const updateScrollDebugPosition = useCallback((element = chatContentRef.current) => {
-    if (!element) {
+  const updateScrollDebugPosition = useCallback((element?: HTMLElement | null) => {
+    const target = resolveScrollElement(element);
+
+    if (!target) {
       setScrollDebugPosition("chat 0/0 d0 | win 0 | doc 0 | vv 0/0");
       return;
     }
+
+    activeScrollElementRef.current = target;
 
     const windowScrollY = Math.round(window.scrollY || 0);
     const documentScrollTop = Math.round(document.documentElement.scrollTop || document.body.scrollTop || 0);
     const viewportOffset = Math.round(window.visualViewport?.offsetTop ?? 0);
     const viewportHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
+    const label = labelScrollElement(target);
 
     setScrollDebugPosition(
-      `${describeScrollElement("chat", element)} | win ${windowScrollY} | doc ${documentScrollTop} | vv ${viewportOffset}/${viewportHeight}`
+      `${describeScrollElement(label, target)} | win ${windowScrollY} | doc ${documentScrollTop} | vv ${viewportOffset}/${viewportHeight}`
     );
-  }, [describeScrollElement]);
+  }, [describeScrollElement, labelScrollElement, resolveScrollElement]);
 
-  const updateChatAutoScrollState = useCallback(() => {
-    chatShouldAutoScrollRef.current = chatIsNearBottom();
-    updateScrollDebugPosition();
-  }, [chatIsNearBottom, updateScrollDebugPosition]);
+  const updateChatAutoScrollState = useCallback((event?: { currentTarget?: HTMLDivElement }) => {
+    const scroller = event?.currentTarget ?? resolveScrollElement();
+    chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+    updateScrollDebugPosition(scroller);
+  }, [chatIsNearBottom, resolveScrollElement, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback(() => {
     const summarizeTargets = () => collectScrollTargets().map(({ label, element }) => describeScrollElement(label, element)).join(" | ");
@@ -2979,7 +3084,7 @@ export function App() {
         chatEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
       }
 
-      updateScrollDebugPosition(chatContentRef.current);
+      updateScrollDebugPosition(resolveScrollElement());
       showScrollDebugToast(`${label}: ${summarizeTargets() || "no scroll targets"}`);
     };
 
@@ -2989,7 +3094,7 @@ export function App() {
     window.setTimeout(() => performScroll("300ms"), 300);
 
     chatShouldAutoScrollRef.current = true;
-  }, [collectScrollTargets, describeScrollElement, showScrollDebugToast, updateScrollDebugPosition]);
+  }, [collectScrollTargets, describeScrollElement, resolveScrollElement, showScrollDebugToast, updateScrollDebugPosition]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -4226,33 +4331,81 @@ export function App() {
       return;
     }
 
-    const scroller = chatContentRef.current;
+    let frame: number | undefined;
+    const scrollListenerOptions: AddEventListenerOptions = { capture: true, passive: true };
 
-    if (!scroller) {
-      return;
-    }
+    const refreshPosition = (target?: EventTarget | Element | null) => {
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame);
+      }
 
-    const refreshPosition = () => {
-      updateScrollDebugPosition(scroller);
-      chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+      frame = window.requestAnimationFrame(() => {
+        frame = undefined;
+        const scroller = findScrollableAncestor(target) ?? resolveScrollElement();
+        updateScrollDebugPosition(scroller);
+        chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+      });
     };
 
-    scroller.addEventListener("scroll", refreshPosition, { passive: true });
-    scroller.addEventListener("touchend", refreshPosition, { passive: true });
-    window.addEventListener("resize", refreshPosition);
-    window.visualViewport?.addEventListener("resize", refreshPosition);
-    const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(refreshPosition) : null;
-    resizeObserver?.observe(scroller);
+    const trackScrollPoint = (point: { clientX: number; clientY: number }) => {
+      lastScrollPointRef.current = {
+        x: Math.max(0, Math.min(window.innerWidth - 1, Math.round(point.clientX))),
+        y: Math.max(0, Math.min(window.innerHeight - 1, Math.round(point.clientY)))
+      };
+    };
+
+    const handleCapturedScroll = (event: Event) => refreshPosition(event.target);
+    const handleWheel = (event: WheelEvent) => {
+      trackScrollPoint(event);
+      refreshPosition(event.target);
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const touch = event.touches[0] ?? event.changedTouches[0];
+
+      if (touch) {
+        trackScrollPoint(touch);
+      }
+
+      refreshPosition(event.target);
+    };
+
+    // Keep this capture-phase listener. Mobile Safari can scroll an ancestor that is
+    // not chatContentRef, and binding only the guessed node makes diagnostics stale.
+    window.addEventListener("scroll", handleCapturedScroll, scrollListenerOptions);
+    window.addEventListener("wheel", handleWheel, scrollListenerOptions);
+    window.addEventListener("touchmove", handleTouchMove, scrollListenerOptions);
+    window.addEventListener("touchend", handleCapturedScroll, scrollListenerOptions);
+    window.addEventListener("resize", handleCapturedScroll);
+    window.visualViewport?.addEventListener("resize", handleCapturedScroll);
+    const resizeObserver = "ResizeObserver" in window ? new ResizeObserver(() => refreshPosition()) : null;
+    const initialScroller = resolveScrollElement();
+    if (initialScroller) {
+      resizeObserver?.observe(initialScroller);
+    }
     refreshPosition();
 
     return () => {
-      scroller.removeEventListener("scroll", refreshPosition);
-      scroller.removeEventListener("touchend", refreshPosition);
-      window.removeEventListener("resize", refreshPosition);
-      window.visualViewport?.removeEventListener("resize", refreshPosition);
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame);
+      }
+
+      window.removeEventListener("scroll", handleCapturedScroll, scrollListenerOptions);
+      window.removeEventListener("wheel", handleWheel, scrollListenerOptions);
+      window.removeEventListener("touchmove", handleTouchMove, scrollListenerOptions);
+      window.removeEventListener("touchend", handleCapturedScroll, scrollListenerOptions);
+      window.removeEventListener("resize", handleCapturedScroll);
+      window.visualViewport?.removeEventListener("resize", handleCapturedScroll);
       resizeObserver?.disconnect();
     };
-  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollDebugPosition]);
+  }, [
+    chatIsNearBottom,
+    chatShellIsLoading,
+    findScrollableAncestor,
+    lastVisibleMessageKey,
+    resolveScrollElement,
+    selectedChatId,
+    updateScrollDebugPosition
+  ]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
