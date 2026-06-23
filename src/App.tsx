@@ -380,10 +380,13 @@ const maxAttachmentBytes = 512 * 1024 * 1024;
 const maxAttachmentTotalBytes = 1024 * 1024 * 1024;
 const attachmentChunkBytes = 8 * 1024 * 1024;
 const debugSyncIntervalMs = 60 * 1000;
-const socketReconnectMs = debugSyncIntervalMs;
-const socketWatchdogMs = debugSyncIntervalMs;
+const shortcutInstructionSyncIntervalMs = 3000;
+const backgroundSyncIntervalMs = 5000;
+const activeJobSyncIntervalMs = 4000;
+const socketReconnectMs = 1500;
+const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
-const socketStaleMs = debugSyncIntervalMs;
+const socketStaleMs = 45000;
 const queuedCommandSteerGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
@@ -3837,7 +3840,7 @@ export function App() {
 
     const interval = window.setInterval(() => {
       void loadShortcutInstructions();
-    }, debugSyncIntervalMs);
+    }, shortcutInstructionSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, instructionsOpen, loadShortcutInstructions]);
@@ -4042,7 +4045,7 @@ export function App() {
 
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
         setSocketLive(false);
-        scheduleReconnect(debugSyncIntervalMs);
+        scheduleReconnect(0);
         return;
       }
 
@@ -4052,7 +4055,7 @@ export function App() {
       if (staleFor > staleLimit) {
         setSocketLive(false);
         socket.close();
-        scheduleReconnect(debugSyncIntervalMs);
+        scheduleReconnect(250);
       }
     };
 
@@ -4195,7 +4198,7 @@ export function App() {
           void loadChatJobs(queuedChatId);
         }
       }
-    }, debugSyncIntervalMs);
+    }, backgroundSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
@@ -4387,7 +4390,7 @@ export function App() {
       void loadChats();
       void loadChatJobs(selectedChatId);
       void loadChatDetail(selectedChatId, true);
-    }, debugSyncIntervalMs);
+    }, activeJobSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, selectedChatId, selectedJob]);
