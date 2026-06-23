@@ -380,13 +380,13 @@ const maxAttachmentBytes = 512 * 1024 * 1024;
 const maxAttachmentTotalBytes = 1024 * 1024 * 1024;
 const attachmentChunkBytes = 8 * 1024 * 1024;
 const debugSyncIntervalMs = 60 * 1000;
-const shortcutInstructionSyncIntervalMs = 3000;
+const shortcutInstructionSyncIntervalMs = debugSyncIntervalMs;
 const backgroundSyncIntervalMs = 5000;
-const activeJobSyncIntervalMs = 4000;
-const socketReconnectMs = 1500;
-const socketWatchdogMs = 5000;
+const activeJobSyncIntervalMs = debugSyncIntervalMs;
+const socketReconnectMs = debugSyncIntervalMs;
+const socketWatchdogMs = debugSyncIntervalMs;
 const socketConnectTimeoutMs = 12000;
-const socketStaleMs = 45000;
+const socketStaleMs = debugSyncIntervalMs;
 const queuedCommandSteerGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
@@ -4045,7 +4045,7 @@ export function App() {
 
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
         setSocketLive(false);
-        scheduleReconnect(0);
+        scheduleReconnect(debugSyncIntervalMs);
         return;
       }
 
@@ -4055,7 +4055,7 @@ export function App() {
       if (staleFor > staleLimit) {
         setSocketLive(false);
         socket.close();
-        scheduleReconnect(250);
+        scheduleReconnect(debugSyncIntervalMs);
       }
     };
 
