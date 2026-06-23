@@ -1118,9 +1118,24 @@ p {
   z-index: 1000;
   display: grid;
   justify-items: center;
-  gap: 2px;
+  gap: 4px;
   pointer-events: none;
   transform: translateX(-50%);
+}
+
+.scroll-debug-toast {
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 5px 7px;
+  border: 1px solid rgba(180, 35, 24, 0.26);
+  border-radius: 7px;
+  color: #7f1d1d;
+  background: rgba(255, 240, 237, 0.96);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .scroll-to-bottom-button {
@@ -1157,8 +1172,8 @@ p {
 }
 
 .scroll-position-pill {
-  max-width: min(340px, calc(100vw - 24px));
-  overflow: hidden;
+  max-width: min(360px, calc(100vw - 16px));
+  overflow: visible;
   padding: 2px 4px;
   border-radius: 999px;
   color: rgba(17, 24, 39, 0.68);
@@ -1167,6 +1182,7 @@ p {
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
+  text-align: center;
   text-overflow: clip;
   white-space: nowrap;
 }
