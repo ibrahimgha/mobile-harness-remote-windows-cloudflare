@@ -2875,26 +2875,42 @@ export function App() {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
   }, []);
 
+  const setScrollToBottomButtonVisible = useCallback((visible: boolean) => {
+    const button = scrollToBottomButtonRef.current;
+
+    if (!button) {
+      return;
+    }
+
+    button.classList.toggle("is-visible", visible);
+    button.setAttribute("aria-hidden", visible ? "false" : "true");
+    button.tabIndex = visible ? 0 : -1;
+  }, []);
+
   const updateScrollToBottomVisibility = useCallback(
     (element = chatContentRef.current) => {
       const isScrollable = Boolean(element && element.scrollHeight > element.clientHeight + 24);
-      const shouldShow = Boolean(selectedChatIdRef.current) && !menuOpenRef.current && isScrollable && !chatIsNearBottom(element);
-      const button = scrollToBottomButtonRef.current;
+      const distanceFromBottom = element ? element.scrollHeight - element.scrollTop - element.clientHeight : 0;
+      const currentlyVisible = Boolean(scrollToBottomButtonRef.current?.classList.contains("is-visible"));
+      const pastShowThreshold = distanceFromBottom > 160;
+      const aboveHideThreshold = distanceFromBottom > 80;
+      const shouldShow =
+        Boolean(selectedChatIdRef.current) &&
+        !menuOpenRef.current &&
+        isScrollable &&
+        (currentlyVisible ? aboveHideThreshold : pastShowThreshold);
 
-      if (button) {
-        button.hidden = !shouldShow;
-        button.setAttribute("aria-hidden", shouldShow ? "false" : "true");
-      }
+      setScrollToBottomButtonVisible(shouldShow);
 
       return shouldShow;
     },
-    [chatIsNearBottom]
+    [setScrollToBottomButtonVisible]
   );
 
   const updateChatAutoScrollState = useCallback(() => {
-    const isNearBottom = !updateScrollToBottomVisibility();
-    chatShouldAutoScrollRef.current = isNearBottom;
-  }, [updateScrollToBottomVisibility]);
+    updateScrollToBottomVisibility();
+    chatShouldAutoScrollRef.current = chatIsNearBottom();
+  }, [chatIsNearBottom, updateScrollToBottomVisibility]);
 
   const scrollChatToBottom = useCallback(() => {
     const scroller = chatContentRef.current;
@@ -2906,11 +2922,8 @@ export function App() {
     }
 
     chatShouldAutoScrollRef.current = true;
-    if (scrollToBottomButtonRef.current) {
-      scrollToBottomButtonRef.current.hidden = true;
-      scrollToBottomButtonRef.current.setAttribute("aria-hidden", "true");
-    }
-  }, []);
+    setScrollToBottomButtonVisible(false);
+  }, [setScrollToBottomButtonVisible]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -4009,8 +4022,8 @@ export function App() {
         }
 
         nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
-        const isNearBottom = !updateScrollToBottomVisibility(nextScroller);
-        chatShouldAutoScrollRef.current = isNearBottom;
+        updateScrollToBottomVisibility(nextScroller);
+        chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
       };
 
       const firstFrame = window.requestAnimationFrame(() => {
@@ -4054,20 +4067,17 @@ export function App() {
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
-      if (scrollToBottomButtonRef.current) {
-        scrollToBottomButtonRef.current.hidden = true;
-        scrollToBottomButtonRef.current.setAttribute("aria-hidden", "true");
-      }
+      setScrollToBottomButtonVisible(false);
       return;
     }
 
     const frame = window.requestAnimationFrame(() => {
-      const shouldShowScrollButton = updateScrollToBottomVisibility();
-      chatShouldAutoScrollRef.current = !shouldShowScrollButton;
+      updateScrollToBottomVisibility();
+      chatShouldAutoScrollRef.current = chatIsNearBottom();
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, setScrollToBottomButtonVisible, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -4081,8 +4091,8 @@ export function App() {
     }
 
     const refreshVisibility = () => {
-      const shouldShowScrollButton = updateScrollToBottomVisibility(scroller);
-      chatShouldAutoScrollRef.current = !shouldShowScrollButton;
+      updateScrollToBottomVisibility(scroller);
+      chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
     };
 
     scroller.addEventListener("scroll", refreshVisibility, { passive: true });
@@ -4100,13 +4110,13 @@ export function App() {
       window.visualViewport?.removeEventListener("resize", refreshVisibility);
       resizeObserver?.disconnect();
     };
-  }, [chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
-    const shouldShowScrollButton = updateScrollToBottomVisibility();
-    chatShouldAutoScrollRef.current = !shouldShowScrollButton;
-  }, [menuOpen, updateScrollToBottomVisibility]);
+    updateScrollToBottomVisibility();
+    chatShouldAutoScrollRef.current = chatIsNearBottom();
+  }, [chatIsNearBottom, menuOpen, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5768,7 +5778,7 @@ export function App() {
             aria-label="Scroll to latest message"
             aria-hidden="true"
             title="Scroll to latest message"
-            hidden
+            tabIndex={-1}
           >
             <ChevronDown size={20} strokeWidth={2.2} />
           </button>

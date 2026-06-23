@@ -1092,24 +1092,36 @@ p {
 .scroll-to-bottom-button {
   position: absolute;
   left: 50%;
-  bottom: calc(94px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(92px + env(safe-area-inset-bottom, 0px));
   z-index: 20;
   display: inline-flex;
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
-  min-height: 38px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 999px;
-  color: #202123;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.14);
-  transform: translateX(-50%);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  color: #111827;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.1);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transform: translate(-50%, 8px);
+  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  touch-action: manipulation;
+}
+
+.scroll-to-bottom-button.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transform: translate(-50%, 0);
 }
 
 .scroll-to-bottom-button:hover {
@@ -2540,14 +2552,12 @@ p {
 
   .scroll-to-bottom-button {
     position: fixed;
-    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
     z-index: 90;
-    width: 40px;
-    min-width: 40px;
-    height: 40px;
-    min-height: 40px;
-    border-color: rgba(0, 0, 0, 0.18);
-    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.18);
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
   }
 
   .chat-bubble {
