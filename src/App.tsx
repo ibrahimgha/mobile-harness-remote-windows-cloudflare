@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   ArrowRight,
   Bell,
   BellOff,
@@ -2177,8 +2178,6 @@ export function App() {
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
-  const [scrollDebugPosition, setScrollDebugPosition] = useState("chat 0/0 d0 | win 0 | doc 0 | vv 0/0");
-  const [scrollDebugToast, setScrollDebugToast] = useState("");
   const [scrollDistanceFromBottom, setScrollDistanceFromBottom] = useState(0);
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -2188,7 +2187,6 @@ export function App() {
   const localQueueSendingRef = useRef(false);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
-  const scrollDebugToastTimerRef = useRef<number | undefined>(undefined);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -2887,55 +2885,12 @@ export function App() {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
   }, []);
 
-  const showScrollDebugToast = useCallback((message: string) => {
-    console.info(`[scroll-debug] ${message}`);
-    setScrollDebugToast(message);
-
-    if (scrollDebugToastTimerRef.current !== undefined) {
-      window.clearTimeout(scrollDebugToastTimerRef.current);
-    }
-
-    scrollDebugToastTimerRef.current = window.setTimeout(() => {
-      setScrollDebugToast("");
-      scrollDebugToastTimerRef.current = undefined;
-    }, 10000);
-  }, []);
-
   const isScrollableElement = useCallback((element: Element | null | undefined): element is HTMLElement => {
     if (!(element instanceof HTMLElement)) {
       return false;
     }
 
     return element.scrollHeight > element.clientHeight + 1;
-  }, []);
-
-  const labelScrollElement = useCallback((element: HTMLElement) => {
-    if (element === document.scrollingElement || element === document.documentElement || element === document.body) {
-      return "doc";
-    }
-
-    if (element === chatContentRef.current || element.classList.contains("chat-content")) {
-      return "chat";
-    }
-
-    if (element.classList.contains("chat-thread")) {
-      return "thread";
-    }
-
-    if (element.classList.contains("chat-workspace")) {
-      return "workspace";
-    }
-
-    if (element.classList.contains("remote-shell")) {
-      return "shell";
-    }
-
-    if (element.id) {
-      return `#${element.id}`;
-    }
-
-    const className = Array.from(element.classList).find(Boolean);
-    return className ? `.${className}` : element.tagName.toLowerCase();
   }, []);
 
   const isChatScrollElement = useCallback((element: HTMLElement) => {
@@ -3005,64 +2960,45 @@ export function App() {
     [findScrollElementAtPoint, isScrollableElement]
   );
 
-  const describeScrollElement = useCallback((label: string, element: HTMLElement) => {
-    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    const scrollTop = Math.round(element.scrollTop);
-    const distanceFromBottom = Math.round(maxScrollTop - element.scrollTop);
-
-    return `${label} ${scrollTop}/${Math.round(maxScrollTop)} d${distanceFromBottom}`;
-  }, []);
-
   const collectScrollTargets = useCallback(() => {
     const seen = new Set<HTMLElement>();
-    const targets: Array<{ label: string; element: HTMLElement }> = [];
+    const targets: HTMLElement[] = [];
 
-    const addTarget = (label: string, element: Element | null | undefined) => {
+    const addTarget = (element: Element | null | undefined) => {
       if (!isScrollableElement(element) || seen.has(element)) {
         return;
       }
 
       seen.add(element);
-      targets.push({ label, element });
+      targets.push(element);
     };
 
-    const activeTarget = resolveScrollElement();
-    addTarget(activeTarget ? labelScrollElement(activeTarget) : "active", activeTarget);
-    addTarget("point", findScrollElementAtPoint());
-    addTarget("chat", chatContentRef.current);
-    addTarget("doc", document.scrollingElement);
+    addTarget(resolveScrollElement());
+    addTarget(findScrollElementAtPoint());
+    addTarget(chatContentRef.current);
 
     document.querySelectorAll<HTMLElement>(".chat-content, .chat-thread, .chat-workspace, .remote-shell").forEach((element) => {
-      addTarget(labelScrollElement(element), element);
+      addTarget(element);
     });
 
     return targets;
-  }, [findScrollElementAtPoint, isScrollableElement, labelScrollElement, resolveScrollElement]);
+  }, [findScrollElementAtPoint, isScrollableElement, resolveScrollElement]);
 
   const updateScrollDebugPosition = useCallback((element?: HTMLElement | null) => {
     const target = resolveScrollElement(element);
 
     if (!target) {
-      setScrollDebugPosition("chat 0/0 d0 | win 0 | doc 0 | vv 0/0");
+      setScrollDistanceFromBottom(0);
       return;
     }
 
     activeScrollElementRef.current = target;
 
-    const windowScrollY = Math.round(window.scrollY || 0);
-    const documentScrollTop = Math.round(document.documentElement.scrollTop || document.body.scrollTop || 0);
-    const viewportOffset = Math.round(window.visualViewport?.offsetTop ?? 0);
-    const viewportHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
-    const label = labelScrollElement(target);
     const maxScrollTop = Math.max(0, target.scrollHeight - target.clientHeight);
     const distanceFromBottom = Math.max(0, Math.round(maxScrollTop - target.scrollTop));
 
     setScrollDistanceFromBottom(distanceFromBottom);
-
-    setScrollDebugPosition(
-      `${describeScrollElement(label, target)} | win ${windowScrollY} | doc ${documentScrollTop} | vv ${viewportOffset}/${viewportHeight}`
-    );
-  }, [describeScrollElement, labelScrollElement, resolveScrollElement]);
+  }, [resolveScrollElement]);
 
   const updateChatAutoScrollState = useCallback((event?: { currentTarget?: HTMLDivElement }) => {
     const scroller = event?.currentTarget ?? resolveScrollElement();
@@ -3071,19 +3007,14 @@ export function App() {
   }, [chatIsNearBottom, resolveScrollElement, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const summarizeTargets = () => collectScrollTargets().map(({ label, element }) => describeScrollElement(label, element)).join(" | ");
-
-    showScrollDebugToast(`press before: ${summarizeTargets() || "no scroll targets"}`);
-
-    const refreshScrollDebug = (label: string) => {
+    const refreshScrollPosition = () => {
       updateScrollDebugPosition(resolveScrollElement());
-      showScrollDebugToast(`${label}: ${summarizeTargets() || "no scroll targets"}`);
     };
 
-    const performScroll = (label: string, nextBehavior: ScrollBehavior) => {
+    const performScroll = (nextBehavior: ScrollBehavior) => {
       const targets = collectScrollTargets();
 
-      for (const { element } of targets) {
+      for (const element of targets) {
         const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
         if (nextBehavior === "smooth") {
           element.scrollTo({ top: maxScrollTop, left: 0, behavior: "smooth" });
@@ -3097,23 +3028,23 @@ export function App() {
         chatEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
       }
 
-      refreshScrollDebug(label);
+      refreshScrollPosition();
     };
 
-    performScroll("press after", behavior);
+    performScroll(behavior);
 
     if (behavior === "smooth") {
-      window.requestAnimationFrame(() => refreshScrollDebug("raf"));
-      window.setTimeout(() => refreshScrollDebug("300ms"), 300);
-      window.setTimeout(() => performScroll("900ms", "auto"), 900);
+      window.requestAnimationFrame(refreshScrollPosition);
+      window.setTimeout(refreshScrollPosition, 300);
+      window.setTimeout(() => performScroll("auto"), 900);
     } else {
-      window.requestAnimationFrame(() => performScroll("raf", "auto"));
-      window.setTimeout(() => performScroll("80ms", "auto"), 80);
-      window.setTimeout(() => performScroll("300ms", "auto"), 300);
+      window.requestAnimationFrame(() => performScroll("auto"));
+      window.setTimeout(() => performScroll("auto"), 80);
+      window.setTimeout(() => performScroll("auto"), 300);
     }
 
     chatShouldAutoScrollRef.current = true;
-  }, [collectScrollTargets, describeScrollElement, resolveScrollElement, showScrollDebugToast, updateScrollDebugPosition]);
+  }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -4160,10 +4091,6 @@ export function App() {
     () => () => {
       if (promptReceiptClearTimerRef.current !== undefined) {
         window.clearTimeout(promptReceiptClearTimerRef.current);
-      }
-
-      if (scrollDebugToastTimerRef.current !== undefined) {
-        window.clearTimeout(scrollDebugToastTimerRef.current);
       }
 
       dictationRecognitionRef.current?.abort();
@@ -6321,7 +6248,6 @@ export function App() {
       </section>
       {selectedChat ? (
         <div className={`scroll-bottom-control ${scrollDistanceFromBottom < 100 ? "is-near-bottom" : ""}`} aria-live="off">
-          {scrollDebugToast ? <div className="scroll-debug-toast">{scrollDebugToast}</div> : null}
           <button
             className="scroll-to-bottom-button"
             type="button"
@@ -6332,9 +6258,8 @@ export function App() {
             aria-label="Scroll to latest message"
             title="Scroll to latest message"
           >
-            <ChevronDown size={22} strokeWidth={2.6} />
+            <ArrowDown size={21} strokeWidth={2.7} />
           </button>
-          <span className="scroll-position-pill">{scrollDebugPosition}</span>
         </div>
       ) : null}
       <RunBoard open={runBoardOpen} jobs={activeRunJobs} chatById={chatSummaryById} nowMs={durationNow} onClose={closeRunBoard} />
