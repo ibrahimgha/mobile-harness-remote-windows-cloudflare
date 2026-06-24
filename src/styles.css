@@ -2685,13 +2685,16 @@ p {
   .composer::before {
     content: "";
     position: absolute;
-    inset: 0;
+    top: 0;
+    right: calc((100vw - 100%) / -2);
+    bottom: 0;
+    left: calc((100vw - 100%) / -2);
     z-index: 0;
     pointer-events: none;
     background: linear-gradient(
       180deg,
       rgba(245, 246, 241, 0) 0%,
-      rgba(245, 246, 241, 0.4) 100%
+      rgba(245, 246, 241, 0.9) 100%
     );
   }
 
