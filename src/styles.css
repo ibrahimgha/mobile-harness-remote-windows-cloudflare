@@ -2382,6 +2382,7 @@ p {
     border-right: 0;
     border-bottom: 0;
     box-shadow: none;
+    background: #f5f6f1;
     pointer-events: none;
     /* Keep the drawer visible but offscreen. iOS PWA/WebKit can fail to paint
        text when a large transformed drawer switches from visibility:hidden. */
@@ -2413,7 +2414,7 @@ p {
     display: block;
     padding: 8px 12px 10px;
     border-bottom: 1px solid var(--line);
-    background: var(--surface);
+    background: #f5f6f1;
   }
 
   .mobile-menu-controls .status-row {
@@ -2454,6 +2455,7 @@ p {
     grid-row: 3;
     gap: 7px;
     padding: 9px 12px;
+    background: #f5f6f1;
   }
 
   .run-settings-grid {
@@ -2476,11 +2478,13 @@ p {
   .sidebar-search {
     grid-row: 4;
     padding: 8px 12px;
+    background: #f5f6f1;
   }
 
   .project-list,
   .instructions-panel {
     grid-row: 6;
+    background: #f5f6f1;
   }
 
   .new-project-panel {
@@ -2555,6 +2559,7 @@ p {
     gap: 10px;
     min-height: calc(60px + env(safe-area-inset-top));
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+    background: #f5f6f1;
   }
 
   .sidebar-actions {
