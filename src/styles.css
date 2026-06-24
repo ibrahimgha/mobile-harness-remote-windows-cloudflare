@@ -1472,9 +1472,26 @@ p {
   font-weight: 700;
 }
 
+.markdown-file-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  color: var(--teal-strong);
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .chat-bubble.is-user .message-markdown a {
   color: #ffffff;
   text-decoration: underline;
+}
+
+.chat-bubble.is-user .markdown-file-link {
+  color: #ffffff;
 }
 
 .message-markdown code {

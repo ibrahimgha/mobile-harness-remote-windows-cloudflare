@@ -1537,6 +1537,7 @@ function deliveryLabel(state: BridgeState | null) {
 }
 
 const localImageExtensions = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+const localTextFileExtensions = /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv)(?::\d+(?::\d+)?)?$/i;
 const localImageLinePattern = /^((?:[a-zA-Z]:[\\/]|\\\\|\/).+\.(?:png|jpe?g|gif|webp|bmp))$/i;
 const windowsImageInLinePattern = /((?:[a-zA-Z]:[\\/]|\\\\)[^\n\r]*?\.(?:png|jpe?g|gif|webp|bmp))/i;
 const markdownWindowsImagePattern = /(!\[[^\]]*\]\()([a-zA-Z]:\\[^)\n]+\.(?:png|jpe?g|gif|webp|bmp))(\))/gi;
@@ -1643,6 +1644,64 @@ function localImagePathFromSrc(src: string | undefined, basePath?: string) {
   }
 
   return `${basePath.replace(/\\/g, "/").replace(/\/+$/, "")}/${value.replace(/^\.?\//, "")}`;
+}
+
+function localTextFilePathFromHref(href: string | undefined, basePath?: string) {
+  if (!href) {
+    return null;
+  }
+
+  let value = href.trim();
+
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value) && !value.startsWith("file://")) {
+    return null;
+  }
+
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    try {
+      value = decodeURI(value);
+    } catch {
+      return null;
+    }
+  }
+
+  if (value.startsWith("file://")) {
+    try {
+      const url = new URL(value);
+      value = url.pathname;
+    } catch {
+      value = value.replace(/^file:\/+/i, "");
+    }
+  }
+
+  value = value.replace(/\\/g, "/");
+
+  if (/^\/[a-zA-Z]:\//.test(value)) {
+    value = value.slice(1);
+  }
+
+  if (!localTextFileExtensions.test(value)) {
+    return null;
+  }
+
+  if (/^(?:[a-zA-Z]:\/|\/\/|\/)/.test(value)) {
+    return value;
+  }
+
+  if (!basePath?.trim()) {
+    return null;
+  }
+
+  return `${basePath.replace(/\\/g, "/").replace(/\/+$/, "")}/${value.replace(/^\.?\//, "")}`;
+}
+
+function localFileLabel(filePath: string, fallback: string) {
+  const withoutLine = filePath.replace(/:\d+(?::\d+)?$/, "");
+  const name = withoutLine.split(/[\\/]/).filter(Boolean).at(-1);
+
+  return fallback.trim() || name || filePath;
 }
 
 function AuthenticatedImage({
@@ -1763,13 +1822,15 @@ const FormattedMessage = memo(function FormattedMessage({
   emptyText,
   token,
   collapseLocalImages = false,
-  basePath
+  basePath,
+  onOpenLocalTextFile
 }: {
   text: string | undefined;
   emptyText: string;
   token: string;
   collapseLocalImages?: boolean;
   basePath?: string;
+  onOpenLocalTextFile?: (filePath: string, label: string) => void;
 }) {
   if (!text?.trim()) {
     return <div className="message-empty">{emptyText}</div>;
@@ -1780,16 +1841,29 @@ const FormattedMessage = memo(function FormattedMessage({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ children, href }) =>
-            localImagePathFromSrc(href, basePath) && collapseLocalImages ? (
+          a: ({ children, href }) => {
+            const localImagePath = localImagePathFromSrc(href, basePath);
+            const localTextFilePath = localTextFilePathFromHref(href, basePath);
+            const label = textFromReactNode(children);
+
+            return localImagePath && collapseLocalImages ? (
               <LocalImageAttachment href={href} label={children} token={token} basePath={basePath} />
-            ) : localImagePathFromSrc(href, basePath) ? (
+            ) : localImagePath ? (
               <AuthenticatedImage src={href} alt={typeof children === "string" ? children : "Output image"} token={token} basePath={basePath} />
+            ) : localTextFilePath && onOpenLocalTextFile ? (
+              <button
+                className="markdown-file-link"
+                type="button"
+                onClick={() => onOpenLocalTextFile(localTextFilePath, localFileLabel(localTextFilePath, label))}
+              >
+                {children}
+              </button>
             ) : (
               <a href={href} target="_blank" rel="noreferrer">
                 {children}
               </a>
-            ),
+            );
+          },
           img: ({ src, alt }) =>
             localImagePathFromSrc(src, basePath) && collapseLocalImages ? (
               <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} basePath={basePath} />
@@ -3179,6 +3253,24 @@ export function App() {
   const openInstructionFile = useCallback((file: ShortcutInstructionFile) => {
     setSelectedInstructionFile(file);
     setSelectedInstructionContent(file.content ?? "");
+    setSelectedInstructionError("");
+    setSelectedInstructionLoading(true);
+  }, []);
+
+  const openLocalTextFile = useCallback((filePath: string, label: string) => {
+    const params = new URLSearchParams({ path: filePath });
+    const name = localFileLabel(filePath, label);
+
+    setSelectedInstructionFile({
+      name,
+      path: filePath,
+      relativePath: name,
+      mediaUrl: `/api/local-file?${params.toString()}`,
+      size: 0,
+      updatedAt: new Date().toISOString(),
+      content: ""
+    });
+    setSelectedInstructionContent("");
     setSelectedInstructionError("");
     setSelectedInstructionLoading(true);
   }, []);
@@ -6006,6 +6098,7 @@ export function App() {
                             token={token}
                             collapseLocalImages={message.role === "user"}
                             basePath={selectedChat.projectPath}
+                            onOpenLocalTextFile={openLocalTextFile}
                           />
                         )}
                       </article>

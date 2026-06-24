@@ -50,6 +50,7 @@ const shortcutInstructionsRoot = path.resolve(
 );
 const maxShortcutInstructionBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_BYTES ?? 128 * 1024);
 const maxShortcutInstructionTotalBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_TOTAL_BYTES ?? 768 * 1024);
+const maxLocalTextFileBytes = Number(process.env.LOCAL_TEXT_FILE_MAX_BYTES ?? 2 * 1024 * 1024);
 
 const app = express();
 const server = createServer(app);
@@ -95,6 +96,20 @@ const imageContentTypes = new Map([
   [".gif", "image/gif"],
   [".webp", "image/webp"],
   [".bmp", "image/bmp"]
+]);
+const localTextContentTypes = new Map([
+  [".md", "text/markdown; charset=utf-8"],
+  [".markdown", "text/markdown; charset=utf-8"],
+  [".txt", "text/plain; charset=utf-8"],
+  [".log", "text/plain; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".jsonl", "application/x-ndjson; charset=utf-8"],
+  [".yaml", "text/yaml; charset=utf-8"],
+  [".yml", "text/yaml; charset=utf-8"],
+  [".toml", "text/plain; charset=utf-8"],
+  [".ini", "text/plain; charset=utf-8"],
+  [".csv", "text/csv; charset=utf-8"],
+  [".tsv", "text/tab-separated-values; charset=utf-8"]
 ]);
 type LiveWebSocket = WebSocket & { isAlive?: boolean };
 type ChatStartMode = "project" | "chat";
@@ -352,6 +367,64 @@ function resolveLocalImagePath(rawPath: unknown): { ok: true; path: string; cont
   }
 
   return { ok: true, path: resolved, contentType };
+}
+
+function normalizeLocalFilePath(rawPath: unknown): string | null {
+  if (typeof rawPath !== "string" || !rawPath.trim()) {
+    return null;
+  }
+
+  let decoded = rawPath.trim();
+
+  if (decoded.startsWith("file://")) {
+    try {
+      decoded = fileURLToPath(decoded);
+    } catch {
+      decoded = decoded.replace(/^file:\/+/i, "");
+    }
+  }
+
+  if (/^\/[a-zA-Z]:\//.test(decoded)) {
+    decoded = decoded.slice(1);
+  }
+
+  return decoded;
+}
+
+function stripEditorLineSuffix(filePath: string): string {
+  const match = filePath.match(/^(.*):\d+(?::\d+)?$/);
+
+  if (!match) {
+    return filePath;
+  }
+
+  return match[1];
+}
+
+function resolveLocalTextFilePath(rawPath: unknown): { ok: true; path: string; contentType: string } | { ok: false; message: string } {
+  const normalized = normalizeLocalFilePath(rawPath);
+
+  if (!normalized) {
+    return { ok: false, message: "File path is required" };
+  }
+
+  if (normalized.includes("\0")) {
+    return { ok: false, message: "File path is invalid" };
+  }
+
+  const candidates = [...new Set([normalized, stripEditorLineSuffix(normalized)])];
+
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    const extension = path.extname(resolved).toLowerCase();
+    const contentType = localTextContentTypes.get(extension);
+
+    if (contentType) {
+      return { ok: true, path: resolved, contentType };
+    }
+  }
+
+  return { ok: false, message: "Only local markdown and text files can be displayed" };
 }
 
 function uploadRootForProject(projectPath: string, chatId: string, createdAt: Date): string {
@@ -893,6 +966,47 @@ app.get("/api/local-image", requireControlAuth, async (req, res) => {
 
     pushEvent("error", "Local screenshot could not be served", {
       action: "local-image",
+      request: requestContext(req),
+      path: resolved.path,
+      error: describeError(error)
+    });
+    res.status(404).json({ ok: false, message });
+  }
+});
+
+app.get("/api/local-file", requireControlAuth, async (req, res) => {
+  const resolved = resolveLocalTextFilePath(req.query.path);
+
+  if (!resolved.ok) {
+    res.status(400).json({ ok: false, message: resolved.message });
+    return;
+  }
+
+  try {
+    const stat = await fsp.stat(resolved.path);
+
+    if (!stat.isFile()) {
+      res.status(404).json({ ok: false, message: "File not found" });
+      return;
+    }
+
+    if (stat.size > maxLocalTextFileBytes) {
+      res.status(413).json({
+        ok: false,
+        message: `File is larger than ${Math.round(maxLocalTextFileBytes / 1024 / 1024)} MB`
+      });
+      return;
+    }
+
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Type", resolved.contentType);
+    res.send(await fsp.readFile(resolved.path, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not read file";
+
+    pushEvent("error", "Local text file could not be served", {
+      action: "local-file",
       request: requestContext(req),
       path: resolved.path,
       error: describeError(error)
