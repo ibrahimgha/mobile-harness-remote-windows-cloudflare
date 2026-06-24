@@ -2180,6 +2180,7 @@ export function App() {
   const [durationNow, setDurationNow] = useState(Date.now());
   const [scrollDistanceFromBottom, setScrollDistanceFromBottom] = useState(0);
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
@@ -4065,6 +4066,42 @@ export function App() {
   }, [authenticated, menuOpen]);
 
   useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    const sidebar = sidebarRef.current;
+    if (!sidebar) {
+      return;
+    }
+
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let afterTransition = 0;
+
+    const forceSidebarTextPaint = () => {
+      // iOS PWA/WebKit can delay painting text inside the transformed drawer until the next tap.
+      // Retoggling this class after layout read forces the existing text layer to paint immediately.
+      sidebar.classList.remove("is-webkit-repainting");
+      void sidebar.offsetHeight;
+      sidebar.classList.add("is-webkit-repainting");
+    };
+
+    firstFrame = window.requestAnimationFrame(() => {
+      forceSidebarTextPaint();
+      secondFrame = window.requestAnimationFrame(forceSidebarTextPaint);
+    });
+    afterTransition = window.setTimeout(forceSidebarTextPaint, 260);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(afterTransition);
+      sidebar.classList.remove("is-webkit-repainting");
+    };
+  }, [filteredProjectGroups.length, instructionsOpen, menuOpen, normalizedSidebarSearch]);
+
+  useEffect(() => {
     localStorage.setItem(collapsedProjectsKey, JSON.stringify([...collapsedProjects]));
   }, [collapsedProjects]);
 
@@ -5521,7 +5558,7 @@ export function App() {
 
   return (
     <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
-      <aside className="chat-sidebar" aria-label="Project chats">
+      <aside className="chat-sidebar" ref={sidebarRef} aria-label="Project chats">
         <div className="sidebar-header">
           <div>
             <h1>Codex Remote</h1>
