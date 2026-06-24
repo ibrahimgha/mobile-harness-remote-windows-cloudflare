@@ -2496,6 +2496,10 @@ p {
     height: var(--app-height, 100dvh);
   }
 
+  .chat-workspace > * {
+    grid-column: 1;
+  }
+
   .chat-topbar {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
