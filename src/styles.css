@@ -1175,6 +1175,14 @@ p {
   overflow-x: hidden;
 }
 
+.chat-thread::after {
+  content: "";
+  display: block;
+  flex: 0 0 15dvh;
+  block-size: 15dvh;
+  pointer-events: none;
+}
+
 .chat-message-group {
   display: contents;
 }
