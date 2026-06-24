@@ -1178,8 +1178,8 @@ p {
 .chat-thread::after {
   content: "";
   display: block;
-  flex: 0 0 15dvh;
-  block-size: 15dvh;
+  flex: 0 0 8dvh;
+  block-size: 8dvh;
   pointer-events: none;
 }
 
@@ -2662,10 +2662,13 @@ p {
   }
 
   .composer {
+    width: 70%;
+    justify-self: center;
     margin-top: -16px;
-    padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 15px)
+    padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 45px)
       max(12px, env(safe-area-inset-right));
     background: transparent;
+    transition: width 220ms ease, padding-bottom 220ms ease;
   }
 
   .composer::before {
@@ -2686,8 +2689,10 @@ p {
     z-index: 1;
   }
 
-  .composer:focus-within {
-    padding-bottom: 17px;
+  .composer:focus-within,
+  .composer.is-expanded {
+    width: 100%;
+    padding-bottom: 0;
   }
 
   .command-queue {
