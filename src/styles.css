@@ -2521,11 +2521,22 @@ p {
   }
 
   .chat-content {
+    grid-row: 3 / -1;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    position: relative;
+    z-index: 0;
     overflow: auto;
-    padding: 12px;
+    padding: 0 12px calc(112px + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .command-queue,
+  .job-strip,
+  .composer {
+    position: relative;
+    z-index: 2;
   }
 
   .chat-action-panel {
@@ -2609,7 +2620,8 @@ p {
 
   .chat-content {
     gap: 10px;
-    padding: 10px;
+    padding: 0 10px calc(118px + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(118px + env(safe-area-inset-bottom, 0px));
   }
 
   .scroll-bottom-control {
