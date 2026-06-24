@@ -2665,7 +2665,7 @@ p {
     width: 70%;
     justify-self: center;
     margin-top: -16px;
-    padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 45px)
+    padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 34px)
       max(12px, env(safe-area-inset-right));
     background: transparent;
     transition: width 220ms ease, padding-bottom 220ms ease;
