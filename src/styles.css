@@ -1114,7 +1114,7 @@ p {
 .scroll-bottom-control {
   position: absolute;
   left: 50%;
-  bottom: calc(81px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(61px + env(safe-area-inset-bottom, 0px));
   z-index: 1000;
   display: grid;
   justify-items: center;
@@ -1601,6 +1601,7 @@ p {
 .composer {
   grid-row: 6;
   display: block;
+  position: relative;
   padding: 10px 14px;
   border-top: 0;
   background: transparent;
@@ -2610,7 +2611,7 @@ p {
   }
 
   .scroll-bottom-control {
-    bottom: calc(81px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(61px + env(safe-area-inset-bottom, 0px));
     z-index: 1000;
   }
 
@@ -2635,12 +2636,19 @@ p {
   }
 
   .composer {
-    padding: 4px max(12px, env(safe-area-inset-left)) min(max(2px, env(safe-area-inset-bottom)), 8px)
+    margin-top: -16px;
+    padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 5px)
       max(12px, env(safe-area-inset-right));
+    background: linear-gradient(
+      180deg,
+      rgba(245, 246, 241, 0) 0%,
+      rgba(245, 246, 241, 0.78) 42%,
+      rgba(245, 246, 241, 0.96) 100%
+    );
   }
 
   .composer:focus-within {
-    padding-bottom: 2px;
+    padding-bottom: 7px;
   }
 
   .command-queue {
