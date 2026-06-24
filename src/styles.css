@@ -1160,6 +1160,12 @@ p {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   touch-action: manipulation;
+  transition: opacity 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.scroll-bottom-control.is-near-bottom .scroll-to-bottom-button,
+.scroll-bottom-control.is-near-bottom .scroll-position-pill {
+  opacity: 0.3;
 }
 
 .scroll-to-bottom-button:hover {
@@ -1184,6 +1190,7 @@ p {
   line-height: 1;
   text-align: center;
   text-overflow: clip;
+  transition: opacity 160ms ease;
   white-space: nowrap;
 }
 
