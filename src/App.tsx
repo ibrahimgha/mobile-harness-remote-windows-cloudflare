@@ -49,7 +49,7 @@ import {
   useRef,
   useState
 } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 type BridgeState = {
@@ -1704,6 +1704,14 @@ function localFileLabel(filePath: string, fallback: string) {
   return fallback.trim() || name || filePath;
 }
 
+function markdownUrlTransform(url: string) {
+  if (localImagePathFromSrc(url) || localTextFilePathFromHref(url)) {
+    return url;
+  }
+
+  return defaultUrlTransform(url);
+}
+
 function AuthenticatedImage({
   src,
   alt,
@@ -1840,6 +1848,7 @@ const FormattedMessage = memo(function FormattedMessage({
     <div className="message-markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={markdownUrlTransform}
         components={{
           a: ({ children, href }) => {
             const localImagePath = localImagePathFromSrc(href, basePath);
