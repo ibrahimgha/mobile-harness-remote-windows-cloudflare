@@ -372,6 +372,7 @@ const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
+const cliSteeringSupported = false;
 const maxCachedChatHistories = 20;
 const maxCachedChatStorageBytes = 2 * 1024 * 1024;
 const maxCachedChatBytes = 160 * 1024;
@@ -739,6 +740,10 @@ function isLocalCommandBlocking(command: LocalQueuedCommand) {
 }
 
 function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | undefined, nowMs: number) {
+  if (!cliSteeringSupported) {
+    return false;
+  }
+
   const createdMs = Date.parse(command.createdAt);
   const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedCommandSteerGuardMs : true;
 
@@ -6166,7 +6171,11 @@ export function App() {
                         }}
                         disabled={!queuedCommandCanSteer(command, selectedJob, durationNow)}
                         aria-label="Steer queued prompt into running chat"
-                        title="Steer into running chat"
+                        title={
+                          cliSteeringSupported
+                            ? "Steer into running chat"
+                            : "Steering is disabled because the current Codex CLI backend cannot attach to an in-flight run"
+                        }
                       >
                         <ArrowRight size={14} />
                       </button>
