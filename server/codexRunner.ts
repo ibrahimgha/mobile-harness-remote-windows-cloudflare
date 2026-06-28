@@ -379,6 +379,18 @@ export class CodexRunner {
     return job;
   }
 
+  steer(options: EnqueueOptions): CodexRunJob {
+    const job = this.createJob({
+      ...options,
+      kind: "steer",
+      status: "running",
+      message: "Steering Codex CLI on target laptop"
+    });
+
+    void this.runJob(job, options.text, { bypassChatGate: true });
+    return job;
+  }
+
   private argsForJob(job: CodexRunJob): string[] {
     const args = [
       "exec",
@@ -432,7 +444,7 @@ export class CodexRunner {
     }
   }
 
-  private async runJob(job: CodexRunJob, text: string): Promise<void> {
+  private async runJob(job: CodexRunJob, text: string, options: { bypassChatGate?: boolean } = {}): Promise<void> {
     await fs.mkdir(path.dirname(job.logPaths.stdout), { recursive: true });
     job.status = "running";
     job.startedAt = new Date().toISOString();
@@ -550,6 +562,9 @@ export class CodexRunner {
             this.jobTexts.delete(job.id);
           }
 
+          if (options.bypassChatGate) {
+            this.processNext();
+          }
           resolve();
         }
       };
