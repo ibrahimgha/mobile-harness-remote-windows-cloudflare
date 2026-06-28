@@ -372,7 +372,7 @@ const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
-const cliSteeringSupported = true;
+const cliSteeringSupported = false;
 const maxCachedChatHistories = 20;
 const maxCachedChatStorageBytes = 2 * 1024 * 1024;
 const maxCachedChatBytes = 160 * 1024;
@@ -740,10 +740,6 @@ function isLocalCommandBlocking(command: LocalQueuedCommand) {
 }
 
 function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | undefined, nowMs: number) {
-  if (!cliSteeringSupported) {
-    return false;
-  }
-
   const createdMs = Date.parse(command.createdAt);
   const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedCommandSteerGuardMs : true;
 
@@ -4819,46 +4815,25 @@ export function App() {
       return;
     }
 
-    setLocalCommandQueue((current) =>
-      current.map((item) =>
-        item.id === command.id ? { ...item, status: "sending", message: "Steering into running Codex chat" } : item
-      )
-    );
-    setNotice("Steering prompt into the running chat...");
+    setLocalCommandQueue((current) => {
+      const target = current.find((item) => item.id === command.id);
 
-    try {
-      const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(command.chatId)}/steer`, {
-        method: "POST",
-        body: JSON.stringify({ text: command.text })
-      });
-
-      if (result.job) {
-        rememberJob(result.job);
+      if (!target) {
+        return current;
       }
 
-      setLocalCommandQueue((current) => current.filter((item) => item.id !== command.id));
-      setNotice(result.message ?? "Steering prompt sent");
-      await Promise.all([
-        loadState(),
-        loadChatJobs(command.chatId),
-        selectedChatIdRef.current === command.chatId ? loadChatDetail(command.chatId, true) : Promise.resolve()
-      ]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not steer prompt";
-
-      setLocalCommandQueue((current) =>
-        current.map((item) =>
-          item.id === command.id
-            ? {
-                ...item,
-                status: "pending",
-                message
-              }
-            : item
-        )
-      );
-      setNotice(message);
-    }
+      return [
+        {
+          ...target,
+          status: "pending",
+          retryAfter: undefined,
+          attempts: 0,
+          message: "Moved to run next after this chat's current task finishes"
+        },
+        ...current.filter((item) => item.id !== command.id)
+      ];
+    });
+    setNotice("Moved queued prompt to run next. It will not start another Codex runner in parallel.");
   }
 
   useEffect(() => {
@@ -6170,11 +6145,11 @@ export function App() {
                           }
                         }}
                         disabled={!queuedCommandCanSteer(command, selectedJob, durationNow)}
-                        aria-label="Steer queued prompt into running chat"
+                        aria-label="Move queued prompt to run next"
                         title={
                           cliSteeringSupported
                             ? "Steer into running chat"
-                            : "Steering is disabled because the current Codex CLI backend cannot attach to an in-flight run"
+                            : "Run this queued prompt next without starting another Codex runner in parallel"
                         }
                       >
                         <ArrowRight size={14} />

@@ -1730,29 +1730,20 @@ app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
     }
 
     const promptSummary = summarizePrompt(text);
-    const job = runner.steer({
-      chatId,
-      projectPath: chat.projectPath,
-      text: text.trimEnd(),
-      promptPreview: String(promptSummary.promptPreview ?? ""),
-      promptHash: String(promptSummary.promptHash ?? ""),
-      textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
-      settings: getRunSettings()
-    });
 
-    pushEvent("action", "Steering prompt sent to Codex session on target laptop", {
-      action: "chat-prompt-steer",
+    pushEvent("error", "Steering rejected because Codex CLI cannot attach to an in-flight run", {
+      action: "chat-prompt-steer-rejected",
       chatId,
       route: "POST /api/chats/:id/steer",
       request: requestContext(req),
-      ...promptSummary,
-      job
+      projectPath: chat.projectPath,
+      ...promptSummary
     });
 
-    res.status(202).json({
-      ok: true,
-      message: "Steering prompt sent to the running Codex chat",
-      job
+    res.status(409).json({
+      ok: false,
+      message:
+        "Steering is disabled because the current Codex CLI backend cannot attach to an in-flight run. The prompt was not sent; keep it queued until the running task finishes."
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not send steering prompt";
