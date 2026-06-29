@@ -1,5 +1,15 @@
 # Backlog
 
+- [ ] Move prompt queuing server-side
+  - Approach prompt:
+    - Move prompt queue state out of browser local storage and into the server.
+    - Preserve per-chat queue visibility and sequencing.
+    - Ensure a queued prompt is only sent after the previous task is confirmed done.
+- [ ] Stop send-time scroll jump
+  - Approach prompt:
+    - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
+    - Preserve the visible pending prompt immediately after send.
+    - Keep scroll position stable during optimistic render, server acknowledgement, polling refreshes, and incoming Codex responses.
 - [x] The arrow
   - Approach prompt:
     - Ditch all previously built scroll-bottom-arrow work.
