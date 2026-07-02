@@ -1231,12 +1231,11 @@ p {
   overflow-x: hidden;
 }
 
-.chat-bottom-anchor {
+.chat-thread::after {
+  content: "";
   display: block;
   flex: 0 0 8dvh;
   block-size: 8dvh;
-  min-block-size: 8dvh;
-  overflow-anchor: auto;
   pointer-events: none;
 }
 
@@ -1244,19 +1243,11 @@ p {
   display: contents;
 }
 
-.load-more-messages,
-.run-complete-separator,
-.empty-chat,
-.loading-state {
-  overflow-anchor: none;
-}
-
 .chat-bubble {
   width: auto;
   max-width: min(78%, 920px);
   min-width: min(260px, 100%);
   overflow: visible;
-  overflow-anchor: none;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--surface);

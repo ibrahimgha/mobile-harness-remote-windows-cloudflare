@@ -6,7 +6,7 @@
     - Preserve per-chat queue visibility and sequencing.
     - Ensure a queued prompt is only sent after the previous task is confirmed done.
 - [ ] Stop send-time scroll jump
-  - Status: patched again; pending real iOS PWA validation before marking done.
+  - Status: patched with optimistic prompt preservation across stale refreshes; pending iOS PWA validation before marking done.
   - Approach prompt:
     - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
     - Preserve the visible pending prompt immediately after send.

@@ -162,6 +162,8 @@ type VisibleChatMessage = ChatTranscriptMessage & {
   isRunFailure?: boolean;
 };
 
+const emptyChatTranscriptMessages: ChatTranscriptMessage[] = [];
+
 type ChatSummary = {
   id: string;
   title: string;
@@ -792,6 +794,39 @@ function isPersistentVoiceNoteMessage(message: ChatTranscriptMessage) {
   return isOptimisticVoiceNoteMessage(message) && Boolean(message.voiceNoteUrl?.startsWith("data:"));
 }
 
+function createOptimisticPromptMessages(
+  text: string,
+  createdAt: string,
+  messageId = optimisticPromptId(createdAt),
+  voiceNote?: DictationVoiceNote
+) {
+  const messages: ChatTranscriptMessage[] = [];
+
+  if (voiceNote) {
+    messages.push({
+      id: optimisticVoiceNoteId(createdAt),
+      role: "user" as const,
+      kind: "voice_note",
+      label: "Voice note",
+      text: "Voice note",
+      createdAt,
+      voiceNoteUrl: voiceNote.url,
+      voiceNoteMimeType: voiceNote.mimeType
+    });
+  }
+
+  messages.push({
+    id: messageId,
+    role: "user" as const,
+    kind: "user_prompt",
+    label: voiceNote ? "Transcribed prompt" : "You",
+    text,
+    createdAt
+  });
+
+  return messages;
+}
+
 function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
   const optimisticTime = Date.parse(optimistic.createdAt);
 
@@ -812,6 +847,53 @@ function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optim
 
 function dedupeMessagesById(messages: ChatTranscriptMessage[]) {
   return [...messages.reduce((byId, message) => byId.set(message.id, message), new Map<string, ChatTranscriptMessage>()).values()];
+}
+
+function messagesForPromptContainment(detail: ChatDetail) {
+  const messages = [...(detail.messages ?? [])];
+
+  if (detail.lastPrompt) {
+    messages.push({
+      id: "last-prompt",
+      role: "user" as const,
+      kind: "user_prompt",
+      label: "You",
+      text: detail.lastPrompt.text,
+      createdAt: detail.lastPrompt.createdAt
+    });
+  }
+
+  return messages;
+}
+
+function pendingMessagesMissingFromServer(messages: ChatTranscriptMessage[], pendingMessages: ChatTranscriptMessage[]) {
+  return pendingMessages.filter((message) => {
+    if (isOptimisticVoiceNoteMessage(message)) {
+      return !messages.some((serverMessage) => serverMessage.id === message.id);
+    }
+
+    if (isOptimisticPromptMessage(message)) {
+      return !serverContainsOptimisticPrompt(messages, message);
+    }
+
+    return !messages.some((serverMessage) => serverMessage.id === message.id);
+  });
+}
+
+function mergePendingMessages(messages: ChatTranscriptMessage[], pendingMessages: ChatTranscriptMessage[]) {
+  if (!pendingMessages.length) {
+    return messages;
+  }
+
+  const missing = pendingMessagesMissingFromServer(messages, pendingMessages);
+
+  if (!missing.length) {
+    return messages;
+  }
+
+  return dedupeMessagesById([...messages, ...missing])
+    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
+    .slice(-20);
 }
 
 function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incoming: ChatDetail) {
@@ -898,6 +980,18 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       (message.voiceNoteMimeType ?? "") === (other.voiceNoteMimeType ?? "") &&
       Boolean(message.isFinal) === Boolean(other.isFinal)
     );
+  });
+}
+
+function sameChatMessageList(a: ChatTranscriptMessage[], b: ChatTranscriptMessage[]) {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  return a.every((message, index) => {
+    const other = b[index];
+
+    return Boolean(other) && message.id === other.id && chatMessageStableSignature(message) === chatMessageStableSignature(other);
   });
 }
 
@@ -2355,6 +2449,7 @@ export function App() {
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
+  const [pendingSentMessagesByChat, setPendingSentMessagesByChat] = useState<Record<string, ChatTranscriptMessage[]>>({});
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
   const [refreshingChat, setRefreshingChat] = useState(false);
@@ -2402,8 +2497,6 @@ export function App() {
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
-  const sendScrollLockUntilRef = useRef(0);
-  const sendScrollLockTimerRef = useRef<number | undefined>(undefined);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const dictationStreamRef = useRef<MediaStream | null>(null);
   const dictationChunksRef = useRef<Blob[]>([]);
@@ -2431,6 +2524,84 @@ export function App() {
     }),
     [token]
   );
+
+  const rememberPendingSentMessages = useCallback((chatId: string, messages: ChatTranscriptMessage[]) => {
+    if (!messages.length) {
+      return;
+    }
+
+    setPendingSentMessagesByChat((current) => {
+      const existing = current[chatId] ?? emptyChatTranscriptMessages;
+      const merged = dedupeMessagesById([...existing, ...messages])
+        .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
+        .slice(-20);
+
+      if (sameChatMessageList(existing, merged)) {
+        return current;
+      }
+
+      const next = { ...current, [chatId]: merged };
+      return next;
+    });
+  }, []);
+
+  const prunePendingSentMessages = useCallback((chatId: string, serverMessages: ChatTranscriptMessage[]) => {
+    setPendingSentMessagesByChat((current) => {
+      const existing = current[chatId] ?? emptyChatTranscriptMessages;
+
+      if (!existing.length) {
+        return current;
+      }
+
+      const remaining = pendingMessagesMissingFromServer(serverMessages, existing);
+
+      if (sameChatMessageList(existing, remaining)) {
+        return current;
+      }
+
+      const next = { ...current };
+
+      if (remaining.length) {
+        next[chatId] = remaining;
+      } else {
+        delete next[chatId];
+      }
+
+      return next;
+    });
+  }, []);
+
+  const removePendingSentMessages = useCallback((chatId: string, messageIds: string[]) => {
+    if (!messageIds.length) {
+      return;
+    }
+
+    const ids = new Set(messageIds);
+
+    setPendingSentMessagesByChat((current) => {
+      const existing = current[chatId] ?? emptyChatTranscriptMessages;
+
+      if (!existing.length) {
+        return current;
+      }
+
+      const remaining = existing.filter((message) => !ids.has(message.id));
+
+      if (sameChatMessageList(existing, remaining)) {
+        return current;
+      }
+
+      const next = { ...current };
+
+      if (remaining.length) {
+        next[chatId] = remaining;
+      } else {
+        delete next[chatId];
+      }
+
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     cleanupLegacyChatHistoryCache();
@@ -2674,6 +2845,9 @@ export function App() {
   const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
   const selectedMessagePage = selectedChat?.messagePage;
   const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
+  const selectedPendingSentMessages = selectedChatId
+    ? pendingSentMessagesByChat[selectedChatId] ?? emptyChatTranscriptMessages
+    : emptyChatTranscriptMessages;
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
     () =>
       selectedJobs
@@ -2697,7 +2871,7 @@ export function App() {
     }
 
     if ((selectedChat.messages ?? []).length) {
-      return selectedChat.messages ?? [];
+      return mergePendingMessages(selectedChat.messages ?? emptyChatTranscriptMessages, selectedPendingSentMessages);
     }
 
     const fallback: ChatTranscriptMessage[] = [];
@@ -2725,8 +2899,8 @@ export function App() {
       });
     }
 
-    return fallback;
-  }, [selectedChat]);
+    return mergePendingMessages(fallback, selectedPendingSentMessages);
+  }, [selectedChat, selectedPendingSentMessages]);
   const timelineMessages = useMemo<VisibleChatMessage[]>(
     () => {
       const firstTranscriptMs = Date.parse(transcriptMessages[0]?.createdAt ?? "");
@@ -3214,21 +3388,11 @@ export function App() {
     setScrollDistanceFromBottom(distanceFromBottom);
   }, [resolveScrollElement]);
 
-  const sendScrollLockIsActive = useCallback(() => Date.now() < sendScrollLockUntilRef.current, []);
-
-  const cancelSendScrollLock = useCallback(() => {
-    sendScrollLockUntilRef.current = 0;
-    if (sendScrollLockTimerRef.current !== undefined) {
-      window.clearTimeout(sendScrollLockTimerRef.current);
-      sendScrollLockTimerRef.current = undefined;
-    }
-  }, []);
-
   const updateChatAutoScrollState = useCallback((event?: { currentTarget?: HTMLDivElement }) => {
     const scroller = event?.currentTarget ?? resolveScrollElement();
-    chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom(scroller);
+    chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
     updateScrollDebugPosition(scroller);
-  }, [chatIsNearBottom, resolveScrollElement, sendScrollLockIsActive, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, resolveScrollElement, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const refreshScrollPosition = () => {
@@ -3270,33 +3434,6 @@ export function App() {
     chatShouldAutoScrollRef.current = true;
   }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
 
-  const lockChatToBottomAfterSend = useCallback((durationMs = 6500) => {
-    sendScrollLockUntilRef.current = Math.max(sendScrollLockUntilRef.current, Date.now() + durationMs);
-    chatShouldAutoScrollRef.current = true;
-    forceNextChatScrollRef.current = true;
-
-    if (sendScrollLockTimerRef.current !== undefined) {
-      return;
-    }
-
-    const keepPinned = () => {
-      if (!sendScrollLockIsActive()) {
-        sendScrollLockTimerRef.current = undefined;
-        updateScrollDebugPosition(chatContentRef.current);
-        return;
-      }
-
-      // iOS WebKit can move the chat scroller when the focused contenteditable is
-      // cleared and the visual viewport settles after Send. Keep the transcript
-      // pinned briefly so the outgoing prompt does not appear and then jump up.
-      chatShouldAutoScrollRef.current = true;
-      scrollChatToBottom("auto");
-      sendScrollLockTimerRef.current = window.setTimeout(keepPinned, 120);
-    };
-
-    window.requestAnimationFrame(keepPinned);
-  }, [scrollChatToBottom, sendScrollLockIsActive, updateScrollDebugPosition]);
-
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
       forceNextChatScrollRef.current = true;
@@ -3322,6 +3459,7 @@ export function App() {
       // Cache is for foreground loads only. Applying cached detail during quiet polling causes a
       // cache-to-server transcript bounce every interval, which is visible as flicker in iOS PWAs.
       if (!quiet && cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
+        prunePendingSentMessages(chatId, messagesForPromptContainment(cachedDetail));
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
 
@@ -3347,6 +3485,7 @@ export function App() {
           return;
         }
 
+        prunePendingSentMessages(chatId, messagesForPromptContainment(detail));
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, detail);
 
@@ -3373,7 +3512,7 @@ export function App() {
         }
       }
     },
-    [apiFetch, requestChatScroll]
+    [apiFetch, prunePendingSentMessages, requestChatScroll]
   );
 
   const loadChatJobs = useCallback(
@@ -4156,29 +4295,7 @@ export function App() {
         return current;
       }
 
-      const newMessages: ChatTranscriptMessage[] = [];
-
-      if (voiceNote) {
-        newMessages.push({
-          id: optimisticVoiceNoteId(createdAt),
-          role: "user" as const,
-          kind: "voice_note",
-          label: "Voice note",
-          text: "Voice note",
-          createdAt,
-          voiceNoteUrl: voiceNote.url,
-          voiceNoteMimeType: voiceNote.mimeType
-        });
-      }
-
-      newMessages.push({
-        id: messageId,
-        role: "user" as const,
-        kind: "user_prompt",
-        label: voiceNote ? "Transcribed prompt" : "You",
-        text,
-        createdAt
-      });
+      const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote);
 
       return {
         ...current,
@@ -4421,9 +4538,6 @@ export function App() {
       if (promptReceiptClearTimerRef.current !== undefined) {
         window.clearTimeout(promptReceiptClearTimerRef.current);
       }
-      if (sendScrollLockTimerRef.current !== undefined) {
-        window.clearTimeout(sendScrollLockTimerRef.current);
-      }
 
       dictationRecognitionRef.current?.abort();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -4598,11 +4712,11 @@ export function App() {
 
     const frame = window.requestAnimationFrame(() => {
       updateScrollDebugPosition();
-      chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom();
+      chatShouldAutoScrollRef.current = chatIsNearBottom();
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, sendScrollLockIsActive, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollDebugPosition]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -4621,7 +4735,7 @@ export function App() {
         frame = undefined;
         const scroller = findScrollableAncestor(target) ?? resolveScrollElement();
         updateScrollDebugPosition(scroller);
-        chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom(scroller);
+        chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
       });
     };
 
@@ -4634,7 +4748,6 @@ export function App() {
 
     const handleCapturedScroll = (event: Event) => refreshPosition(event.target);
     const handleWheel = (event: WheelEvent) => {
-      cancelSendScrollLock();
       trackScrollPoint(event);
       refreshPosition(event.target);
     };
@@ -4642,7 +4755,6 @@ export function App() {
       const touch = event.touches[0] ?? event.changedTouches[0];
 
       if (touch) {
-        cancelSendScrollLock();
         trackScrollPoint(touch);
       }
 
@@ -4678,22 +4790,20 @@ export function App() {
       resizeObserver?.disconnect();
     };
   }, [
-    cancelSendScrollLock,
     chatIsNearBottom,
     chatShellIsLoading,
     findScrollableAncestor,
     lastVisibleMessageKey,
     resolveScrollElement,
     selectedChatId,
-    sendScrollLockIsActive,
     updateScrollDebugPosition
   ]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
-    chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom();
+    chatShouldAutoScrollRef.current = chatIsNearBottom();
     updateScrollDebugPosition();
-  }, [chatIsNearBottom, menuOpen, sendScrollLockIsActive, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5610,32 +5720,34 @@ export function App() {
       return;
     }
 
+    const targetChatId = selectedChatId;
     const optimisticAt = new Date().toISOString();
     const previousSelectedChat = selectedChat;
     const previousChatIndex = chatIndex;
     const previousAttachments = pendingAttachments;
+    let optimisticMessages: ChatTranscriptMessage[] = [];
     let receiptId: string | undefined;
 
     setSending(true);
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
     try {
-      const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(selectedChatId) : [];
+      const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(targetChatId) : [];
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
       const optimisticMessageId = optimisticPromptId(optimisticAt);
 
       const sameChatHasLocalQueue = localCommandQueue.some(
-        (command) => command.chatId === selectedChatId && isLocalCommandBlocking(command)
+        (command) => command.chatId === targetChatId && isLocalCommandBlocking(command)
       );
       const sameChatIsBusy =
-        sameChatHasLocalQueue || busyServerChatIds.has(selectedChatId) || serverChatIsBusyNow(selectedChatId);
+        sameChatHasLocalQueue || busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
 
       if (sameChatIsBusy) {
         setLocalCommandQueue((current) => [
           ...current,
           {
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-            chatId: selectedChatId,
+            chatId: targetChatId,
             text: promptText,
             createdAt: optimisticAt,
             status: "pending",
@@ -5645,12 +5757,15 @@ export function App() {
         ]);
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
-        applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
-        lockChatToBottomAfterSend();
+        optimisticMessages = createOptimisticPromptMessages(promptText, optimisticAt, optimisticMessageId, options.voiceNote);
+        rememberPendingSentMessages(targetChatId, optimisticMessages);
+        applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
+        chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
-        receiptId = startPromptReceipt(selectedChatId, promptText);
+        window.requestAnimationFrame(() => scrollChatToBottom("auto"));
+        receiptId = startPromptReceipt(targetChatId, promptText);
         setNotice("Sending to target laptop...");
-        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
+        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
           method: "POST",
           body: JSON.stringify({ text: promptText })
         });
@@ -5666,10 +5781,6 @@ export function App() {
       setDraft("");
       if (composerEditorRef.current) {
         syncComposerEditorText(composerEditorRef.current, "");
-        setComposerExpanded(composerShouldExpand(composerEditorRef.current));
-      }
-      if (receiptId) {
-        lockChatToBottomAfterSend();
       }
       if (!options.textOverride) {
         setPendingAttachments([]);
@@ -5678,10 +5789,11 @@ export function App() {
       void loadState();
       window.setTimeout(() => {
         void loadChats();
-        void loadChatJobs(selectedChatId);
-        void loadChatDetail(selectedChatId, true);
+        void loadChatJobs(targetChatId);
+        void loadChatDetail(targetChatId, true);
       }, 1600);
     } catch (error) {
+      removePendingSentMessages(targetChatId, optimisticMessages.map((message) => message.id));
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
       setPendingAttachments(previousAttachments);
@@ -6374,7 +6486,7 @@ export function App() {
                   <Clock3 size={26} />
                 </div>
               )}
-              <div ref={chatEndRef} className="chat-bottom-anchor" aria-hidden="true" />
+              <div ref={chatEndRef} aria-hidden="true" />
             </div>
           ) : (
             <div className="empty-chat">
@@ -6515,9 +6627,8 @@ export function App() {
                 aria-multiline="true"
                 aria-disabled={!selectedChatId || sending}
                 data-placeholder="New prompt"
-                data-disabled={!selectedChatId ? "true" : "false"}
-                data-sending={sending ? "true" : "false"}
-                contentEditable={Boolean(selectedChatId)}
+                data-disabled={!selectedChatId || sending ? "true" : "false"}
+                contentEditable={Boolean(selectedChatId && !sending)}
                 suppressContentEditableWarning
                 inputMode="text"
                 autoCapitalize="sentences"
@@ -6526,26 +6637,12 @@ export function App() {
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                onBeforeInput={(event) => {
-                  if (sending) {
-                    event.preventDefault();
-                  }
-                }}
                 onInput={(event) => {
-                  if (sending) {
-                    event.preventDefault();
-                    return;
-                  }
-
                   setDraft(textFromComposerEditor(event.currentTarget));
                   setComposerExpanded(composerShouldExpand(event.currentTarget));
                 }}
                 onPaste={(event) => {
                   event.preventDefault();
-                  if (sending) {
-                    return;
-                  }
-
                   document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
                 }}
                 onKeyDown={sendPromptFromKeyboard}
