@@ -162,8 +162,6 @@ type VisibleChatMessage = ChatTranscriptMessage & {
   isRunFailure?: boolean;
 };
 
-const emptyChatTranscriptMessages: ChatTranscriptMessage[] = [];
-
 type ChatSummary = {
   id: string;
   title: string;
@@ -849,53 +847,6 @@ function dedupeMessagesById(messages: ChatTranscriptMessage[]) {
   return [...messages.reduce((byId, message) => byId.set(message.id, message), new Map<string, ChatTranscriptMessage>()).values()];
 }
 
-function messagesForPromptContainment(detail: ChatDetail) {
-  const messages = [...(detail.messages ?? [])];
-
-  if (detail.lastPrompt) {
-    messages.push({
-      id: "last-prompt",
-      role: "user" as const,
-      kind: "user_prompt",
-      label: "You",
-      text: detail.lastPrompt.text,
-      createdAt: detail.lastPrompt.createdAt
-    });
-  }
-
-  return messages;
-}
-
-function pendingMessagesMissingFromServer(messages: ChatTranscriptMessage[], pendingMessages: ChatTranscriptMessage[]) {
-  return pendingMessages.filter((message) => {
-    if (isOptimisticVoiceNoteMessage(message)) {
-      return !messages.some((serverMessage) => serverMessage.id === message.id);
-    }
-
-    if (isOptimisticPromptMessage(message)) {
-      return !serverContainsOptimisticPrompt(messages, message);
-    }
-
-    return !messages.some((serverMessage) => serverMessage.id === message.id);
-  });
-}
-
-function mergePendingMessages(messages: ChatTranscriptMessage[], pendingMessages: ChatTranscriptMessage[]) {
-  if (!pendingMessages.length) {
-    return messages;
-  }
-
-  const missing = pendingMessagesMissingFromServer(messages, pendingMessages);
-
-  if (!missing.length) {
-    return messages;
-  }
-
-  return dedupeMessagesById([...messages, ...missing])
-    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
-    .slice(-20);
-}
-
 function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incoming: ChatDetail) {
   if (!current || current.id !== incoming.id) {
     return incoming;
@@ -980,18 +931,6 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       (message.voiceNoteMimeType ?? "") === (other.voiceNoteMimeType ?? "") &&
       Boolean(message.isFinal) === Boolean(other.isFinal)
     );
-  });
-}
-
-function sameChatMessageList(a: ChatTranscriptMessage[], b: ChatTranscriptMessage[]) {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  return a.every((message, index) => {
-    const other = b[index];
-
-    return Boolean(other) && message.id === other.id && chatMessageStableSignature(message) === chatMessageStableSignature(other);
   });
 }
 
@@ -2449,7 +2388,6 @@ export function App() {
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
-  const [pendingSentMessagesByChat, setPendingSentMessagesByChat] = useState<Record<string, ChatTranscriptMessage[]>>({});
   const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
   const [refreshingChat, setRefreshingChat] = useState(false);
@@ -2494,6 +2432,7 @@ export function App() {
   const localQueueSendingRef = useRef(false);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
+  const backgroundDetailSuppressUntilRef = useRef(0);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -2524,84 +2463,6 @@ export function App() {
     }),
     [token]
   );
-
-  const rememberPendingSentMessages = useCallback((chatId: string, messages: ChatTranscriptMessage[]) => {
-    if (!messages.length) {
-      return;
-    }
-
-    setPendingSentMessagesByChat((current) => {
-      const existing = current[chatId] ?? emptyChatTranscriptMessages;
-      const merged = dedupeMessagesById([...existing, ...messages])
-        .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
-        .slice(-20);
-
-      if (sameChatMessageList(existing, merged)) {
-        return current;
-      }
-
-      const next = { ...current, [chatId]: merged };
-      return next;
-    });
-  }, []);
-
-  const prunePendingSentMessages = useCallback((chatId: string, serverMessages: ChatTranscriptMessage[]) => {
-    setPendingSentMessagesByChat((current) => {
-      const existing = current[chatId] ?? emptyChatTranscriptMessages;
-
-      if (!existing.length) {
-        return current;
-      }
-
-      const remaining = pendingMessagesMissingFromServer(serverMessages, existing);
-
-      if (sameChatMessageList(existing, remaining)) {
-        return current;
-      }
-
-      const next = { ...current };
-
-      if (remaining.length) {
-        next[chatId] = remaining;
-      } else {
-        delete next[chatId];
-      }
-
-      return next;
-    });
-  }, []);
-
-  const removePendingSentMessages = useCallback((chatId: string, messageIds: string[]) => {
-    if (!messageIds.length) {
-      return;
-    }
-
-    const ids = new Set(messageIds);
-
-    setPendingSentMessagesByChat((current) => {
-      const existing = current[chatId] ?? emptyChatTranscriptMessages;
-
-      if (!existing.length) {
-        return current;
-      }
-
-      const remaining = existing.filter((message) => !ids.has(message.id));
-
-      if (sameChatMessageList(existing, remaining)) {
-        return current;
-      }
-
-      const next = { ...current };
-
-      if (remaining.length) {
-        next[chatId] = remaining;
-      } else {
-        delete next[chatId];
-      }
-
-      return next;
-    });
-  }, []);
 
   useEffect(() => {
     cleanupLegacyChatHistoryCache();
@@ -2845,9 +2706,6 @@ export function App() {
   const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
   const selectedMessagePage = selectedChat?.messagePage;
   const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
-  const selectedPendingSentMessages = selectedChatId
-    ? pendingSentMessagesByChat[selectedChatId] ?? emptyChatTranscriptMessages
-    : emptyChatTranscriptMessages;
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
     () =>
       selectedJobs
@@ -2871,7 +2729,7 @@ export function App() {
     }
 
     if ((selectedChat.messages ?? []).length) {
-      return mergePendingMessages(selectedChat.messages ?? emptyChatTranscriptMessages, selectedPendingSentMessages);
+      return selectedChat.messages ?? [];
     }
 
     const fallback: ChatTranscriptMessage[] = [];
@@ -2899,8 +2757,8 @@ export function App() {
       });
     }
 
-    return mergePendingMessages(fallback, selectedPendingSentMessages);
-  }, [selectedChat, selectedPendingSentMessages]);
+    return fallback;
+  }, [selectedChat]);
   const timelineMessages = useMemo<VisibleChatMessage[]>(
     () => {
       const firstTranscriptMs = Date.parse(transcriptMessages[0]?.createdAt ?? "");
@@ -3459,7 +3317,6 @@ export function App() {
       // Cache is for foreground loads only. Applying cached detail during quiet polling causes a
       // cache-to-server transcript bounce every interval, which is visible as flicker in iOS PWAs.
       if (!quiet && cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
-        prunePendingSentMessages(chatId, messagesForPromptContainment(cachedDetail));
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
 
@@ -3485,7 +3342,6 @@ export function App() {
           return;
         }
 
-        prunePendingSentMessages(chatId, messagesForPromptContainment(detail));
         setSelectedChat((current) => {
           const next = mergeChatDetailPreservingOptimistic(current, detail);
 
@@ -3512,7 +3368,7 @@ export function App() {
         }
       }
     },
-    [apiFetch, prunePendingSentMessages, requestChatScroll]
+    [apiFetch, requestChatScroll]
   );
 
   const loadChatJobs = useCallback(
@@ -5008,7 +4864,13 @@ export function App() {
       const chatId = selectedChatIdRef.current;
       if (chatId && !isTemporaryChatId(chatId)) {
         void loadChatJobs(chatId);
-        void loadChatDetail(chatId, true);
+        // The first 5-second background detail poll after Send can race iOS PWA
+        // rendering while the optimistic prompt and server transcript are settling.
+        // Skip only this background detail fetch; explicit refreshes and job/socket
+        // updates still fetch detail so responses can appear normally.
+        if (Date.now() >= backgroundDetailSuppressUntilRef.current) {
+          void loadChatDetail(chatId, true);
+        }
       }
 
       const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
@@ -5725,7 +5587,6 @@ export function App() {
     const previousSelectedChat = selectedChat;
     const previousChatIndex = chatIndex;
     const previousAttachments = pendingAttachments;
-    let optimisticMessages: ChatTranscriptMessage[] = [];
     let receiptId: string | undefined;
 
     setSending(true);
@@ -5757,8 +5618,7 @@ export function App() {
         ]);
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
-        optimisticMessages = createOptimisticPromptMessages(promptText, optimisticAt, optimisticMessageId, options.voiceNote);
-        rememberPendingSentMessages(targetChatId, optimisticMessages);
+        backgroundDetailSuppressUntilRef.current = Date.now() + backgroundSyncIntervalMs + 2500;
         applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
         chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
@@ -5793,7 +5653,6 @@ export function App() {
         void loadChatDetail(targetChatId, true);
       }, 1600);
     } catch (error) {
-      removePendingSentMessages(targetChatId, optimisticMessages.map((message) => message.id));
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
       setPendingAttachments(previousAttachments);
