@@ -5,13 +5,13 @@
     - Move prompt queue state out of browser local storage and into the server.
     - Preserve per-chat queue visibility and sequencing.
     - Ensure a queued prompt is only sent after the previous task is confirmed done.
-- [ ] Stop send-time scroll jump
-  - Status: patched by suppressing automatic selected-chat quiet detail refreshes for 12 seconds after a direct send; pending iOS PWA validation before marking done.
+- [x] Stop send-time scroll jump
+  - Status: accepted after remote testing.
   - Approach prompt:
     - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
     - Preserve the visible pending prompt immediately after send.
     - Keep scroll position stable during optimistic render, server acknowledgement, polling refreshes, and incoming Codex responses.
-- [ ] Add authenticated file viewers and downloads
+- [x] Add authenticated file viewers and downloads
   - Approach prompt:
     - Detect local Markdown, PDF, image, uploaded, and non-renderable file links in chat messages.
     - Open renderable local files in authenticated mobile-friendly popups without exposing public filesystem paths.
