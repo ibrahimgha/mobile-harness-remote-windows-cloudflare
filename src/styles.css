@@ -788,8 +788,6 @@ p {
 }
 
 .pdf-viewer-body {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   background: #f4f6f1;
 }
@@ -800,22 +798,6 @@ p {
   min-height: 0;
   border: 0;
   background: #ffffff;
-}
-
-.pdf-fallback-download {
-  display: inline-flex;
-  justify-self: center;
-  align-items: center;
-  min-height: 38px;
-  margin: 10px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--teal-strong);
-  background: var(--surface);
-  font-size: 0.85rem;
-  font-weight: 800;
-  text-decoration: none;
 }
 
 .project-group {

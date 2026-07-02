@@ -1776,6 +1776,19 @@ function localFileLabel(filePath: string, fallback: string) {
   return fallback.trim() || name || filePath;
 }
 
+function localFileDownloadName(filePath: string, fallback: string, extension?: string) {
+  const withoutLine = filePath.replace(/:\d+(?::\d+)?$/, "");
+  const pathName = withoutLine.split(/[\\/]/).filter(Boolean).at(-1);
+  const rawName = pathName || fallback.trim() || "download";
+  const safeName = rawName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+
+  if (extension && !safeName.toLowerCase().endsWith(extension.toLowerCase())) {
+    return `${safeName}${extension}`;
+  }
+
+  return safeName;
+}
+
 function localDownloadUrl(filePath: string, token: string, disposition: "inline" | "attachment" = "attachment") {
   const params = new URLSearchParams({ path: filePath, disposition });
 
@@ -1871,7 +1884,7 @@ function LocalFileDownload({
   const href = useMemo(() => localDownloadUrl(filePath, token, "attachment"), [filePath, token]);
 
   return (
-    <a className="markdown-file-link local-file-download" href={href} download={localFileLabel(filePath, textFromReactNode(label))}>
+    <a className="markdown-file-link local-file-download" href={href} download={localFileDownloadName(filePath, textFromReactNode(label))}>
       {label}
     </a>
   );
@@ -2360,6 +2373,7 @@ export function App() {
   const [selectedInstructionLoading, setSelectedInstructionLoading] = useState(false);
   const [selectedInstructionError, setSelectedInstructionError] = useState("");
   const [selectedPdfFile, setSelectedPdfFile] = useState<SelectedLocalPdfFile | null>(null);
+  const [pdfDownloading, setPdfDownloading] = useState(false);
   const [projectActionMode, setProjectActionMode] = useState<"project" | "chat" | null>(null);
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [projectActionError, setProjectActionError] = useState("");
@@ -3417,7 +3431,54 @@ export function App() {
 
   const closePdfFile = useCallback(() => {
     setSelectedPdfFile(null);
+    setPdfDownloading(false);
   }, []);
+
+  const downloadSelectedPdfFile = useCallback(async () => {
+    if (!selectedPdfFile || pdfDownloading) {
+      return;
+    }
+
+    setPdfDownloading(true);
+
+    try {
+      const response = await fetch(selectedPdfFile.downloadUrl, {
+        headers: token ? { "x-control-token": token } : undefined
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || "Could not download PDF");
+      }
+
+      const blob = await response.blob();
+      const fileName = localFileDownloadName(selectedPdfFile.path, selectedPdfFile.label, ".pdf");
+      const file = new File([blob], fileName, { type: blob.type || "application/pdf" });
+      const sharePayload: ShareData = {
+        files: [file],
+        title: selectedPdfFile.label
+      };
+
+      if (navigator.canShare?.(sharePayload) && navigator.share) {
+        await navigator.share(sharePayload);
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName;
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not download PDF");
+    } finally {
+      setPdfDownloading(false);
+    }
+  }, [pdfDownloading, selectedPdfFile, token]);
 
   const rememberJob = useCallback(
     (job: CodexRunJob) => {
@@ -6074,18 +6135,22 @@ export function App() {
                 <h2 id="pdf-viewer-title">{selectedPdfFile.label}</h2>
                 <p>{selectedPdfFile.path}</p>
               </div>
-              <a className="icon-button" href={selectedPdfFile.downloadUrl} download={selectedPdfFile.label} aria-label="Download PDF" title="Download PDF">
-                <Download size={18} />
-              </a>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={downloadSelectedPdfFile}
+                disabled={pdfDownloading}
+                aria-label="Download PDF to Files"
+                title="Download PDF to Files"
+              >
+                {pdfDownloading ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
+              </button>
               <button className="icon-button" type="button" onClick={closePdfFile} aria-label="Close PDF viewer">
                 <X size={18} />
               </button>
             </header>
             <div className="pdf-viewer-body">
               <iframe className="pdf-frame" src={selectedPdfFile.mediaUrl} title={selectedPdfFile.label} />
-              <a className="pdf-fallback-download" href={selectedPdfFile.downloadUrl} download={selectedPdfFile.label}>
-                Download PDF
-              </a>
             </div>
           </section>
         </div>
