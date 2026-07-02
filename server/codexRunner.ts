@@ -314,6 +314,37 @@ export class CodexRunner {
     return this.sortedJobs.filter((job) => job.chatId === chatId);
   }
 
+  cancelQueuedJob(jobId: string, chatId?: string): { job: CodexRunJob; text: string } | null {
+    const queueIndex = this.queue.findIndex((item) => item.job.id === jobId && (!chatId || item.job.chatId === chatId));
+
+    if (queueIndex < 0) {
+      return null;
+    }
+
+    const [item] = this.queue.splice(queueIndex, 1);
+    const text = this.jobTexts.get(item.job.id) ?? item.text;
+    this.jobs.delete(item.job.id);
+    this.jobTexts.delete(item.job.id);
+    this.refreshQueuePositions(true);
+
+    return { job: item.job, text };
+  }
+
+  prioritizeQueuedJob(jobId: string, chatId?: string): CodexRunJob | null {
+    const queueIndex = this.queue.findIndex((item) => item.job.id === jobId && (!chatId || item.job.chatId === chatId));
+
+    if (queueIndex < 0) {
+      return null;
+    }
+
+    const [item] = this.queue.splice(queueIndex, 1);
+    this.queue.unshift(item);
+    this.refreshQueuePositions(true);
+    this.emit(item.job, "queued");
+
+    return item.job;
+  }
+
   async reconcileChatJobs(chatId: string): Promise<CodexRunJob[]> {
     const runningJobs = this.jobsForChat(chatId).filter((job) => job.status === "running");
 

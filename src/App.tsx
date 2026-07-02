@@ -252,6 +252,12 @@ type ChatJobsResult = {
   jobs: CodexRunJob[];
 };
 
+type QueuedPromptMutationResult = ApiResult & {
+  chatId: string;
+  job: CodexRunJob;
+  text?: string;
+};
+
 type RunSettingsResult = {
   ok: boolean;
   settings: CodexRunSettings;
@@ -294,18 +300,6 @@ type SpeechRecognitionLike = EventTarget & {
   start: () => void;
   stop: () => void;
   abort: () => void;
-};
-
-type LocalQueuedCommand = {
-  id: string;
-  chatId: string;
-  text: string;
-  createdAt: string;
-  status: "pending" | "sending" | "failed";
-  message?: string;
-  attempts?: number;
-  retryAfter?: string;
-  optimisticMessageId?: string;
 };
 
 type PromptReceipt = {
@@ -372,7 +366,6 @@ type ChatMessageViewMode = "all" | "final" | "codex";
 
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
-const localCommandQueueKey = "local-command-queue";
 const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
 const chatHistoryCacheKey = "chat-history-cache-v2";
 const activeJobsCacheKey = "active-jobs-cache-v1";
@@ -399,7 +392,7 @@ const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
 const socketStaleMs = 45000;
-const queuedCommandSteerGuardMs = 1500;
+const queuedJobMoveNextGuardMs = 1500;
 
 function isTemporaryChatId(chatId: string | null | undefined) {
   return Boolean(chatId && (chatId.startsWith("optimistic-fork-") || chatId.startsWith("pending-chat-")));
@@ -738,39 +731,11 @@ function readBlobAsDataUrl(blob: Blob) {
   });
 }
 
-function isLocalCommandDue(command: LocalQueuedCommand) {
-  const retryAt = command.retryAfter ? Date.parse(command.retryAfter) : Number.NaN;
+function queuedJobCanMoveNext(queuedJob: CodexRunJob, job: CodexRunJob | undefined, nowMs: number) {
+  const createdMs = Date.parse(queuedJob.createdAt);
+  const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedJobMoveNextGuardMs : true;
 
-  return command.status === "pending" && (!Number.isFinite(retryAt) || retryAt <= Date.now());
-}
-
-function isLocalCommandBlocking(command: LocalQueuedCommand) {
-  return command.status === "pending" || command.status === "sending";
-}
-
-function queuedCommandCanSteer(command: LocalQueuedCommand, job: CodexRunJob | undefined, nowMs: number) {
-  const createdMs = Date.parse(command.createdAt);
-  const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedCommandSteerGuardMs : true;
-
-  return command.status === "pending" && job?.status === "running" && oldEnough;
-}
-
-function localCommandRetryDelay(attempts: number) {
-  return Math.min(30000, 3000 * 2 ** Math.min(attempts, 3));
-}
-
-function localCommandStatusText(command: LocalQueuedCommand) {
-  if (command.status === "sending") {
-    return "Sending";
-  }
-
-  const retryAt = command.retryAfter ? Date.parse(command.retryAfter) : Number.NaN;
-
-  if (Number.isFinite(retryAt) && retryAt > Date.now()) {
-    return "Retry queued";
-  }
-
-  return "Local queued";
+  return queuedJob.status === "queued" && job?.status === "running" && oldEnough;
 }
 
 function optimisticPromptId(createdAt: string) {
@@ -1023,49 +988,10 @@ function chatMessageStableRenderKey(message: ChatTranscriptMessage | VisibleChat
   return `${message.role}-${message.kind ?? "message"}-${stableHash(chatMessageStableSignature(message))}-${occurrence}`;
 }
 
-function localCommandDetailText(command: LocalQueuedCommand) {
-  if (command.message) {
-    return command.message;
-  }
-
-  return command.status === "sending" ? "Sending to target laptop" : "Waiting for previous task to finish";
-}
-
 function formatShortcutInstructions(files: ShortcutInstructionFile[]) {
   return files
     .map((file) => `# ${file.relativePath}\n${file.content.trimEnd()}`)
     .join("\n\n---\n\n");
-}
-
-function readLocalCommandQueue(): LocalQueuedCommand[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(localCommandQueueKey) ?? "[]");
-
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed
-      .filter(
-        (item): item is LocalQueuedCommand =>
-        item &&
-        typeof item === "object" &&
-        typeof item.id === "string" &&
-        typeof item.chatId === "string" &&
-        typeof item.text === "string" &&
-        typeof item.createdAt === "string" &&
-        (item.status === "pending" || item.status === "sending" || item.status === "failed")
-      )
-      .map((item) => ({
-        ...item,
-        status: "pending",
-        attempts: typeof item.attempts === "number" ? item.attempts : 0,
-        retryAfter: typeof item.retryAfter === "string" ? item.retryAfter : undefined,
-        optimisticMessageId: typeof item.optimisticMessageId === "string" ? item.optimisticMessageId : undefined
-      }));
-  } catch {
-    return [];
-  }
 }
 
 function readCachedActiveJobs(): Record<string, CodexRunJob[]> {
@@ -2382,7 +2308,6 @@ export function App() {
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
-  const [localCommandQueue, setLocalCommandQueue] = useState<LocalQueuedCommand[]>(() => readLocalCommandQueue());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
   const [refreshingChat, setRefreshingChat] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState<RemoteNotificationState>("default");
@@ -2423,7 +2348,6 @@ export function App() {
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const chatDetailRequestRef = useRef(0);
-  const localQueueSendingRef = useRef(false);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
   const quietDetailSuppressUntilRef = useRef(0);
@@ -2501,7 +2425,6 @@ export function App() {
       })
       .filter((project): project is ChatProjectGroup => Boolean(project));
   }, [chatIndex, normalizedSidebarSearch]);
-  const queuedLocalCommands = useMemo(() => localCommandQueue.filter((command) => command.status === "pending"), [localCommandQueue]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
 
@@ -2521,10 +2444,6 @@ export function App() {
 
     return sortJobsForChat([...jobsById.values()]);
   }, [chatJobs, state?.runner.recentJobs]);
-  const selectedQueuedLocalCommands = useMemo(
-    () => (selectedChatId ? queuedLocalCommands.filter((command) => command.chatId === selectedChatId) : []),
-    [queuedLocalCommands, selectedChatId]
-  );
   const selectedQueuedServerJobs = useMemo(
     () => (selectedChatId ? queuedServerJobs.filter((job) => job.chatId === selectedChatId) : []),
     [queuedServerJobs, selectedChatId]
@@ -2697,7 +2616,7 @@ export function App() {
   }, []);
   const selectedJob = selectedJobs.find(isActiveJob);
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
-  const selectedQueueCount = selectedQueuedServerJobs.length + selectedQueuedLocalCommands.length;
+  const selectedQueueCount = selectedQueuedServerJobs.length;
   const selectedMessagePage = selectedChat?.messagePage;
   const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
@@ -4385,10 +4304,6 @@ export function App() {
   }, [collapsedProjects]);
 
   useEffect(() => {
-    localStorage.setItem(localCommandQueueKey, JSON.stringify(localCommandQueue));
-  }, [localCommandQueue]);
-
-  useEffect(() => {
     chatMessageViewModesRef.current = chatMessageViewModes;
     localStorage.setItem(chatMessageViewModesKey, JSON.stringify(chatMessageViewModes));
   }, [chatMessageViewModes]);
@@ -4881,7 +4796,7 @@ export function App() {
         void loadChatDetail(chatId, true);
       }
 
-      const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
+      const queuedChatIds = new Set(queuedServerJobs.map((job) => job.chatId));
 
       for (const queuedChatId of queuedChatIds) {
         if (queuedChatId && queuedChatId !== chatId && !isTemporaryChatId(queuedChatId)) {
@@ -4891,163 +4806,60 @@ export function App() {
     }, backgroundSyncIntervalMs);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChatJobs, loadState, localCommandQueue]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadState, queuedServerJobs]);
 
-  useEffect(() => {
-    if (!authenticated || localQueueSendingRef.current) {
+  async function restoreQueuedJobToComposer(job: CodexRunJob) {
+    if (job.status !== "queued") {
       return;
     }
 
-    const nextCommand = localCommandQueue.find((command, index) => {
-      if (!isLocalCommandDue(command) || busyServerChatIds.has(command.chatId) || serverChatIsBusyNow(command.chatId)) {
-        return false;
-      }
+    try {
+      const result = await apiFetch<QueuedPromptMutationResult>(
+        `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}`,
+        { method: "DELETE" }
+      );
+      setDraft(result.text ?? "");
+      setPendingAttachments([]);
+      setAttachmentUploadStatuses({});
+      setNotice(result.message ?? "Queued prompt moved back to composer");
+      selectChat(job.chatId);
+      await Promise.all([
+        loadState(),
+        loadChatJobs(job.chatId),
+        selectedChatIdRef.current === job.chatId ? loadChatDetail(job.chatId, true) : Promise.resolve()
+      ]);
+      window.requestAnimationFrame(() => {
+        const editor = composerEditorRef.current;
 
-      return !localCommandQueue
-        .slice(0, index)
-        .some((previousCommand) => previousCommand.chatId === command.chatId && isLocalCommandBlocking(previousCommand));
-    });
-
-    if (!nextCommand) {
-      return;
-    }
-
-    localQueueSendingRef.current = true;
-    const receiptId = startPromptReceipt(nextCommand.chatId, nextCommand.text, "Sending queued prompt to server");
-    setLocalCommandQueue((current) =>
-      current.map((command) =>
-        command.id === nextCommand.id
-          ? { ...command, status: "sending", retryAfter: undefined, message: "Sending to target laptop" }
-          : command
-      )
-    );
-
-    void apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(nextCommand.chatId)}/prompt`, {
-      method: "POST",
-      body: JSON.stringify({ text: nextCommand.text })
-    })
-      .then(async (result) => {
-        if (result.job) {
-          rememberJob(result.job);
+        if (editor) {
+          setComposerExpanded(composerShouldExpand(editor));
         }
-
-        finishPromptReceipt(receiptId);
-        setLocalCommandQueue((current) => current.filter((command) => command.id !== nextCommand.id));
-        setNotice(result.message ?? "Prompt queued on target laptop");
-        await Promise.all([
-          loadState(),
-          loadChatJobs(nextCommand.chatId),
-          selectedChatIdRef.current === nextCommand.chatId ? loadChatDetail(nextCommand.chatId, true) : Promise.resolve()
-        ]);
-      })
-      .catch((error: unknown) => {
-        const attempts = (nextCommand.attempts ?? 0) + 1;
-        const retryDelayMs = localCommandRetryDelay(nextCommand.attempts ?? 0);
-        const retryAfter = new Date(Date.now() + retryDelayMs).toISOString();
-        const message =
-          error instanceof Error
-            ? `${error.message}; retrying in ${Math.round(retryDelayMs / 1000)}s`
-            : `Could not send queued command; retrying in ${Math.round(retryDelayMs / 1000)}s`;
-
-        setLocalCommandQueue((current) =>
-          current.map((command) =>
-            command.id === nextCommand.id
-              ? {
-                  ...command,
-                  status: "pending",
-                  attempts,
-                  retryAfter,
-                  message
-                }
-              : command
-          )
-        );
-        setNotice(message);
-        clearPromptReceipt(receiptId);
-      })
-      .finally(() => {
-        localQueueSendingRef.current = false;
       });
-  }, [
-    apiFetch,
-    authenticated,
-    busyServerChatIds,
-    clearPromptReceipt,
-    finishPromptReceipt,
-    loadChatDetail,
-    loadChatJobs,
-    loadState,
-    localCommandQueue,
-    rememberJob,
-    serverChatIsBusyNow,
-    startPromptReceipt
-  ]);
-
-  function restoreQueuedCommandToComposer(command: LocalQueuedCommand) {
-    if (command.status !== "pending") {
-      return;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not remove queued prompt");
     }
-
-    const nextChatId = command.chatId;
-    const removedMessageId = command.optimisticMessageId ?? optimisticPromptId(command.createdAt);
-
-    setLocalCommandQueue((current) => current.filter((item) => item.id !== command.id));
-    setDraft(command.text);
-    setPendingAttachments([]);
-    setAttachmentUploadStatuses({});
-    setNotice("");
-    selectChat(nextChatId);
-
-    setSelectedChat((current) => {
-      if (!current || current.id !== nextChatId || !current.messages?.length) {
-        return current;
-      }
-
-      return {
-        ...current,
-        messages: current.messages.filter((message) => message.id !== removedMessageId)
-      };
-    });
-
-    void loadChats();
-    void loadChatJobs(nextChatId);
-    void loadChatDetail(nextChatId, true);
-
-    window.requestAnimationFrame(() => {
-      const editor = composerEditorRef.current;
-
-      if (!editor) {
-        return;
-      }
-
-      setComposerExpanded(composerShouldExpand(editor));
-    });
   }
 
-  async function steerQueuedCommand(command: LocalQueuedCommand) {
-    if (!queuedCommandCanSteer(command, selectedJob, Date.now())) {
+  async function moveQueuedJobToRunNext(job: CodexRunJob) {
+    if (!queuedJobCanMoveNext(job, selectedJob, Date.now())) {
       return;
     }
 
-    setLocalCommandQueue((current) => {
-      const target = current.find((item) => item.id === command.id);
+    try {
+      const result = await apiFetch<QueuedPromptMutationResult>(
+        `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}/prioritize`,
+        { method: "POST" }
+      );
 
-      if (!target) {
-        return current;
+      if (result.job) {
+        rememberJob(result.job);
       }
 
-      return [
-        {
-          ...target,
-          status: "pending",
-          retryAfter: undefined,
-          attempts: 0,
-          message: "Moved to run next after this chat's current task finishes"
-        },
-        ...current.filter((item) => item.id !== command.id)
-      ];
-    });
-    setNotice("Moved queued prompt to run next. It will not start another Codex runner in parallel.");
+      setNotice(result.message ?? "Queued prompt moved to run next");
+      await Promise.all([loadState(), loadChatJobs(job.chatId)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not move queued prompt");
+    }
   }
 
   useEffect(() => {
@@ -5605,26 +5417,22 @@ export function App() {
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
       const optimisticMessageId = optimisticPromptId(optimisticAt);
 
-      const sameChatHasLocalQueue = localCommandQueue.some(
-        (command) => command.chatId === targetChatId && isLocalCommandBlocking(command)
-      );
-      const sameChatIsBusy =
-        sameChatHasLocalQueue || busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
+      const sameChatIsBusy = busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
 
       if (sameChatIsBusy) {
-        setLocalCommandQueue((current) => [
-          ...current,
-          {
-            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-            chatId: targetChatId,
-            text: promptText,
-            createdAt: optimisticAt,
-            status: "pending",
-            message: "Waiting for this chat's previous task to finish",
-            optimisticMessageId
-          }
-        ]);
-        setNotice("Queued locally for this chat; it will send after this chat's task is done");
+        receiptId = startPromptReceipt(targetChatId, promptText, "Queueing prompt on server");
+        setNotice("Queueing prompt on server...");
+        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
+          method: "POST",
+          body: JSON.stringify({ text: promptText })
+        });
+
+        if (result.job) {
+          rememberJob(result.job);
+        }
+
+        finishPromptReceipt(receiptId);
+        setNotice(result.message ?? "Queued on server for this chat");
       } else {
         quietDetailSuppressUntilRef.current = Date.now() + postSendQuietDetailSuppressMs;
         applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
@@ -6375,25 +6183,25 @@ export function App() {
             </div>
 
             <div className="queue-list" aria-label="Selected chat command queue">
-              {selectedQueuedLocalCommands.map((command) => (
-                <article key={command.id} className="queue-item is-queued">
+              {selectedQueuedServerJobs.map((job) => (
+                <article key={job.id} className={`queue-item is-${job.status}`}>
                   <div className="queue-status-row">
                     <span className="queue-status">
-                      {command.status === "sending" ? <Loader2 className="spin" size={15} /> : <Clock3 size={15} />}
-                      {localCommandStatusText(command)}
+                      <JobStatusIcon job={job} />
+                      {jobStatusLabel(job)}
                     </span>
                     <span className="queue-actions">
-                      <time>{formatRelative(command.createdAt)}</time>
+                      <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
                       <button
                         className="queue-steer"
                         type="button"
-                        onClick={() => void steerQueuedCommand(command)}
+                        onClick={() => void moveQueuedJobToRunNext(job)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
                           }
                         }}
-                        disabled={!queuedCommandCanSteer(command, selectedJob, durationNow)}
+                        disabled={!queuedJobCanMoveNext(job, selectedJob, durationNow)}
                         aria-label="Move queued prompt to run next"
                         title={
                           cliSteeringSupported
@@ -6406,26 +6214,13 @@ export function App() {
                       <button
                         className="queue-remove"
                         type="button"
-                        onClick={() => restoreQueuedCommandToComposer(command)}
+                        onClick={() => void restoreQueuedJobToComposer(job)}
                         aria-label="Move queued prompt back to composer"
                         title="Move back to composer"
                       >
                         <X size={14} />
                       </button>
                     </span>
-                  </div>
-                  <p className="queue-preview">{previewText(command.text, "Prompt")}</p>
-                  <p className="queue-detail">{localCommandDetailText(command)}</p>
-                </article>
-              ))}
-              {selectedQueuedServerJobs.map((job) => (
-                <article key={job.id} className={`queue-item is-${job.status}`}>
-                  <div className="queue-status-row">
-                    <span className="queue-status">
-                      <JobStatusIcon job={job} />
-                      {jobStatusLabel(job)}
-                    </span>
-                    <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
                   </div>
                   <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
                   <p className="queue-detail">{jobDetailText(job)}</p>

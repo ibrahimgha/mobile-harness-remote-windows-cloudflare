@@ -1,6 +1,6 @@
 # Backlog
 
-- [ ] Move prompt queuing server-side
+- [x] Move prompt queuing server-side
   - Approach prompt:
     - Move prompt queue state out of browser local storage and into the server.
     - Preserve per-chat queue visibility and sequencing.

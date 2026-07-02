@@ -1240,6 +1240,59 @@ app.get("/api/chats/:id/jobs", requireControlAuth, async (req, res) => {
   }
 });
 
+app.delete("/api/chats/:id/queued-prompts/:jobId", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
+  const cancelled = runner.cancelQueuedJob(jobId, chatId);
+
+  if (!cancelled) {
+    res.status(404).json({ ok: false, message: "Queued prompt not found" });
+    return;
+  }
+
+  pushEvent("action", "Queued prompt removed from server queue", {
+    action: "chat-prompt-queue-remove",
+    chatId,
+    jobId,
+    request: requestContext(req),
+    job: cancelled.job
+  });
+
+  res.json({
+    ok: true,
+    message: "Queued prompt moved back to composer",
+    chatId,
+    job: cancelled.job,
+    text: cancelled.text
+  });
+});
+
+app.post("/api/chats/:id/queued-prompts/:jobId/prioritize", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
+  const job = runner.prioritizeQueuedJob(jobId, chatId);
+
+  if (!job) {
+    res.status(404).json({ ok: false, message: "Queued prompt not found" });
+    return;
+  }
+
+  pushEvent("action", "Queued prompt moved to front of server queue", {
+    action: "chat-prompt-queue-prioritize",
+    chatId,
+    jobId,
+    request: requestContext(req),
+    job
+  });
+
+  res.json({
+    ok: true,
+    message: "Queued prompt moved to run next",
+    chatId,
+    job
+  });
+});
+
 app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
     res.json(await listChats());
