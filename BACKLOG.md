@@ -10,6 +10,24 @@
     - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
     - Preserve the visible pending prompt immediately after send.
     - Keep scroll position stable during optimistic render, server acknowledgement, polling refreshes, and incoming Codex responses.
+- [ ] Add authenticated PDF viewer
+  - Approach prompt:
+    - Add a remote PDF viewer popup for local PDF files referenced in chat messages or attachment lists.
+    - Keep files behind the existing control authentication; do not expose public direct file URLs.
+    - Support mobile-friendly page navigation, zoom, close, and fallback download/open actions.
+    - Reuse the local-file/media route pattern from the Markdown viewer where possible.
+- [ ] Add authenticated downloadable files
+  - Approach prompt:
+    - Detect non-renderable local file links and uploaded files in chat messages.
+    - Show them as file attachments with filename, type, size when available, and a download button.
+    - Serve downloads through an authenticated route on the same remote, not through public filesystem paths.
+    - Keep support for screenshots/images and Markdown viewer separate so file handling does not regress.
+- [ ] Implement real steering without parallel CLI runs
+  - Approach prompt:
+    - Do not implement steering by spawning another `codex exec resume` process.
+    - Find or build a supported attach/send path through Codex app-server, remote-control, or another stable session transport.
+    - Until a true attach/send path exists, keep steering disabled and let queued prompts wait for the running task to finish.
+    - Add tests that prove steering cannot create a separate CLI run in the same project.
 - [x] The arrow
   - Approach prompt:
     - Ditch all previously built scroll-bottom-arrow work.
