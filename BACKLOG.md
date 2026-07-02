@@ -6,6 +6,7 @@
     - Preserve per-chat queue visibility and sequencing.
     - Ensure a queued prompt is only sent after the previous task is confirmed done.
 - [ ] Stop send-time scroll jump
+  - Status: not done. Reopened because the remote still scrolls up after sending prompts on iOS.
   - Approach prompt:
     - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
     - Preserve the visible pending prompt immediately after send.
