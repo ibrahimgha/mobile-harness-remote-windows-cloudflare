@@ -1619,7 +1619,7 @@ function normalizeScreenshotMarkdown(value: string) {
       continue;
     }
 
-    if (!trimmed || trimmed.startsWith("![")) {
+    if (!trimmed || /!?\[[^\]]*\]\([^)]*\)/.test(trimmed)) {
       output.push(line);
       continue;
     }
@@ -1877,10 +1877,10 @@ function AuthenticatedImage({
   }
 
   if (failed) {
-    return <span className="image-placeholder">Screenshot unavailable</span>;
+    return <span className="image-placeholder">Image unavailable</span>;
   }
 
-  return <img className="chat-image" src={imageUrl} alt={alt || "Screenshot"} loading="lazy" onError={() => setFailed(true)} />;
+  return <img className="chat-image" src={imageUrl} alt={alt || "Image"} loading="lazy" onError={() => setFailed(true)} />;
 }
 
 function LocalImageAttachment({
@@ -1976,7 +1976,6 @@ const FormattedMessage = memo(function FormattedMessage({
   text,
   emptyText,
   token,
-  collapseLocalImages = false,
   basePath,
   onOpenLocalTextFile,
   onOpenLocalPdfFile
@@ -1984,7 +1983,6 @@ const FormattedMessage = memo(function FormattedMessage({
   text: string | undefined;
   emptyText: string;
   token: string;
-  collapseLocalImages?: boolean;
   basePath?: string;
   onOpenLocalTextFile?: (filePath: string, label: string) => void;
   onOpenLocalPdfFile?: (filePath: string, label: string) => void;
@@ -2006,10 +2004,8 @@ const FormattedMessage = memo(function FormattedMessage({
             const localDownloadFilePath = localDownloadFilePathFromHref(href, basePath);
             const label = textFromReactNode(children);
 
-            return localImagePath && collapseLocalImages ? (
+            return localImagePath ? (
               <LocalImageAttachment href={href} label={children} token={token} basePath={basePath} />
-            ) : localImagePath ? (
-              <AuthenticatedImage src={href} alt={typeof children === "string" ? children : "Output image"} token={token} basePath={basePath} />
             ) : localTextFilePath && onOpenLocalTextFile ? (
               <button
                 className="markdown-file-link"
@@ -2035,7 +2031,7 @@ const FormattedMessage = memo(function FormattedMessage({
             );
           },
           img: ({ src, alt }) =>
-            localImagePathFromSrc(src, basePath) && collapseLocalImages ? (
+            localImagePathFromSrc(src, basePath) ? (
               <LocalImageAttachment href={src} label={alt || "Screenshot"} token={token} basePath={basePath} />
             ) : (
               <AuthenticatedImage src={src} alt={alt} token={token} basePath={basePath} />
@@ -6341,7 +6337,6 @@ export function App() {
                             text={message.text}
                             emptyText={chatMessageEmptyText(message)}
                             token={token}
-                            collapseLocalImages={message.role === "user"}
                             basePath={selectedChat.projectPath}
                             onOpenLocalTextFile={openLocalTextFile}
                             onOpenLocalPdfFile={openLocalPdfFile}
