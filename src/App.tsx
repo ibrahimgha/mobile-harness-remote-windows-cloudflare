@@ -394,6 +394,7 @@ const attachmentChunkBytes = 8 * 1024 * 1024;
 const shortcutInstructionSyncIntervalMs = 3000;
 const backgroundSyncIntervalMs = 5000;
 const activeJobSyncIntervalMs = 4000;
+const postSendQuietDetailSuppressMs = 12000;
 const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
@@ -2432,7 +2433,7 @@ export function App() {
   const localQueueSendingRef = useRef(false);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
-  const backgroundDetailSuppressUntilRef = useRef(0);
+  const quietDetailSuppressUntilRef = useRef(0);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -3301,7 +3302,25 @@ export function App() {
   }, []);
 
   const loadChatDetail = useCallback(
-    async (chatId: string, quiet = false, requestedTurns?: number, requestedMode?: ChatMessageViewMode) => {
+    async (
+      chatId: string,
+      quiet = false,
+      requestedTurns?: number,
+      requestedMode?: ChatMessageViewMode,
+      options: { bypassPostSendSuppression?: boolean } = {}
+    ) => {
+      // iOS PWA can jump when automatic quiet detail refreshes race the optimistic
+      // outgoing prompt. Suppress only automatic selected-chat detail reads briefly;
+      // manual refresh/load-more/view-mode changes bypass this guard.
+      if (
+        quiet &&
+        !options.bypassPostSendSuppression &&
+        chatId === selectedChatIdRef.current &&
+        Date.now() < quietDetailSuppressUntilRef.current
+      ) {
+        return;
+      }
+
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
       const messageMode = requestedMode ?? chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode;
@@ -3575,7 +3594,9 @@ export function App() {
     await Promise.all([
       loadChats(),
       loadState(),
-      selectedChatId ? loadChatDetail(selectedChatId, true) : Promise.resolve(),
+      selectedChatId
+        ? loadChatDetail(selectedChatId, true, undefined, undefined, { bypassPostSendSuppression: true })
+        : Promise.resolve(),
       selectedChatId ? loadChatJobs(selectedChatId) : Promise.resolve()
     ]);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, loadState, selectedChatId]);
@@ -3592,7 +3613,7 @@ export function App() {
 
     try {
       await loadChatJobs(chatId);
-      await loadChatDetail(chatId, true);
+      await loadChatDetail(chatId, true, undefined, undefined, { bypassPostSendSuppression: true });
     } finally {
       setRefreshingChat(false);
     }
@@ -3615,7 +3636,7 @@ export function App() {
       return next;
     });
     setSelectedChat((current) => getCachedChatHistory(chatId, nextMode) ?? current);
-    void loadChatDetail(chatId, true, undefined, nextMode);
+    void loadChatDetail(chatId, true, undefined, nextMode, { bypassPostSendSuppression: true });
   }, [loadChatDetail]);
 
   const loadMoreMessages = useCallback(async () => {
@@ -3644,7 +3665,7 @@ export function App() {
     });
 
     try {
-      await loadChatDetail(chatId, true, nextLimit);
+      await loadChatDetail(chatId, true, nextLimit, undefined, { bypassPostSendSuppression: true });
       requestChatScroll(false);
     } finally {
       setLoadingMoreMessages(false);
@@ -4864,13 +4885,7 @@ export function App() {
       const chatId = selectedChatIdRef.current;
       if (chatId && !isTemporaryChatId(chatId)) {
         void loadChatJobs(chatId);
-        // The first 5-second background detail poll after Send can race iOS PWA
-        // rendering while the optimistic prompt and server transcript are settling.
-        // Skip only this background detail fetch; explicit refreshes and job/socket
-        // updates still fetch detail so responses can appear normally.
-        if (Date.now() >= backgroundDetailSuppressUntilRef.current) {
-          void loadChatDetail(chatId, true);
-        }
+        void loadChatDetail(chatId, true);
       }
 
       const queuedChatIds = new Set(localCommandQueue.map((command) => command.chatId));
@@ -5618,7 +5633,7 @@ export function App() {
         ]);
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
-        backgroundDetailSuppressUntilRef.current = Date.now() + backgroundSyncIntervalMs + 2500;
+        quietDetailSuppressUntilRef.current = Date.now() + postSendQuietDetailSuppressMs;
         applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
         chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
@@ -5653,6 +5668,7 @@ export function App() {
         void loadChatDetail(targetChatId, true);
       }, 1600);
     } catch (error) {
+      quietDetailSuppressUntilRef.current = 0;
       setSelectedChat(previousSelectedChat);
       setChatIndex(previousChatIndex);
       setPendingAttachments(previousAttachments);
