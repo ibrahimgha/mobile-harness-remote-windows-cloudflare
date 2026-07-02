@@ -1584,7 +1584,6 @@ const localTextFileExtensions = /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|
 const localPdfFileExtensions = /\.pdf(?::\d+(?::\d+)?)?$/i;
 const localDownloadableFileExtensions = /\.(?:[a-z0-9][a-z0-9_-]{0,15})(?::\d+(?::\d+)?)?$/i;
 const localImageLinePattern = /^((?:[a-zA-Z]:[\\/]|\\\\|\/).+\.(?:png|jpe?g|gif|webp|bmp))$/i;
-const windowsImageInLinePattern = /((?:[a-zA-Z]:[\\/]|\\\\)[^\n\r]*?\.(?:png|jpe?g|gif|webp|bmp))/i;
 const markdownWindowsImagePattern = /(!\[[^\]]*\]\()([a-zA-Z]:\\[^)\n]+\.(?:png|jpe?g|gif|webp|bmp))(\))/gi;
 
 function normalizeImagePathForMarkdown(value: string) {
@@ -1624,9 +1623,7 @@ function normalizeScreenshotMarkdown(value: string) {
       continue;
     }
 
-    const exactPath = trimmed.match(localImageLinePattern)?.[1];
-    const inlinePath = trimmed.match(windowsImageInLinePattern)?.[1];
-    const imagePath = exactPath ?? inlinePath;
+    const imagePath = trimmed.match(localImageLinePattern)?.[1];
 
     if (!imagePath) {
       output.push(line);
