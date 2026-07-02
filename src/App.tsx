@@ -2402,6 +2402,8 @@ export function App() {
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
+  const sendScrollLockUntilRef = useRef(0);
+  const sendScrollLockTimerRef = useRef<number | undefined>(undefined);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const dictationStreamRef = useRef<MediaStream | null>(null);
   const dictationChunksRef = useRef<Blob[]>([]);
@@ -3212,11 +3214,13 @@ export function App() {
     setScrollDistanceFromBottom(distanceFromBottom);
   }, [resolveScrollElement]);
 
+  const sendScrollLockIsActive = useCallback(() => Date.now() < sendScrollLockUntilRef.current, []);
+
   const updateChatAutoScrollState = useCallback((event?: { currentTarget?: HTMLDivElement }) => {
     const scroller = event?.currentTarget ?? resolveScrollElement();
-    chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+    chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom(scroller);
     updateScrollDebugPosition(scroller);
-  }, [chatIsNearBottom, resolveScrollElement, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, resolveScrollElement, sendScrollLockIsActive, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const refreshScrollPosition = () => {
@@ -3257,6 +3261,33 @@ export function App() {
 
     chatShouldAutoScrollRef.current = true;
   }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
+
+  const lockChatToBottomAfterSend = useCallback((durationMs = 2800) => {
+    sendScrollLockUntilRef.current = Math.max(sendScrollLockUntilRef.current, Date.now() + durationMs);
+    chatShouldAutoScrollRef.current = true;
+    forceNextChatScrollRef.current = true;
+
+    if (sendScrollLockTimerRef.current !== undefined) {
+      return;
+    }
+
+    const keepPinned = () => {
+      if (!sendScrollLockIsActive()) {
+        sendScrollLockTimerRef.current = undefined;
+        updateScrollDebugPosition(chatContentRef.current);
+        return;
+      }
+
+      // iOS WebKit can move the chat scroller when the focused contenteditable is
+      // cleared and the visual viewport settles after Send. Keep the transcript
+      // pinned briefly so the outgoing prompt does not appear and then jump up.
+      chatShouldAutoScrollRef.current = true;
+      scrollChatToBottom("auto");
+      sendScrollLockTimerRef.current = window.setTimeout(keepPinned, 120);
+    };
+
+    window.requestAnimationFrame(keepPinned);
+  }, [scrollChatToBottom, sendScrollLockIsActive, updateScrollDebugPosition]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
@@ -4382,6 +4413,9 @@ export function App() {
       if (promptReceiptClearTimerRef.current !== undefined) {
         window.clearTimeout(promptReceiptClearTimerRef.current);
       }
+      if (sendScrollLockTimerRef.current !== undefined) {
+        window.clearTimeout(sendScrollLockTimerRef.current);
+      }
 
       dictationRecognitionRef.current?.abort();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -4556,11 +4590,11 @@ export function App() {
 
     const frame = window.requestAnimationFrame(() => {
       updateScrollDebugPosition();
-      chatShouldAutoScrollRef.current = chatIsNearBottom();
+      chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom();
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, chatShellIsLoading, lastVisibleMessageKey, selectedChatId, sendScrollLockIsActive, updateScrollDebugPosition]);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -4579,7 +4613,7 @@ export function App() {
         frame = undefined;
         const scroller = findScrollableAncestor(target) ?? resolveScrollElement();
         updateScrollDebugPosition(scroller);
-        chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+        chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom(scroller);
       });
     };
 
@@ -4640,14 +4674,15 @@ export function App() {
     lastVisibleMessageKey,
     resolveScrollElement,
     selectedChatId,
+    sendScrollLockIsActive,
     updateScrollDebugPosition
   ]);
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
-    chatShouldAutoScrollRef.current = chatIsNearBottom();
+    chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom();
     updateScrollDebugPosition();
-  }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
+  }, [chatIsNearBottom, menuOpen, sendScrollLockIsActive, updateScrollDebugPosition]);
 
   useEffect(() => {
     const editor = composerEditorRef.current;
@@ -5600,9 +5635,8 @@ export function App() {
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
         applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
-        chatShouldAutoScrollRef.current = true;
+        lockChatToBottomAfterSend();
         requestChatScroll(true);
-        window.requestAnimationFrame(() => scrollChatToBottom("auto"));
         receiptId = startPromptReceipt(selectedChatId, promptText);
         setNotice("Sending to target laptop...");
         const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
@@ -5621,6 +5655,10 @@ export function App() {
       setDraft("");
       if (composerEditorRef.current) {
         syncComposerEditorText(composerEditorRef.current, "");
+        setComposerExpanded(composerShouldExpand(composerEditorRef.current));
+      }
+      if (receiptId) {
+        lockChatToBottomAfterSend();
       }
       if (!options.textOverride) {
         setPendingAttachments([]);
@@ -6466,8 +6504,9 @@ export function App() {
                 aria-multiline="true"
                 aria-disabled={!selectedChatId || sending}
                 data-placeholder="New prompt"
-                data-disabled={!selectedChatId || sending ? "true" : "false"}
-                contentEditable={Boolean(selectedChatId && !sending)}
+                data-disabled={!selectedChatId ? "true" : "false"}
+                data-sending={sending ? "true" : "false"}
+                contentEditable={Boolean(selectedChatId)}
                 suppressContentEditableWarning
                 inputMode="text"
                 autoCapitalize="sentences"
@@ -6476,12 +6515,26 @@ export function App() {
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
+                onBeforeInput={(event) => {
+                  if (sending) {
+                    event.preventDefault();
+                  }
+                }}
                 onInput={(event) => {
+                  if (sending) {
+                    event.preventDefault();
+                    return;
+                  }
+
                   setDraft(textFromComposerEditor(event.currentTarget));
                   setComposerExpanded(composerShouldExpand(event.currentTarget));
                 }}
                 onPaste={(event) => {
                   event.preventDefault();
+                  if (sending) {
+                    return;
+                  }
+
                   document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
                 }}
                 onKeyDown={sendPromptFromKeyboard}
