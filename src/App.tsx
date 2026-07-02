@@ -3216,6 +3216,14 @@ export function App() {
 
   const sendScrollLockIsActive = useCallback(() => Date.now() < sendScrollLockUntilRef.current, []);
 
+  const cancelSendScrollLock = useCallback(() => {
+    sendScrollLockUntilRef.current = 0;
+    if (sendScrollLockTimerRef.current !== undefined) {
+      window.clearTimeout(sendScrollLockTimerRef.current);
+      sendScrollLockTimerRef.current = undefined;
+    }
+  }, []);
+
   const updateChatAutoScrollState = useCallback((event?: { currentTarget?: HTMLDivElement }) => {
     const scroller = event?.currentTarget ?? resolveScrollElement();
     chatShouldAutoScrollRef.current = sendScrollLockIsActive() ? true : chatIsNearBottom(scroller);
@@ -3262,7 +3270,7 @@ export function App() {
     chatShouldAutoScrollRef.current = true;
   }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
 
-  const lockChatToBottomAfterSend = useCallback((durationMs = 2800) => {
+  const lockChatToBottomAfterSend = useCallback((durationMs = 6500) => {
     sendScrollLockUntilRef.current = Math.max(sendScrollLockUntilRef.current, Date.now() + durationMs);
     chatShouldAutoScrollRef.current = true;
     forceNextChatScrollRef.current = true;
@@ -4626,6 +4634,7 @@ export function App() {
 
     const handleCapturedScroll = (event: Event) => refreshPosition(event.target);
     const handleWheel = (event: WheelEvent) => {
+      cancelSendScrollLock();
       trackScrollPoint(event);
       refreshPosition(event.target);
     };
@@ -4633,6 +4642,7 @@ export function App() {
       const touch = event.touches[0] ?? event.changedTouches[0];
 
       if (touch) {
+        cancelSendScrollLock();
         trackScrollPoint(touch);
       }
 
@@ -4668,6 +4678,7 @@ export function App() {
       resizeObserver?.disconnect();
     };
   }, [
+    cancelSendScrollLock,
     chatIsNearBottom,
     chatShellIsLoading,
     findScrollableAncestor,
@@ -6363,7 +6374,7 @@ export function App() {
                   <Clock3 size={26} />
                 </div>
               )}
-              <div ref={chatEndRef} aria-hidden="true" />
+              <div ref={chatEndRef} className="chat-bottom-anchor" aria-hidden="true" />
             </div>
           ) : (
             <div className="empty-chat">
