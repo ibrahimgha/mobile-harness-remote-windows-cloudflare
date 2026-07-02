@@ -111,6 +111,26 @@ const localTextContentTypes = new Map([
   [".csv", "text/csv; charset=utf-8"],
   [".tsv", "text/tab-separated-values; charset=utf-8"]
 ]);
+const localDownloadContentTypes = new Map([
+  [".pdf", "application/pdf"],
+  [".zip", "application/zip"],
+  [".7z", "application/x-7z-compressed"],
+  [".rar", "application/vnd.rar"],
+  [".tar", "application/x-tar"],
+  [".gz", "application/gzip"],
+  [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".mp3", "audio/mpeg"],
+  [".wav", "audio/wav"],
+  [".m4a", "audio/mp4"],
+  [".mp4", "video/mp4"],
+  [".mov", "video/quicktime"],
+  [".webm", "video/webm"]
+]);
 type LiveWebSocket = WebSocket & { isAlive?: boolean };
 type ChatStartMode = "project" | "chat";
 type ChatStartTask = {
@@ -425,6 +445,39 @@ function resolveLocalTextFilePath(rawPath: unknown): { ok: true; path: string; c
   }
 
   return { ok: false, message: "Only local markdown and text files can be displayed" };
+}
+
+function resolveLocalDownloadPath(rawPath: unknown): { ok: true; path: string; contentType: string } | { ok: false; message: string } {
+  const normalized = normalizeLocalFilePath(rawPath);
+
+  if (!normalized) {
+    return { ok: false, message: "File path is required" };
+  }
+
+  if (normalized.includes("\0")) {
+    return { ok: false, message: "File path is invalid" };
+  }
+
+  const candidates = [...new Set([normalized, stripEditorLineSuffix(normalized)])];
+  const resolved = path.resolve(candidates[0] ?? normalized);
+  const strippedResolved = path.resolve(candidates.at(-1) ?? normalized);
+  const extension = path.extname(strippedResolved || resolved).toLowerCase();
+
+  return {
+    ok: true,
+    path: strippedResolved || resolved,
+    contentType: localDownloadContentTypes.get(extension) ?? imageContentTypes.get(extension) ?? localTextContentTypes.get(extension) ?? "application/octet-stream"
+  };
+}
+
+function contentDispositionValue(disposition: "inline" | "attachment", filePath: string) {
+  const filename = path.basename(filePath) || "download";
+  const quoted = filename.replace(/[\r\n"]/g, "_");
+  const encoded = encodeURIComponent(filename).replace(/['()]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+
+  return `${disposition}; filename="${quoted}"; filename*=UTF-8''${encoded}`;
 }
 
 function uploadRootForProject(projectPath: string, chatId: string, createdAt: Date): string {
@@ -1007,6 +1060,42 @@ app.get("/api/local-file", requireControlAuth, async (req, res) => {
 
     pushEvent("error", "Local text file could not be served", {
       action: "local-file",
+      request: requestContext(req),
+      path: resolved.path,
+      error: describeError(error)
+    });
+    res.status(404).json({ ok: false, message });
+  }
+});
+
+app.get("/api/local-download", requireControlAuth, async (req, res) => {
+  const resolved = resolveLocalDownloadPath(req.query.path);
+
+  if (!resolved.ok) {
+    res.status(400).json({ ok: false, message: resolved.message });
+    return;
+  }
+
+  try {
+    const stat = await fsp.stat(resolved.path);
+
+    if (!stat.isFile()) {
+      res.status(404).json({ ok: false, message: "File not found" });
+      return;
+    }
+
+    const disposition = req.query.disposition === "inline" ? "inline" : "attachment";
+
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Type", resolved.contentType);
+    res.setHeader("Content-Disposition", contentDispositionValue(disposition, resolved.path));
+    res.sendFile(resolved.path, { dotfiles: "allow" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not read file";
+
+    pushEvent("error", "Local file could not be served for download", {
+      action: "local-download",
       request: requestContext(req),
       path: resolved.path,
       error: describeError(error)

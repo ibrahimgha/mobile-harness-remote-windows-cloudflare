@@ -9,6 +9,7 @@ import {
   CircleX,
   Clock3,
   Copy,
+  Download,
   Eye,
   FileText,
   Folder,
@@ -334,6 +335,13 @@ type ShortcutInstructionFile = {
   size: number;
   updatedAt: string;
   content: string;
+};
+
+type SelectedLocalPdfFile = {
+  path: string;
+  label: string;
+  mediaUrl: string;
+  downloadUrl: string;
 };
 
 type ShortcutInstructionsResult = {
@@ -1539,6 +1547,8 @@ function deliveryLabel(state: BridgeState | null) {
 
 const localImageExtensions = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 const localTextFileExtensions = /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv)(?::\d+(?::\d+)?)?$/i;
+const localPdfFileExtensions = /\.pdf(?::\d+(?::\d+)?)?$/i;
+const localDownloadableFileExtensions = /\.(?:[a-z0-9][a-z0-9_-]{0,15})(?::\d+(?::\d+)?)?$/i;
 const localImageLinePattern = /^((?:[a-zA-Z]:[\\/]|\\\\|\/).+\.(?:png|jpe?g|gif|webp|bmp))$/i;
 const windowsImageInLinePattern = /((?:[a-zA-Z]:[\\/]|\\\\)[^\n\r]*?\.(?:png|jpe?g|gif|webp|bmp))/i;
 const markdownWindowsImagePattern = /(!\[[^\]]*\]\()([a-zA-Z]:\\[^)\n]+\.(?:png|jpe?g|gif|webp|bmp))(\))/gi;
@@ -1698,6 +1708,67 @@ function localTextFilePathFromHref(href: string | undefined, basePath?: string) 
   return `${basePath.replace(/\\/g, "/").replace(/\/+$/, "")}/${value.replace(/^\.?\//, "")}`;
 }
 
+function localDownloadFilePathFromHref(href: string | undefined, basePath?: string) {
+  if (!href) {
+    return null;
+  }
+
+  let value = href.trim();
+
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value) && !value.startsWith("file://")) {
+    return null;
+  }
+
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    try {
+      value = decodeURI(value);
+    } catch {
+      return null;
+    }
+  }
+
+  if (value.startsWith("file://")) {
+    try {
+      const url = new URL(value);
+      value = url.pathname;
+    } catch {
+      value = value.replace(/^file:\/+/i, "");
+    }
+  }
+
+  value = value.replace(/\\/g, "/");
+
+  if (/^\/[a-zA-Z]:\//.test(value)) {
+    value = value.slice(1);
+  }
+
+  if (!localDownloadableFileExtensions.test(value)) {
+    return null;
+  }
+
+  if (/^(?:[a-zA-Z]:\/|\/\/|\/)/.test(value)) {
+    return value;
+  }
+
+  if (!basePath?.trim()) {
+    return null;
+  }
+
+  return `${basePath.replace(/\\/g, "/").replace(/\/+$/, "")}/${value.replace(/^\.?\//, "")}`;
+}
+
+function localPdfFilePathFromHref(href: string | undefined, basePath?: string) {
+  const localPath = localDownloadFilePathFromHref(href, basePath);
+
+  if (!localPath || !localPdfFileExtensions.test(localPath)) {
+    return null;
+  }
+
+  return localPath;
+}
+
 function localFileLabel(filePath: string, fallback: string) {
   const withoutLine = filePath.replace(/:\d+(?::\d+)?$/, "");
   const name = withoutLine.split(/[\\/]/).filter(Boolean).at(-1);
@@ -1705,8 +1776,18 @@ function localFileLabel(filePath: string, fallback: string) {
   return fallback.trim() || name || filePath;
 }
 
+function localDownloadUrl(filePath: string, token: string, disposition: "inline" | "attachment" = "attachment") {
+  const params = new URLSearchParams({ path: filePath, disposition });
+
+  if (token) {
+    params.set("token", token);
+  }
+
+  return `/api/local-download?${params.toString()}`;
+}
+
 function markdownUrlTransform(url: string) {
-  if (localImagePathFromSrc(url) || localTextFilePathFromHref(url)) {
+  if (localImagePathFromSrc(url) || localTextFilePathFromHref(url) || localDownloadFilePathFromHref(url)) {
     return url;
   }
 
@@ -1778,6 +1859,24 @@ function LocalImageAttachment({
   );
 }
 
+function LocalFileDownload({
+  filePath,
+  label,
+  token
+}: {
+  filePath: string;
+  label: ReactNode;
+  token: string;
+}) {
+  const href = useMemo(() => localDownloadUrl(filePath, token, "attachment"), [filePath, token]);
+
+  return (
+    <a className="markdown-file-link local-file-download" href={href} download={localFileLabel(filePath, textFromReactNode(label))}>
+      {label}
+    </a>
+  );
+}
+
 function textFromReactNode(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") {
     return String(node);
@@ -1832,7 +1931,8 @@ const FormattedMessage = memo(function FormattedMessage({
   token,
   collapseLocalImages = false,
   basePath,
-  onOpenLocalTextFile
+  onOpenLocalTextFile,
+  onOpenLocalPdfFile
 }: {
   text: string | undefined;
   emptyText: string;
@@ -1840,6 +1940,7 @@ const FormattedMessage = memo(function FormattedMessage({
   collapseLocalImages?: boolean;
   basePath?: string;
   onOpenLocalTextFile?: (filePath: string, label: string) => void;
+  onOpenLocalPdfFile?: (filePath: string, label: string) => void;
 }) {
   if (!text?.trim()) {
     return <div className="message-empty">{emptyText}</div>;
@@ -1854,6 +1955,8 @@ const FormattedMessage = memo(function FormattedMessage({
           a: ({ children, href }) => {
             const localImagePath = localImagePathFromSrc(href, basePath);
             const localTextFilePath = localTextFilePathFromHref(href, basePath);
+            const localPdfFilePath = localPdfFilePathFromHref(href, basePath);
+            const localDownloadFilePath = localDownloadFilePathFromHref(href, basePath);
             const label = textFromReactNode(children);
 
             return localImagePath && collapseLocalImages ? (
@@ -1868,6 +1971,16 @@ const FormattedMessage = memo(function FormattedMessage({
               >
                 {children}
               </button>
+            ) : localPdfFilePath && onOpenLocalPdfFile ? (
+              <button
+                className="markdown-file-link"
+                type="button"
+                onClick={() => onOpenLocalPdfFile(localPdfFilePath, localFileLabel(localPdfFilePath, label))}
+              >
+                {children}
+              </button>
+            ) : localDownloadFilePath ? (
+              <LocalFileDownload filePath={localDownloadFilePath} label={children} token={token} />
             ) : (
               <a href={href} target="_blank" rel="noreferrer">
                 {children}
@@ -2246,6 +2359,7 @@ export function App() {
   const [selectedInstructionContent, setSelectedInstructionContent] = useState("");
   const [selectedInstructionLoading, setSelectedInstructionLoading] = useState(false);
   const [selectedInstructionError, setSelectedInstructionError] = useState("");
+  const [selectedPdfFile, setSelectedPdfFile] = useState<SelectedLocalPdfFile | null>(null);
   const [projectActionMode, setProjectActionMode] = useState<"project" | "chat" | null>(null);
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [projectActionError, setProjectActionError] = useState("");
@@ -3285,11 +3399,24 @@ export function App() {
     setSelectedInstructionLoading(true);
   }, []);
 
+  const openLocalPdfFile = useCallback((filePath: string, label: string) => {
+    setSelectedPdfFile({
+      path: filePath,
+      label: localFileLabel(filePath, label),
+      mediaUrl: localDownloadUrl(filePath, token, "inline"),
+      downloadUrl: localDownloadUrl(filePath, token, "attachment")
+    });
+  }, [token]);
+
   const closeInstructionFile = useCallback(() => {
     setSelectedInstructionFile(null);
     setSelectedInstructionContent("");
     setSelectedInstructionError("");
     setSelectedInstructionLoading(false);
+  }, []);
+
+  const closePdfFile = useCallback(() => {
+    setSelectedPdfFile(null);
   }, []);
 
   const rememberJob = useCallback(
@@ -5412,6 +5539,9 @@ export function App() {
         setNotice("Queued locally for this chat; it will send after this chat's task is done");
       } else {
         applyOptimisticPrompt(selectedChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
+        chatShouldAutoScrollRef.current = true;
+        requestChatScroll(true);
+        window.requestAnimationFrame(() => scrollChatToBottom("auto"));
         receiptId = startPromptReceipt(selectedChatId, promptText);
         setNotice("Sending to target laptop...");
         const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(selectedChatId)}/prompt`, {
@@ -5936,6 +6066,31 @@ export function App() {
         </div>
       ) : null}
 
+      {selectedPdfFile ? (
+        <div className="markdown-viewer-overlay pdf-viewer-overlay" role="dialog" aria-modal="true" aria-labelledby="pdf-viewer-title">
+          <section className="markdown-viewer pdf-viewer">
+            <header className="markdown-viewer-header pdf-viewer-header">
+              <div>
+                <h2 id="pdf-viewer-title">{selectedPdfFile.label}</h2>
+                <p>{selectedPdfFile.path}</p>
+              </div>
+              <a className="icon-button" href={selectedPdfFile.downloadUrl} download={selectedPdfFile.label} aria-label="Download PDF" title="Download PDF">
+                <Download size={18} />
+              </a>
+              <button className="icon-button" type="button" onClick={closePdfFile} aria-label="Close PDF viewer">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="pdf-viewer-body">
+              <iframe className="pdf-frame" src={selectedPdfFile.mediaUrl} title={selectedPdfFile.label} />
+              <a className="pdf-fallback-download" href={selectedPdfFile.downloadUrl} download={selectedPdfFile.label}>
+                Download PDF
+              </a>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">
           <button
@@ -6088,6 +6243,7 @@ export function App() {
                             collapseLocalImages={message.role === "user"}
                             basePath={selectedChat.projectPath}
                             onOpenLocalTextFile={openLocalTextFile}
+                            onOpenLocalPdfFile={openLocalPdfFile}
                           />
                         )}
                       </article>
