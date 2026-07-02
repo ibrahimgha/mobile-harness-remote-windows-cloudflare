@@ -25,6 +25,13 @@
     - Find or build a supported attach/send path through Codex app-server, remote-control, or another stable session transport.
     - Until a true attach/send path exists, keep steering disabled and let queued prompts wait for the running task to finish.
     - Add tests that prove steering cannot create a separate CLI run in the same project.
+- [ ] Stop only the running worker for the current chat
+  - Approach prompt:
+    - Add a stop button for an active running worker.
+    - Scope cancellation to the selected chat and selected run only.
+    - Do not stop workers, queues, or Codex processes belonging to other chats.
+    - Reflect the stopped state in the chat timeline, running strip, fullscreen running view, and queue scheduler.
+    - Add tests proving stopping one chat does not interrupt another running chat.
 - [x] The arrow
   - Approach prompt:
     - Ditch all previously built scroll-bottom-arrow work.
