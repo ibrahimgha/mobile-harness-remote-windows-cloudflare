@@ -695,6 +695,14 @@ export class CodexRunner {
     }
 
     child.kill("SIGTERM");
+
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, 5000);
+    killTimer.unref?.();
+    child.once("close", () => clearTimeout(killTimer));
   }
 
   private async stdoutHasTurnCompleted(job: CodexRunJob): Promise<boolean> {

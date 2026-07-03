@@ -819,6 +819,7 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
   }
 
   const incomingMessages = [...(incoming.messages ?? [])];
+  let replacedOptimisticPrompt = false;
   const optimisticMessages = (current.messages ?? []).filter((message) => {
     if (isOptimisticVoiceNoteMessage(message)) {
       return true;
@@ -842,6 +843,7 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
         createdAt: message.createdAt,
         label: message.label ?? serverMessage.label
       };
+      replacedOptimisticPrompt = true;
       return false;
     }
 
@@ -849,7 +851,7 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
   });
 
   if (!optimisticMessages.length) {
-    return incoming;
+    return replacedOptimisticPrompt ? { ...incoming, messages: incomingMessages } : incoming;
   }
 
   const messages = dedupeMessagesById([...incomingMessages, ...optimisticMessages])
