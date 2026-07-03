@@ -105,7 +105,7 @@ type CodexRunJob = {
   id: string;
   chatId: string;
   projectPath: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "stopped";
   kind?: "prompt" | "steer";
   queuePosition?: number;
   createdAt: string;
@@ -791,10 +791,10 @@ function createOptimisticPromptMessages(
   return messages;
 }
 
-function serverContainsOptimisticPrompt(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
+function findServerPromptMatchIndex(messages: ChatTranscriptMessage[], optimistic: ChatTranscriptMessage) {
   const optimisticTime = Date.parse(optimistic.createdAt);
 
-  return messages.some((message) => {
+  return messages.findIndex((message) => {
     if (message.role !== "user" || message.text.trimEnd() !== optimistic.text.trimEnd()) {
       return false;
     }
@@ -818,13 +818,34 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
     return incoming;
   }
 
-  const incomingMessages = incoming.messages ?? [];
+  const incomingMessages = [...(incoming.messages ?? [])];
   const optimisticMessages = (current.messages ?? []).filter((message) => {
     if (isOptimisticVoiceNoteMessage(message)) {
       return true;
     }
 
-    return isOptimisticPromptMessage(message) && !serverContainsOptimisticPrompt(incomingMessages, message);
+    if (!isOptimisticPromptMessage(message)) {
+      return false;
+    }
+
+    const matchingPromptIndex = findServerPromptMatchIndex(incomingMessages, message);
+
+    if (matchingPromptIndex >= 0) {
+      const serverMessage = incomingMessages[matchingPromptIndex];
+
+      // Keep the optimistic prompt's render identity after the server echo arrives.
+      // Replacing it with a fresh transcript node during polling makes iOS PWAs jump
+      // upward a few seconds after send, especially while the keyboard/composer is active.
+      incomingMessages[matchingPromptIndex] = {
+        ...serverMessage,
+        id: message.id,
+        createdAt: message.createdAt,
+        label: message.label ?? serverMessage.label
+      };
+      return false;
+    }
+
+    return true;
   });
 
   if (!optimisticMessages.length) {
@@ -1427,7 +1448,8 @@ function sortJobsForChat(jobs: CodexRunJob[]) {
     running: 0,
     queued: 1,
     failed: 2,
-    completed: 3
+    stopped: 3,
+    completed: 4
   };
 
   return [...jobs].sort((a, b) => {
@@ -1474,10 +1496,18 @@ function jobStatusLabel(job: CodexRunJob) {
     return "Failed";
   }
 
+  if (job.status === "stopped") {
+    return "Stopped";
+  }
+
   return "Completed";
 }
 
 function jobDetailText(job: CodexRunJob) {
+  if (job.status === "stopped") {
+    return job.message ?? "Stopped from the remote for this chat.";
+  }
+
   if (job.status === "failed" && job.message) {
     return job.message;
   }
@@ -2011,7 +2041,7 @@ function JobStatusIcon({ job }: { job: CodexRunJob }) {
     return <CheckCircle2 size={15} />;
   }
 
-  if (job.status === "failed") {
+  if (job.status === "failed" || job.status === "stopped") {
     return <CircleX size={15} />;
   }
 
@@ -2302,6 +2332,7 @@ export function App() {
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [stoppingJobIds, setStoppingJobIds] = useState<Set<string>>(() => new Set());
   const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
@@ -2622,9 +2653,9 @@ export function App() {
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
     () =>
       selectedJobs
-        .filter((job) => job.status === "failed")
+        .filter((job) => job.status === "failed" || job.status === "stopped")
         .map((job) => ({
-          id: `run-failure-${job.id}`,
+          id: `run-status-${job.id}`,
           role: "assistant" as const,
           text: jobDetailText(job),
           createdAt: job.finishedAt ?? job.createdAt,
@@ -4862,6 +4893,36 @@ export function App() {
     }
   }
 
+  async function stopRunningJob(job: CodexRunJob) {
+    if (job.status !== "running" || stoppingJobIds.has(job.id)) {
+      return;
+    }
+
+    setStoppingJobIds((current) => new Set(current).add(job.id));
+
+    try {
+      const result = await apiFetch<ApiResult>(
+        `/api/chats/${encodeURIComponent(job.chatId)}/jobs/${encodeURIComponent(job.id)}/stop`,
+        { method: "POST" }
+      );
+
+      if (result.job) {
+        rememberJob(result.job);
+      }
+
+      setNotice(result.message ?? "Stop requested for this chat");
+      await Promise.all([loadState(), loadChatJobs(job.chatId)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not stop running worker");
+    } finally {
+      setStoppingJobIds((current) => {
+        const next = new Set(current);
+        next.delete(job.id);
+        return next;
+      });
+    }
+  }
+
   useEffect(() => {
     if (!authenticated || !selectedChatId || !selectedJob || !["queued", "running"].includes(selectedJob.status)) {
       return;
@@ -6253,6 +6314,18 @@ export function App() {
               ) : null}
             </span>
             <small>{selectedJob.promptPreview}</small>
+            {selectedJob.status === "running" ? (
+              <button
+                className="job-stop-button"
+                type="button"
+                onClick={() => void stopRunningJob(selectedJob)}
+                disabled={stoppingJobIds.has(selectedJob.id)}
+                aria-label="Stop this chat's running worker"
+                title="Stop this chat's running worker"
+              >
+                {stoppingJobIds.has(selectedJob.id) ? <Loader2 className="spin" size={14} /> : <CircleX size={15} />}
+              </button>
+            ) : null}
           </div>
         ) : null}
 

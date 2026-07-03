@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createWriteStream, existsSync, readdirSync, statSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +9,7 @@ type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
 };
 
-type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed";
+type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed" | "stopped";
 
 type EnqueueOptions = {
   chatId: string;
@@ -280,6 +280,8 @@ export class CodexRunner {
   private readonly queue: Array<{ job: CodexRunJob; text: string }> = [];
   private readonly jobs = new Map<string, CodexRunJob>();
   private readonly jobTexts = new Map<string, string>();
+  private readonly runningChildren = new Map<string, ChildProcessWithoutNullStreams>();
+  private readonly stopRequestedJobIds = new Set<string>();
   private readonly runningChatIds = new Set<string>();
 
   readonly bypassSandbox = shouldBypassSandbox();
@@ -343,6 +345,26 @@ export class CodexRunner {
     this.emit(item.job, "queued");
 
     return item.job;
+  }
+
+  stopRunningJob(jobId: string, chatId?: string): CodexRunJob | null {
+    const job = this.jobs.get(jobId);
+
+    if (!job || job.status !== "running" || (chatId && job.chatId !== chatId)) {
+      return null;
+    }
+
+    const child = this.runningChildren.get(job.id);
+    if (!child) {
+      return null;
+    }
+
+    this.stopRequestedJobIds.add(job.id);
+    job.message = "Stop requested for this chat's Codex worker";
+    this.emit(job, "heartbeat");
+    this.terminateChild(child);
+
+    return job;
   }
 
   async reconcileChatJobs(chatId: string): Promise<CodexRunJob[]> {
@@ -506,6 +528,7 @@ export class CodexRunner {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
+      this.runningChildren.set(job.id, child);
 
       const clearPostCompletionKillTimer = () => {
         if (postCompletionKillTimer) {
@@ -534,7 +557,7 @@ export class CodexRunner {
       };
 
       const completeJob = async (
-        status: "completed" | "failed",
+        status: "completed" | "failed" | "stopped",
         code: number | null,
         signal: NodeJS.Signals | null,
         source: "close" | "turn.completed"
@@ -544,7 +567,7 @@ export class CodexRunner {
           return;
         }
 
-        if (job.status === "completed" || job.status === "failed") {
+        if (job.status === "completed" || job.status === "failed" || job.status === "stopped") {
           completed = true;
           resolve();
           return;
@@ -557,6 +580,12 @@ export class CodexRunner {
         job.status = status;
 
         try {
+          if (status === "stopped") {
+            job.message = "Stopped from the remote for this chat";
+            this.emit(job, "stopped");
+            return;
+          }
+
           job.codexTranscript = await this.verifyCodexTranscript(job, text);
 
           if (status === "completed") {
@@ -577,7 +606,7 @@ export class CodexRunner {
           job.message = error instanceof Error ? error.message : "Codex CLI transcript verification failed";
           this.emit(job, "failed");
         } finally {
-          if (job.status === "completed" || job.status === "failed") {
+          if (job.status === "completed" || job.status === "failed" || job.status === "stopped") {
             this.jobTexts.delete(job.id);
           }
 
@@ -624,7 +653,7 @@ export class CodexRunner {
             handleLine(stdoutBuffer);
           }
 
-          completionPromise ??= completeJob(code === 0 ? "completed" : "failed", code, signal, "close");
+          completionPromise ??= completeJob(this.stopRequestedJobIds.has(job.id) ? "stopped" : code === 0 ? "completed" : "failed", code, signal, "close");
           await completionPromise;
           stdout.end();
           stderr.end();
@@ -643,7 +672,29 @@ export class CodexRunner {
           resolve();
         });
       });
+    }).finally(() => {
+      this.runningChildren.delete(job.id);
+      this.stopRequestedJobIds.delete(job.id);
     });
+  }
+
+  private terminateChild(child: ChildProcessWithoutNullStreams) {
+    if (process.platform === "win32" && child.pid) {
+      const taskkill = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+
+      taskkill.on("error", () => {
+        if (!child.killed) {
+          child.kill();
+        }
+      });
+
+      return;
+    }
+
+    child.kill("SIGTERM");
   }
 
   private async stdoutHasTurnCompleted(job: CodexRunJob): Promise<boolean> {

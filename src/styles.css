@@ -2064,7 +2064,7 @@ p {
 .job-strip {
   grid-row: 5;
   display: grid;
-  grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr) 28px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -2135,6 +2135,29 @@ p {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.job-stop-button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--red);
+  cursor: pointer;
+}
+
+.job-stop-button:hover:not(:disabled),
+.job-stop-button:focus-visible {
+  background: rgba(190, 59, 47, 0.12);
+  outline: none;
+}
+
+.job-stop-button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .run-board-overlay {
@@ -2846,7 +2869,7 @@ p {
   .job-strip {
     grid-row: 3;
     align-self: start;
-    grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr);
+    grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr) 26px;
     min-height: 34px;
     padding: 0 10px;
     font-size: 0.8rem;

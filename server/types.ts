@@ -42,7 +42,7 @@ export type BridgeState = {
 export type CodexRunMode = "codex-cli" | "simulation";
 export type PromptDeliveryMode = "cli";
 
-export type CodexRunStatus = "queued" | "running" | "completed" | "failed";
+export type CodexRunStatus = "queued" | "running" | "completed" | "failed" | "stopped";
 
 export type CodexRunSettings = {
   model: string;

@@ -7,7 +7,7 @@
     - Preserve per-chat queue visibility and sequencing.
     - Ensure a queued prompt is only sent after the previous task is confirmed done.
 - [x] Stop send-time scroll jump
-  - Status: accepted after remote testing.
+  - Status: patched again after the refresh/optimistic echo issue came back.
   - Approach prompt:
     - Fix the behavior where sending a new prompt causes the page to scroll up to the previous prompt.
     - Preserve the visible pending prompt immediately after send.
@@ -25,7 +25,7 @@
     - Find or build a supported attach/send path through Codex app-server, remote-control, or another stable session transport.
     - Until a true attach/send path exists, keep steering disabled and let queued prompts wait for the running task to finish.
     - Add tests that prove steering cannot create a separate CLI run in the same project.
-- [ ] Stop only the running worker for the current chat
+- [x] Stop only the running worker for the current chat
   - Approach prompt:
     - Add a stop button for an active running worker.
     - Scope cancellation to the selected chat and selected run only.

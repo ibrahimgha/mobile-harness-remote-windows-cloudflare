@@ -1240,6 +1240,32 @@ app.get("/api/chats/:id/jobs", requireControlAuth, async (req, res) => {
   }
 });
 
+app.post("/api/chats/:id/jobs/:jobId/stop", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
+  const job = runner.stopRunningJob(jobId, chatId);
+
+  if (!job) {
+    res.status(404).json({ ok: false, message: "Running worker not found for this chat" });
+    return;
+  }
+
+  pushEvent("action", "Stop requested for running Codex worker", {
+    action: "chat-worker-stop",
+    chatId,
+    jobId,
+    request: requestContext(req),
+    job
+  });
+
+  res.json({
+    ok: true,
+    message: "Stop requested for this chat",
+    chatId,
+    job
+  });
+});
+
 app.delete("/api/chats/:id/queued-prompts/:jobId", requireControlAuth, (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
