@@ -1319,6 +1319,46 @@ app.post("/api/chats/:id/queued-prompts/:jobId/prioritize", requireControlAuth, 
   });
 });
 
+app.post("/api/chats/:id/queued-prompts/:jobId/steer", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
+  const result = runner.steerQueuedJob(jobId, chatId);
+
+  if (!result) {
+    res.status(404).json({ ok: false, message: "Queued prompt not found" });
+    return;
+  }
+
+  if (result.hadRunningJob && !result.stoppedJob) {
+    res.status(409).json({
+      ok: false,
+      message: "Queued prompt was prioritized, but the running worker could not be stopped",
+      chatId,
+      job: result.job
+    });
+    return;
+  }
+
+  pushEvent("action", "Queued prompt will steer by stopping the current worker", {
+    action: "chat-prompt-queue-steer",
+    chatId,
+    jobId,
+    request: requestContext(req),
+    job: result.job,
+    stoppedJob: result.stoppedJob
+  });
+
+  res.json({
+    ok: true,
+    message: result.stoppedJob
+      ? "Stopping current worker; queued prompt will run next"
+      : "Queued prompt moved to run next",
+    chatId,
+    job: result.job,
+    stoppedJob: result.stoppedJob
+  });
+});
+
 app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
     res.json(await listChats());

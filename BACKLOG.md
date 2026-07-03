@@ -19,12 +19,13 @@
     - Show non-renderable files as attachments with filename, type, size when available, and a reliable download action.
     - Serve all viewers and downloads through authenticated same-origin routes.
     - Keep screenshot/image rendering stable and separate from file-download handling.
-- [ ] Implement real steering without parallel CLI runs
+- [x] Implement steering as stop current worker, then run queued prompt
   - Approach prompt:
-    - Do not implement steering by spawning another `codex exec resume` process.
-    - Find or build a supported attach/send path through Codex app-server, remote-control, or another stable session transport.
-    - Until a true attach/send path exists, keep steering disabled and let queued prompts wait for the running task to finish.
-    - Add tests that prove steering cannot create a separate CLI run in the same project.
+    - Treat a steer as stopping the current running worker for that chat.
+    - Prioritize the selected queued prompt server-side.
+    - After the stopped worker exits, let the existing server queue scheduler start the selected queued prompt.
+    - Do not spawn a parallel `codex exec resume` process in the same chat.
+    - Add tests proving steering rejects cross-chat stop behavior and targets only the selected chat.
 - [x] Stop only the running worker for the current chat
   - Approach prompt:
     - Add a stop button for an active running worker.

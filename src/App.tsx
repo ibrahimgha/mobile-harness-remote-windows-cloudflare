@@ -255,6 +255,7 @@ type ChatJobsResult = {
 type QueuedPromptMutationResult = ApiResult & {
   chatId: string;
   job: CodexRunJob;
+  stoppedJob?: CodexRunJob;
   text?: string;
 };
 
@@ -373,7 +374,6 @@ const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
-const cliSteeringSupported = false;
 const maxCachedChatHistories = 20;
 const maxCachedChatStorageBytes = 2 * 1024 * 1024;
 const maxCachedChatBytes = 160 * 1024;
@@ -4873,14 +4873,14 @@ export function App() {
     }
   }
 
-  async function moveQueuedJobToRunNext(job: CodexRunJob) {
+  async function steerQueuedJob(job: CodexRunJob) {
     if (!queuedJobCanMoveNext(job, selectedJob, Date.now())) {
       return;
     }
 
     try {
       const result = await apiFetch<QueuedPromptMutationResult>(
-        `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}/prioritize`,
+        `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}/steer`,
         { method: "POST" }
       );
 
@@ -4888,10 +4888,14 @@ export function App() {
         rememberJob(result.job);
       }
 
-      setNotice(result.message ?? "Queued prompt moved to run next");
+      if (result.stoppedJob) {
+        rememberJob(result.stoppedJob);
+      }
+
+      setNotice(result.message ?? "Stopping current worker; queued prompt will run next");
       await Promise.all([loadState(), loadChatJobs(job.chatId)]);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not move queued prompt");
+      setNotice(error instanceof Error ? error.message : "Could not steer queued prompt");
     }
   }
 
@@ -6258,19 +6262,15 @@ export function App() {
                       <button
                         className="queue-steer"
                         type="button"
-                        onClick={() => void moveQueuedJobToRunNext(job)}
+                        onClick={() => void steerQueuedJob(job)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
                           }
                         }}
                         disabled={!queuedJobCanMoveNext(job, selectedJob, durationNow)}
-                        aria-label="Move queued prompt to run next"
-                        title={
-                          cliSteeringSupported
-                            ? "Steer into running chat"
-                            : "Run this queued prompt next without starting another Codex runner in parallel"
-                        }
+                        aria-label="Stop current worker and run this queued prompt next"
+                        title="Stop the current worker for this chat, then run this queued prompt next"
                       >
                         <ArrowRight size={14} />
                       </button>

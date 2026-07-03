@@ -347,6 +347,27 @@ export class CodexRunner {
     return item.job;
   }
 
+  steerQueuedJob(jobId: string, chatId: string): { job: CodexRunJob; stoppedJob?: CodexRunJob; hadRunningJob: boolean } | null {
+    const job = this.prioritizeQueuedJob(jobId, chatId);
+
+    if (!job) {
+      return null;
+    }
+
+    const runningJob = this.jobsForChat(chatId).find((candidate) => candidate.status === "running");
+    const stoppedJob = runningJob ? this.stopRunningJob(runningJob.id, chatId) ?? undefined : undefined;
+
+    if (!runningJob) {
+      this.processNext();
+    }
+
+    return {
+      job,
+      stoppedJob,
+      hadRunningJob: Boolean(runningJob)
+    };
+  }
+
   stopRunningJob(jobId: string, chatId?: string): CodexRunJob | null {
     const job = this.jobs.get(jobId);
 
