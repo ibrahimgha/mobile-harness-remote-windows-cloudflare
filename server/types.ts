@@ -44,17 +44,30 @@ export type PromptDeliveryMode = "cli";
 
 export type CodexRunStatus = "queued" | "running" | "completed" | "failed" | "stopped";
 
+export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type CodexRunSpeed = "default" | "priority";
+
 export type CodexRunSettings = {
   model: string;
-  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
-  speed: "default" | "priority";
+  reasoningEffort: CodexReasoningEffort;
+  speed: CodexRunSpeed;
   updatedAt: string;
+};
+
+export type CodexModelCapability = {
+  model: string;
+  label: string;
+  description?: string;
+  reasoningEfforts: CodexReasoningEffort[];
+  defaultReasoningEffort: CodexReasoningEffort;
+  speeds: CodexRunSpeed[];
 };
 
 export type CodexRunSettingsOptions = {
   models: string[];
   reasoningEfforts: CodexRunSettings["reasoningEffort"][];
   speeds: CodexRunSettings["speed"][];
+  modelCapabilities: Record<string, CodexModelCapability>;
 };
 
 export type CodexRunJob = {

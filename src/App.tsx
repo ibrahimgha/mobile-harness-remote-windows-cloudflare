@@ -78,15 +78,25 @@ type BridgeState = {
 
 type CodexRunSettings = {
   model: string;
-  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   speed: "default" | "priority";
   updatedAt: string;
+};
+
+type CodexModelCapability = {
+  model: string;
+  label: string;
+  description?: string;
+  reasoningEfforts: CodexRunSettings["reasoningEffort"][];
+  defaultReasoningEffort: CodexRunSettings["reasoningEffort"];
+  speeds: CodexRunSettings["speed"][];
 };
 
 type CodexRunSettingsOptions = {
   models: string[];
   reasoningEfforts: CodexRunSettings["reasoningEffort"][];
   speeds: CodexRunSettings["speed"][];
+  modelCapabilities?: Record<string, CodexModelCapability>;
 };
 
 type BridgeEvent = {
@@ -2140,6 +2150,10 @@ function settingLabel(value: string) {
     return "X High";
   }
 
+  if (value === "priority") {
+    return "Fast";
+  }
+
   return value
     .split(/[-_]/)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -2165,9 +2179,13 @@ function RunSettingsPanel({
   };
   const available = options ?? {
     models: ["default"],
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"] as CodexRunSettings["reasoningEffort"][],
-    speeds: ["default", "priority"] as CodexRunSettings["speed"][]
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as CodexRunSettings["reasoningEffort"][],
+    speeds: ["default", "priority"] as CodexRunSettings["speed"][],
+    modelCapabilities: {}
   };
+  const selectedCapability = available.modelCapabilities?.[current.model];
+  const availableReasoningEfforts = selectedCapability?.reasoningEfforts ?? available.reasoningEfforts;
+  const availableSpeeds = selectedCapability?.speeds ?? available.speeds;
 
   return (
     <section className="run-settings-panel" aria-label="Global Codex run settings">
@@ -2186,7 +2204,7 @@ function RunSettingsPanel({
           >
             {available.models.map((model) => (
               <option key={model} value={model}>
-                {model === "default" ? "Default" : model}
+                {available.modelCapabilities?.[model]?.label ?? (model === "default" ? "Default" : model)}
               </option>
             ))}
           </select>
@@ -2199,7 +2217,7 @@ function RunSettingsPanel({
             onChange={(event) => onChange({ reasoningEffort: event.currentTarget.value as CodexRunSettings["reasoningEffort"] })}
             aria-label="Global reasoning level"
           >
-            {available.reasoningEfforts.map((effort) => (
+            {availableReasoningEfforts.map((effort) => (
               <option key={effort} value={effort}>
                 {settingLabel(effort)}
               </option>
@@ -2214,7 +2232,7 @@ function RunSettingsPanel({
             onChange={(event) => onChange({ speed: event.currentTarget.value as CodexRunSettings["speed"] })}
             aria-label="Global speed"
           >
-            {available.speeds.map((speed) => (
+            {availableSpeeds.map((speed) => (
               <option key={speed} value={speed}>
                 {settingLabel(speed)}
               </option>
