@@ -7,7 +7,7 @@
     "dev": "concurrently -k -n bridge,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
-    "build": "npm run check:ios-composer && tsc -b && vite build && tsc -p tsconfig.server.json",
+    "build": "npm run check:ios-composer && npm run check:message-refresh && tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "service:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 install",
     "service:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 uninstall",
@@ -17,8 +17,9 @@
     "service:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 status",
     "tunnel:dev": "cloudflared tunnel --url http://localhost:5173",
     "tunnel:prod": "cloudflared tunnel --url http://localhost:8787",
-    "check": "npm run check:ios-composer && tsc -b && tsc -p tsconfig.server.json",
-    "check:ios-composer": "node scripts/check-ios-composer.mjs"
+    "check": "npm run check:ios-composer && npm run check:message-refresh && tsc -b && tsc -p tsconfig.server.json",
+    "check:ios-composer": "node scripts/check-ios-composer.mjs",
+    "check:message-refresh": "tsx scripts/check-message-refresh.ts"
   },
   "dependencies": {
     "@types/web-push": "^3.6.4",

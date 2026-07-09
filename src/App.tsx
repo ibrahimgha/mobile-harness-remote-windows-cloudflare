@@ -52,6 +52,7 @@ import {
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { mergeTranscriptWindow } from "./chatRefresh";
 
 type BridgeState = {
   bridge: {
@@ -246,6 +247,10 @@ type ApiResult = {
   job?: CodexRunJob;
 };
 
+type PromptSubmitResult = ApiResult & {
+  disposition?: "started" | "queued";
+};
+
 type ChatJobsResult = {
   ok: boolean;
   chatId: string;
@@ -387,7 +392,6 @@ const attachmentChunkBytes = 8 * 1024 * 1024;
 const shortcutInstructionSyncIntervalMs = 3000;
 const backgroundSyncIntervalMs = 5000;
 const activeJobSyncIntervalMs = 4000;
-const postSendQuietDetailSuppressMs = 12000;
 const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
@@ -813,7 +817,18 @@ function dedupeMessagesById(messages: ChatTranscriptMessage[]) {
   return [...messages.reduce((byId, message) => byId.set(message.id, message), new Map<string, ChatTranscriptMessage>()).values()];
 }
 
-function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incoming: ChatDetail) {
+function messagesRepresentSameTranscriptItem(a: ChatTranscriptMessage, b: ChatTranscriptMessage) {
+  return (
+    a.id === b.id ||
+    (a.createdAt === b.createdAt && chatMessageStableSignature(a) === chatMessageStableSignature(b))
+  );
+}
+
+function mergeChatDetailPreservingOptimistic(
+  current: ChatDetail | null,
+  incoming: ChatDetail,
+  preserveExistingMessages = false
+) {
   if (!current || current.id !== incoming.id) {
     return incoming;
   }
@@ -850,20 +865,27 @@ function mergeChatDetailPreservingOptimistic(current: ChatDetail | null, incomin
     return true;
   });
 
-  if (!optimisticMessages.length) {
-    return replacedOptimisticPrompt ? { ...incoming, messages: incomingMessages } : incoming;
+  const mergedWindow = preserveExistingMessages
+    ? mergeTranscriptWindow(current.messages ?? [], incomingMessages, messagesRepresentSameTranscriptItem)
+    : incomingMessages;
+  const preservedMessageCount = Math.max(0, mergedWindow.length - incomingMessages.length);
+  const messages = dedupeMessagesById([...mergedWindow, ...optimisticMessages])
+    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0));
+  const lastOptimisticPrompt = optimisticMessages.filter(isOptimisticPromptMessage).at(-1);
+
+  if (!lastOptimisticPrompt && !preservedMessageCount) {
+    return replacedOptimisticPrompt ? { ...incoming, messages } : incoming;
   }
 
-  const messages = dedupeMessagesById([...incomingMessages, ...optimisticMessages])
-    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
-    .slice(-20);
-  const lastOptimisticPrompt = optimisticMessages[optimisticMessages.length - 1];
   const lastResponseTime = incoming.lastResponse ? Date.parse(incoming.lastResponse.createdAt) || 0 : 0;
   const lastPromptTime = lastOptimisticPrompt ? Date.parse(lastOptimisticPrompt.createdAt) || 0 : 0;
 
   return {
     ...incoming,
-    updatedAt: lastPromptTime > (Date.parse(incoming.updatedAt) || 0) ? lastOptimisticPrompt.createdAt : incoming.updatedAt,
+    updatedAt:
+      lastOptimisticPrompt && lastPromptTime > (Date.parse(incoming.updatedAt) || 0)
+        ? lastOptimisticPrompt.createdAt
+        : incoming.updatedAt,
     lastPrompt:
       lastOptimisticPrompt && lastPromptTime >= lastResponseTime
         ? { text: lastOptimisticPrompt.text, createdAt: lastOptimisticPrompt.createdAt }
@@ -2383,7 +2405,6 @@ export function App() {
   const chatDetailRequestRef = useRef(0);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
-  const quietDetailSuppressUntilRef = useRef(0);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -3251,26 +3272,14 @@ export function App() {
       chatId: string,
       quiet = false,
       requestedTurns?: number,
-      requestedMode?: ChatMessageViewMode,
-      options: { bypassPostSendSuppression?: boolean } = {}
+      requestedMode?: ChatMessageViewMode
     ) => {
-      // iOS PWA can jump when automatic quiet detail refreshes race the optimistic
-      // outgoing prompt. Suppress only automatic selected-chat detail reads briefly;
-      // manual refresh/load-more/view-mode changes bypass this guard.
-      if (
-        quiet &&
-        !options.bypassPostSendSuppression &&
-        chatId === selectedChatIdRef.current &&
-        Date.now() < quietDetailSuppressUntilRef.current
-      ) {
-        return;
-      }
-
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
       const messageMode = requestedMode ?? chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode;
       const cachedDetail = getCachedChatHistory(chatId, messageMode);
       const turns = Math.max(1, requestedTurns ?? chatTurnLimitsRef.current[chatId] ?? defaultChatTurns);
+      const preserveExistingMessages = quiet && requestedMode === undefined;
 
       if (!quiet) {
         setLoadingDetail(!cachedDetail);
@@ -3282,7 +3291,7 @@ export function App() {
       // cache-to-server transcript bounce every interval, which is visible as flicker in iOS PWAs.
       if (!quiet && cachedDetail && cachedTurns >= turns && requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
         setSelectedChat((current) => {
-          const next = mergeChatDetailPreservingOptimistic(current, cachedDetail);
+          const next = mergeChatDetailPreservingOptimistic(current, cachedDetail, preserveExistingMessages);
 
           // Quiet polling is a freshness check. Do not replace the rendered chat for volatile IDs/status/metadata churn:
           // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
@@ -3307,7 +3316,10 @@ export function App() {
         }
 
         setSelectedChat((current) => {
-          const next = mergeChatDetailPreservingOptimistic(current, detail);
+          // Quiet refreshes return a moving last-N-turn window. Keep the already-rendered
+          // prefix and merge the new tail into it; dropping the first turn here changes the
+          // scroll height underneath mobile Safari every time a new prompt reaches Codex.
+          const next = mergeChatDetailPreservingOptimistic(current, detail, preserveExistingMessages);
 
           // Quiet polling is a freshness check. Do not replace the rendered chat for volatile IDs/status/metadata churn:
           // iOS PWAs repaint and can jump scroll every polling tick when the transcript array is needlessly replaced.
@@ -3540,7 +3552,7 @@ export function App() {
       loadChats(),
       loadState(),
       selectedChatId
-        ? loadChatDetail(selectedChatId, true, undefined, undefined, { bypassPostSendSuppression: true })
+        ? loadChatDetail(selectedChatId, true)
         : Promise.resolve(),
       selectedChatId ? loadChatJobs(selectedChatId) : Promise.resolve()
     ]);
@@ -3558,7 +3570,7 @@ export function App() {
 
     try {
       await loadChatJobs(chatId);
-      await loadChatDetail(chatId, true, undefined, undefined, { bypassPostSendSuppression: true });
+      await loadChatDetail(chatId, true);
     } finally {
       setRefreshingChat(false);
     }
@@ -3581,7 +3593,7 @@ export function App() {
       return next;
     });
     setSelectedChat((current) => getCachedChatHistory(chatId, nextMode) ?? current);
-    void loadChatDetail(chatId, true, undefined, nextMode, { bypassPostSendSuppression: true });
+    void loadChatDetail(chatId, true, undefined, nextMode);
   }, [loadChatDetail]);
 
   const loadMoreMessages = useCallback(async () => {
@@ -3610,7 +3622,7 @@ export function App() {
     });
 
     try {
-      await loadChatDetail(chatId, true, nextLimit, undefined, { bypassPostSendSuppression: true });
+      await loadChatDetail(chatId, true, nextLimit);
       requestChatScroll(false);
     } finally {
       setLoadingMoreMessages(false);
@@ -4118,17 +4130,42 @@ export function App() {
       }
 
       const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote);
+      const messages = [...(current.messages ?? [])];
+
+      for (const message of newMessages) {
+        if (isOptimisticPromptMessage(message)) {
+          const matchingPromptIndex = findServerPromptMatchIndex(messages, message);
+
+          if (matchingPromptIndex >= 0) {
+            const serverMessage = messages[matchingPromptIndex];
+            messages[matchingPromptIndex] = {
+              ...serverMessage,
+              id: message.id,
+              createdAt: message.createdAt,
+              label: message.label ?? serverMessage.label
+            };
+            continue;
+          }
+        }
+
+        if (!messages.some((candidate) => candidate.id === message.id)) {
+          messages.push(message);
+        }
+      }
+
+      const lastResponseTime = Date.parse(current.lastResponse?.createdAt ?? "") || 0;
+      const promptTime = Date.parse(createdAt) || 0;
+      const responseIsNewer = lastResponseTime >= promptTime;
 
       return {
         ...current,
-        updatedAt: createdAt,
+        updatedAt: promptTime >= (Date.parse(current.updatedAt) || 0) ? createdAt : current.updatedAt,
         lastPrompt: { text, createdAt },
-        lastResponse: null,
-        messages: [
-          ...(current.messages ?? []),
-          ...newMessages
-        ].slice(-20),
-        hasResponse: false
+        lastResponse: responseIsNewer ? current.lastResponse : null,
+        messages: dedupeMessagesById(messages).sort(
+          (a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)
+        ),
+        hasResponse: responseIsNewer ? current.hasResponse : false
       };
     });
 
@@ -5471,8 +5508,6 @@ export function App() {
 
     const targetChatId = selectedChatId;
     const optimisticAt = new Date().toISOString();
-    const previousSelectedChat = selectedChat;
-    const previousChatIndex = chatIndex;
     const previousAttachments = pendingAttachments;
     let receiptId: string | undefined;
 
@@ -5485,40 +5520,34 @@ export function App() {
       const optimisticMessageId = optimisticPromptId(optimisticAt);
 
       const sameChatIsBusy = busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
+      const expectedDisposition = sameChatIsBusy ? "queued" : "started";
+      receiptId = startPromptReceipt(
+        targetChatId,
+        promptText,
+        expectedDisposition === "queued" ? "Queueing prompt on server" : "Sending to server"
+      );
+      setNotice(expectedDisposition === "queued" ? "Queueing prompt on server..." : "Sending to target laptop...");
 
-      if (sameChatIsBusy) {
-        receiptId = startPromptReceipt(targetChatId, promptText, "Queueing prompt on server");
-        setNotice("Queueing prompt on server...");
-        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
-          method: "POST",
-          body: JSON.stringify({ text: promptText })
-        });
+      const result = await apiFetch<PromptSubmitResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ text: promptText })
+      });
+      const disposition = result.disposition ?? expectedDisposition;
 
-        if (result.job) {
-          rememberJob(result.job);
-        }
+      if (result.job) {
+        rememberJob(result.job);
+      }
 
-        finishPromptReceipt(receiptId);
-        setNotice(result.message ?? "Queued on server for this chat");
-      } else {
-        quietDetailSuppressUntilRef.current = Date.now() + postSendQuietDetailSuppressMs;
+      if (disposition === "started") {
         applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
         chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
         window.requestAnimationFrame(() => scrollChatToBottom("auto"));
-        receiptId = startPromptReceipt(targetChatId, promptText);
-        setNotice("Sending to target laptop...");
-        const result = await apiFetch<ApiResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
-          method: "POST",
-          body: JSON.stringify({ text: promptText })
-        });
-
-        if (result.job) {
-          rememberJob(result.job);
-        }
-
-        finishPromptReceipt(receiptId);
+        finishPromptReceipt(receiptId, "Server received");
         setNotice(result.message ?? "Prompt sent to target laptop");
+      } else {
+        finishPromptReceipt(receiptId, "Queued on server");
+        setNotice(result.message ?? "Queued on server for this chat");
       }
 
       setDraft("");
@@ -5530,15 +5559,8 @@ export function App() {
         setAttachmentUploadStatuses({});
       }
       void loadState();
-      window.setTimeout(() => {
-        void loadChats();
-        void loadChatJobs(targetChatId);
-        void loadChatDetail(targetChatId, true);
-      }, 1600);
+      void loadChatJobs(targetChatId);
     } catch (error) {
-      quietDetailSuppressUntilRef.current = 0;
-      setSelectedChat(previousSelectedChat);
-      setChatIndex(previousChatIndex);
       setPendingAttachments(previousAttachments);
       if (receiptId) {
         clearPromptReceipt(receiptId);

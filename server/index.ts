@@ -1879,6 +1879,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
 
     const promptSummary = summarizePrompt(text);
 
+    const disposition = runner.willQueueBehindExistingJob(chatId) ? "queued" : "started";
     const job = runner.enqueue({
       chatId,
       projectPath: chat.projectPath,
@@ -1894,6 +1895,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       chatId,
       route: "POST /api/chats/:id/prompt",
       request: requestContext(req),
+      disposition,
       ...promptSummary,
       job
     });
@@ -1901,6 +1903,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     res.status(202).json({
       ok: true,
       message: "Prompt accepted on target laptop; only earlier commands in the same chat can delay it",
+      disposition,
       job
     });
   } catch (error) {

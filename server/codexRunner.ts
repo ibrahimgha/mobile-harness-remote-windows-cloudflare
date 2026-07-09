@@ -308,6 +308,10 @@ export class CodexRunner {
     return this.queue.length;
   }
 
+  willQueueBehindExistingJob(chatId: string) {
+    return this.runningChatIds.has(chatId) || this.queue.some((item) => item.job.chatId === chatId);
+  }
+
   get recentJobs(): CodexRunJob[] {
     return this.sortedJobs.slice(0, maxRecentJobs);
   }
