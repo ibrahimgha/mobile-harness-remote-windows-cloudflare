@@ -175,6 +175,7 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
 
 type VisibleChatMessage = ChatTranscriptMessage & {
   isRunFailure?: boolean;
+  isLiveThinking?: boolean;
 };
 
 type ChatSummary = {
@@ -399,17 +400,17 @@ type PushTestResult = {
 };
 
 type RemoteNotificationState = "unsupported" | "default" | "denied" | "enabled" | "local";
-type ChatMessageViewMode = "all" | "final" | "codex";
+type ChatMessageViewMode = "final" | "codex";
 
 const tokenKey = "control-token";
 const collapsedProjectsKey = "collapsed-projects";
 const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
-const chatHistoryCacheKey = "chat-history-cache-v2";
+const chatHistoryCacheKey = "chat-history-cache-v3";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
-const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final", "all"];
+const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final"];
 const maxCachedChatHistories = 20;
 const maxCachedChatStorageBytes = 2 * 1024 * 1024;
 const maxCachedChatBytes = 160 * 1024;
@@ -438,7 +439,7 @@ function delay(ms: number) {
 }
 
 function isChatMessageViewMode(value: unknown): value is ChatMessageViewMode {
-  return value === "all" || value === "final" || value === "codex";
+  return value === "final" || value === "codex";
 }
 
 function readChatMessageViewModes() {
@@ -464,8 +465,8 @@ function chatMessageViewModeMeta(mode: ChatMessageViewMode) {
   if (mode === "final") {
     return {
       label: "Final",
-      title: "Final responses only",
-      description: "Showing prompts, final Codex responses, and run separators. Tool chatter and Codex updates are hidden."
+      title: "Latest update, then final response",
+      description: "Shows one live Thinking update while Codex runs, then only the final response."
     };
   }
 
@@ -477,11 +478,7 @@ function chatMessageViewModeMeta(mode: ChatMessageViewMode) {
     };
   }
 
-  return {
-    label: "All",
-    title: "All messages",
-    description: "Showing every message in this chat."
-  };
+  return chatMessageViewModeMeta(defaultChatMessageViewMode);
 }
 
 function nextChatMessageViewMode(mode: ChatMessageViewMode) {
@@ -498,10 +495,6 @@ function isFinalCodexMessage(message: ChatTranscriptMessage | VisibleChatMessage
 }
 
 function messageVisibleForViewMode(message: VisibleChatMessage, mode: ChatMessageViewMode) {
-  if (mode === "all") {
-    return true;
-  }
-
   if (message.isRunFailure || message.role === "user" || message.kind === "task_complete" || message.kind === "forked_from") {
     return true;
   }
@@ -511,6 +504,60 @@ function messageVisibleForViewMode(message: VisibleChatMessage, mode: ChatMessag
   }
 
   return message.role === "assistant";
+}
+
+function messagesForViewMode(
+  messages: VisibleChatMessage[],
+  mode: ChatMessageViewMode,
+  activeJob: CodexRunJob | undefined
+) {
+  if (mode === "codex") {
+    return messages.filter((message) => messageVisibleForViewMode(message, mode));
+  }
+
+  const settledMessages = messages.filter(
+    (message) =>
+      message.isRunFailure ||
+      message.role === "user" ||
+      message.kind === "task_complete" ||
+      message.kind === "forked_from" ||
+      isFinalCodexMessage(message)
+  );
+
+  if (activeJob?.status !== "running") {
+    return settledMessages;
+  }
+
+  const runStartedMs = Date.parse(activeJob.startedAt ?? activeJob.createdAt) || 0;
+  const finalArrived = messages.some(
+    (message) => isFinalCodexMessage(message) && (Date.parse(message.createdAt) || 0) >= runStartedMs
+  );
+
+  if (finalArrived) {
+    return settledMessages;
+  }
+
+  const latestUpdate = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "assistant" &&
+        !isFinalCodexMessage(message) &&
+        (Date.parse(message.createdAt) || 0) >= runStartedMs
+    );
+  const thinkingMessage: VisibleChatMessage = latestUpdate
+    ? { ...latestUpdate, id: `live-thinking-${activeJob.id}`, label: "Thinking", isLiveThinking: true }
+    : {
+        id: `live-thinking-${activeJob.id}`,
+        role: "assistant",
+        kind: "assistant_commentary",
+        label: "Thinking",
+        text: "",
+        createdAt: activeJob.startedAt ?? activeJob.createdAt,
+        isLiveThinking: true
+      };
+
+  return [...settledMessages, thinkingMessage];
 }
 
 function formatRelative(value: string) {
@@ -576,6 +623,11 @@ function formatDate(value: string) {
     minute: "2-digit",
     hour12: true
   });
+}
+
+function messageAgeSeconds(createdAt: string, nowMs: number) {
+  const createdMs = Date.parse(createdAt);
+  return Number.isFinite(createdMs) ? Math.max(0, Math.floor((nowMs - createdMs) / 1000)) : 0;
 }
 
 function messageRunSettingsLabel(message: VisibleChatMessage, options: CodexRunSettingsOptions | undefined) {
@@ -683,6 +735,7 @@ function chatMessageClassName(message: VisibleChatMessage) {
     "chat-bubble",
     `is-${message.role}`,
     message.kind ? `is-${message.kind}` : "",
+    message.isLiveThinking ? "is-live-thinking" : "",
     message.isRunFailure || message.kind === "error" ? "is-error" : ""
   ]
     .filter(Boolean)
@@ -1196,17 +1249,13 @@ function cachedAtMs(value: string) {
 }
 
 function cachedChatMode(item: CachedChatHistory): ChatMessageViewMode {
-  return isChatMessageViewMode(item.mode) ? item.mode : "all";
+  return isChatMessageViewMode(item.mode) ? item.mode : "codex";
 }
 
 function cachedChatCanSatisfyMode(item: CachedChatHistory, mode: ChatMessageViewMode) {
   const cachedMode = cachedChatMode(item);
 
-  if (cachedMode === mode || cachedMode === "all") {
-    return true;
-  }
-
-  return mode === "final" && cachedMode === "codex";
+  return cachedMode === mode || (cachedMode === "codex" && mode === "final") || (cachedMode === "final" && mode === "codex");
 }
 
 function readCachedChatHistories(): CachedChatHistory[] {
@@ -3008,8 +3057,8 @@ export function App() {
     [runFailureMessages, transcriptMessages]
   );
   const visibleMessages = useMemo(
-    () => timelineMessages.filter((message) => messageVisibleForViewMode(message, selectedChatMessageViewMode)),
-    [selectedChatMessageViewMode, timelineMessages]
+    () => messagesForViewMode(timelineMessages, selectedChatMessageViewMode, selectedJob),
+    [durationNow, selectedChatMessageViewMode, selectedJob, timelineMessages]
   );
   const visibleMessageItems = useMemo(() => {
     const occurrences = new Map<string, number>();
@@ -6511,7 +6560,14 @@ export function App() {
                     <div className="chat-message-group" data-render-key={renderKey} key={renderKey}>
                       <article className={chatMessageClassName(message)} data-render-key={renderKey}>
                         <div className="bubble-meta">
-                          <span>{chatMessageLabel(message)}</span>
+                          <span className={message.isLiveThinking ? "thinking-label" : undefined}>
+                            {message.isLiveThinking ? "Thinking" : chatMessageLabel(message)}
+                          </span>
+                          {message.isLiveThinking ? (
+                            <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
+                              {messageAgeSeconds(message.createdAt, durationNow)}s
+                            </span>
+                          ) : null}
                           <time>{formatDate(message.createdAt)}</time>
                           {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
                           {runDuration ? (
@@ -6524,7 +6580,7 @@ export function App() {
                             <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
                           ) : null}
                         </div>
-                        {message.kind === "voice_note" ? (
+                        {message.isLiveThinking && !message.text ? null : message.kind === "voice_note" ? (
                           <VoiceNotePlayer message={message} />
                         ) : (
                           <FormattedMessage

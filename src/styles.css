@@ -2352,6 +2352,44 @@ p {
   opacity: 0.86;
 }
 
+.thinking-label {
+  color: transparent;
+  background: linear-gradient(100deg, var(--muted) 20%, var(--text) 46%, var(--muted) 72%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: thinking-shine 1.8s linear infinite;
+}
+
+.thinking-age {
+  min-width: 2.5ch;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  opacity: 0.72;
+}
+
+.chat-bubble.is-live-thinking {
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+@keyframes thinking-shine {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-label {
+    animation: none;
+    color: var(--muted);
+    background: none;
+  }
+}
+
 .job-stop-button {
   display: inline-grid;
   width: 26px;

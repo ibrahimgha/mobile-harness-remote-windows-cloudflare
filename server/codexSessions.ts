@@ -121,18 +121,11 @@ function isFinalCodexMessage(message: ChatTranscriptMessage) {
 }
 
 function messageIncludedInMode(message: ChatTranscriptMessage, mode: ChatMessageViewMode) {
-  if (mode === "all") {
-    return true;
-  }
-
   if (message.role === "user" || message.kind === "task_complete" || message.kind === "forked_from") {
     return true;
   }
-
-  if (mode === "final") {
-    return isFinalCodexMessage(message);
-  }
-
+  // Final mode needs commentary while a run is active. The client collapses it to
+  // one temporary Thinking bubble and removes it as soon as the final arrives.
   return message.role === "assistant";
 }
 
@@ -452,7 +445,7 @@ async function parseSessionFile(
 ): Promise<ParsedSession | null> {
   const maxTailBytes = typeof options === "number" ? options : options.maxTailBytes ?? tailBytes;
   const detailTurns = typeof options === "number" ? defaultDetailTurns : clampDetailTurns(options.detailTurns);
-  const messageMode = typeof options === "number" ? "all" : options.messageMode ?? "all";
+  const messageMode: ChatMessageViewMode = typeof options === "number" ? "codex" : options.messageMode ?? "codex";
   const stat = await fs.stat(filePath);
   const fallbackId = idFromFilename(filePath);
   let id = fallbackId;
@@ -607,7 +600,7 @@ async function parseSessionFile(
         return;
       }
 
-      if (messageMode !== "all" && record.type === "response_item" && /tool|function_call|web_search/.test(payload.type)) {
+      if (record.type === "response_item" && /tool|function_call|web_search/.test(payload.type)) {
         return;
       }
 
@@ -716,26 +709,6 @@ async function parseSessionFile(
       }
 
       if (record.type === "event_msg" && /_(end|complete|completed)$/i.test(payload.type)) {
-        if (messageMode !== "all") {
-          return;
-        }
-
-        if (payload.success === false) {
-          const output = [payload.stdout, payload.stderr, payload.output, payload.error?.message]
-            .map(textFromUnknown)
-            .filter(Boolean)
-            .join("\n");
-
-          appendTranscriptMessage({
-            role: "tool",
-            kind: "error",
-            label: payload.type.replace(/_/g, " "),
-            status: payload.status,
-            text: formatToolOutputText(output || "Tool reported failure."),
-            createdAt: timestamp
-          });
-        }
-
         return;
       }
 

@@ -218,7 +218,7 @@ function queryStringValue(value: unknown): string | undefined {
 function chatMessageViewModeFromQuery(value: unknown): ChatMessageViewMode {
   const mode = queryStringValue(value);
 
-  return mode === "all" || mode === "final" || mode === "codex" ? mode : "codex";
+  return mode === "final" || mode === "codex" ? mode : "codex";
 }
 
 function describeError(error: unknown): Record<string, unknown> {

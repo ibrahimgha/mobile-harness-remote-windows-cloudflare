@@ -154,7 +154,7 @@ export type ChatTranscriptMessage = ChatMessageExcerpt & {
   reasoningEffort?: CodexReasoningEffort;
 };
 
-export type ChatMessageViewMode = "all" | "final" | "codex";
+export type ChatMessageViewMode = "final" | "codex";
 
 export type ChatSummary = {
   id: string;
