@@ -7195,6 +7195,11 @@ export function App() {
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
+                onPointerDown={() => {
+                  if (customKeyboardEnabled && selectedChatId && !sending) {
+                    setCustomKeyboardOpen(true);
+                  }
+                }}
                 onFocus={() => {
                   if (customKeyboardEnabled && selectedChatId && !sending) {
                     setCustomKeyboardOpen(true);
