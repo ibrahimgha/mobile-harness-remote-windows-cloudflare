@@ -1,5 +1,6 @@
 import {
   ArrowDown,
+  ArrowUp,
   ArrowRight,
   Bell,
   BellOff,
@@ -9,6 +10,8 @@ import {
   CircleX,
   Clock3,
   Copy,
+  CornerDownLeft,
+  Delete,
   Download,
   Eye,
   FileText,
@@ -2164,6 +2167,228 @@ function DictationWaveform({ processing, barsRef }: { processing: boolean; barsR
   );
 }
 
+type CustomKeyboardMode = "letters" | "numbers" | "symbols";
+
+function shouldUseCustomKeyboard() {
+  const override = new URLSearchParams(window.location.search).get("customKeyboard");
+  if (override === "1") {
+    return true;
+  }
+  if (override === "0") {
+    return false;
+  }
+
+  const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+  const isIOS =
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isStandalone =
+    navigatorWithStandalone.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+  return isIOS && isStandalone;
+}
+
+function insertIntoComposer(editor: HTMLDivElement, text: string) {
+  editor.focus({ preventScroll: true });
+  if (document.execCommand("insertText", false, text)) {
+    return;
+  }
+
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  let range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
+  if (!editor.contains(range.commonAncestorContainer)) {
+    range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  range.deleteContents();
+  const textNode = document.createTextNode(text);
+  range.insertNode(textNode);
+  range.setStartAfter(textNode);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+}
+
+function deleteFromComposer(editor: HTMLDivElement) {
+  editor.focus({ preventScroll: true });
+  if (document.execCommand("delete", false)) {
+    return;
+  }
+
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) {
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) {
+    return;
+  }
+
+  if (!range.collapsed) {
+    range.deleteContents();
+  } else if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
+    const node = range.startContainer;
+    const beforeCaret = node.textContent?.slice(0, range.startOffset) ?? "";
+    const previousCharacter = Array.from(beforeCaret).at(-1) ?? "";
+    range.setStart(node, Math.max(0, range.startOffset - previousCharacter.length));
+    range.deleteContents();
+  } else {
+    return;
+  }
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+  editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+}
+
+const customKeyboardRows: Record<CustomKeyboardMode, string[][]> = {
+  letters: [
+    [..."qwertyuiop"],
+    [..."asdfghjkl"],
+    [..."zxcvbnm"]
+  ],
+  numbers: [
+    [..."1234567890"],
+    ["-", "/", ":", ";", "(", ")", "$", "&", "@", '"'],
+    [".", ",", "?", "!", "'"]
+  ],
+  symbols: [
+    ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
+    ["_", "\\", "|", "~", "<", ">", "`"],
+    [".", ",", "?", "!", "'", '"']
+  ]
+};
+
+function CustomKeyboard({
+  onText,
+  onBackspace,
+  onClose
+}: {
+  onText: (text: string) => void;
+  onBackspace: () => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<CustomKeyboardMode>("letters");
+  const [shifted, setShifted] = useState(false);
+  const backspaceDelayRef = useRef<number | undefined>(undefined);
+  const backspaceRepeatRef = useRef<number | undefined>(undefined);
+
+  const stopBackspaceRepeat = useCallback(() => {
+    window.clearTimeout(backspaceDelayRef.current);
+    window.clearInterval(backspaceRepeatRef.current);
+    backspaceDelayRef.current = undefined;
+    backspaceRepeatRef.current = undefined;
+  }, []);
+
+  useEffect(() => stopBackspaceRepeat, [stopBackspaceRepeat]);
+
+  const pressText = (text: string) => {
+    onText(mode === "letters" && shifted ? text.toUpperCase() : text);
+    if (mode === "letters" && shifted) {
+      setShifted(false);
+    }
+  };
+
+  const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    onBackspace();
+    stopBackspaceRepeat();
+    backspaceDelayRef.current = window.setTimeout(() => {
+      backspaceRepeatRef.current = window.setInterval(onBackspace, 70);
+    }, 360);
+  };
+
+  const rows = customKeyboardRows[mode];
+
+  return (
+    <div
+      className="custom-keyboard"
+      role="group"
+      aria-label="On-screen keyboard"
+      onPointerDown={(event) => event.preventDefault()}
+    >
+      {rows.map((row, rowIndex) => (
+        <div className={`custom-keyboard-row row-${rowIndex + 1}`} key={`${mode}-${rowIndex}`}>
+          {rowIndex === 2 && mode === "letters" ? (
+            <button
+              className={`custom-key is-modifier ${shifted ? "is-active" : ""}`}
+              type="button"
+              tabIndex={-1}
+              onClick={() => setShifted((current) => !current)}
+              aria-label={shifted ? "Turn off shift" : "Shift"}
+              aria-pressed={shifted}
+            >
+              <ArrowUp size={20} strokeWidth={2.2} />
+            </button>
+          ) : rowIndex === 2 ? (
+            <button
+              className="custom-key is-modifier"
+              type="button"
+              tabIndex={-1}
+              onClick={() => setMode(mode === "numbers" ? "symbols" : "numbers")}
+            >
+              {mode === "numbers" ? "#+=" : "123"}
+            </button>
+          ) : null}
+          {row.map((key) => (
+            <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(key)} key={key}>
+              {mode === "letters" && shifted ? key.toUpperCase() : key}
+            </button>
+          ))}
+          {rowIndex === 2 ? (
+            <button
+              className="custom-key is-modifier"
+              type="button"
+              tabIndex={-1}
+              onPointerDown={startBackspaceRepeat}
+              onPointerUp={stopBackspaceRepeat}
+              onPointerCancel={stopBackspaceRepeat}
+              onPointerLeave={stopBackspaceRepeat}
+              aria-label="Backspace"
+            >
+              <Delete size={20} />
+            </button>
+          ) : null}
+        </div>
+      ))}
+      <div className="custom-keyboard-row is-command-row">
+        <button
+          className="custom-key is-modifier is-mode-key"
+          type="button"
+          tabIndex={-1}
+          onClick={() => {
+            setMode(mode === "letters" ? "numbers" : "letters");
+            setShifted(false);
+          }}
+        >
+          {mode === "letters" ? "123" : "ABC"}
+        </button>
+        <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(",")} aria-label="Comma">
+          ,
+        </button>
+        <button className="custom-key is-space-key" type="button" tabIndex={-1} onClick={() => pressText(" ")}>
+          space
+        </button>
+        <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(".")} aria-label="Period">
+          .
+        </button>
+        <button className="custom-key is-modifier" type="button" tabIndex={-1} onClick={() => pressText("\n")} aria-label="Return">
+          <CornerDownLeft size={19} />
+        </button>
+        <button className="custom-key is-modifier" type="button" tabIndex={-1} onClick={onClose} aria-label="Hide keyboard">
+          <ChevronDown size={21} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function JobStatusIcon({ job }: { job: CodexRunJob }) {
   if (job.status === "running") {
     return <Loader2 className="spin" size={15} />;
@@ -2712,6 +2937,8 @@ export function App() {
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [chatActionError, setChatActionError] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [customKeyboardEnabled] = useState(shouldUseCustomKeyboard);
+  const [customKeyboardOpen, setCustomKeyboardOpen] = useState(false);
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
@@ -2773,6 +3000,41 @@ export function App() {
     },
     [setDraftForChat]
   );
+  const syncCustomKeyboardDraft = useCallback(() => {
+    const editor = composerEditorRef.current;
+    const chatId = editor?.dataset.chatId;
+    if (!editor || !chatId) {
+      return;
+    }
+
+    setDraftForChat(chatId, textFromComposerEditor(editor));
+    setComposerExpanded(composerShouldExpand(editor));
+  }, [setDraftForChat]);
+  const insertCustomKeyboardText = useCallback(
+    (text: string) => {
+      const editor = composerEditorRef.current;
+      if (!editor) {
+        return;
+      }
+
+      insertIntoComposer(editor, text);
+      syncCustomKeyboardDraft();
+    },
+    [syncCustomKeyboardDraft]
+  );
+  const backspaceCustomKeyboardText = useCallback(() => {
+    const editor = composerEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    deleteFromComposer(editor);
+    syncCustomKeyboardDraft();
+  }, [syncCustomKeyboardDraft]);
+  const closeCustomKeyboard = useCallback(() => {
+    setCustomKeyboardOpen(false);
+    composerEditorRef.current?.blur();
+  }, []);
 
   const authHeaders = useMemo(
     () => ({
@@ -5009,6 +5271,10 @@ export function App() {
   }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
 
   useEffect(() => {
+    setCustomKeyboardOpen(false);
+  }, [dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
+
+  useEffect(() => {
     const editor = composerEditorRef.current;
 
     if (editor) {
@@ -6100,7 +6366,7 @@ export function App() {
   }
 
   return (
-    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${customKeyboardOpen ? "has-custom-keyboard" : ""}`}>
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
           <div className="sidebar-heading-row">
@@ -6452,7 +6718,7 @@ export function App() {
         </div>
       ) : null}
 
-      <section className="chat-workspace" aria-label="Selected chat">
+      <section className={`chat-workspace ${customKeyboardOpen ? "has-custom-keyboard" : ""}`} aria-label="Selected chat">
         <header className="chat-topbar">
           <button
             className="icon-button mobile-menu-button"
@@ -6776,13 +7042,25 @@ export function App() {
                 data-chat-id={selectedChatId ?? ""}
                 contentEditable={Boolean(selectedChatId && !sending)}
                 suppressContentEditableWarning
-                inputMode="text"
+                inputMode={customKeyboardEnabled ? "none" : "text"}
+                data-custom-keyboard={customKeyboardEnabled ? "true" : "false"}
+                aria-controls={customKeyboardEnabled ? "custom-chat-keyboard" : undefined}
                 autoCapitalize="sentences"
                 autoCorrect="on"
                 spellCheck={false}
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
+                onFocus={() => {
+                  if (customKeyboardEnabled && selectedChatId && !sending) {
+                    setCustomKeyboardOpen(true);
+                  }
+                }}
+                onBlur={() => {
+                  if (customKeyboardEnabled) {
+                    setCustomKeyboardOpen(false);
+                  }
+                }}
                 onInput={(event) => {
                   const inputChatId = event.currentTarget.dataset.chatId;
                   if (inputChatId) {
@@ -6861,6 +7139,16 @@ export function App() {
             ) : null}
           </div>
         </div>
+
+        {customKeyboardEnabled && customKeyboardOpen ? (
+          <div id="custom-chat-keyboard" className="custom-keyboard-slot">
+            <CustomKeyboard
+              onText={insertCustomKeyboardText}
+              onBackspace={backspaceCustomKeyboardText}
+              onClose={closeCustomKeyboard}
+            />
+          </div>
+        ) : null}
 
       </section>
       {selectedChat ? (

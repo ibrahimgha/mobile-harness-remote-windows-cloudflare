@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const failures = [];
 
 if (/<form\s+className=\{?`?composer/.test(source) || /<form\s+className=["']composer/.test(source)) {
@@ -12,7 +13,31 @@ if (/<textarea(?=[^>]*className=["']composer-editor["'])/.test(source)) {
 }
 
 if (!/contentEditable=/.test(source)) {
-  failures.push("The chat composer should stay on the stable contentEditable surface used to avoid the iOS form accessory bar.");
+  failures.push("The chat composer should stay on the stable contentEditable surface used for caret-aware custom-keyboard editing.");
+}
+
+if (!/inputMode=\{customKeyboardEnabled \? "none" : "text"\}/.test(source)) {
+  failures.push('The installed iOS PWA must use inputmode="none" while its custom keyboard is enabled.');
+}
+
+if (!/aria-label="On-screen keyboard"/.test(source)) {
+  failures.push("The iOS custom keyboard must remain mounted through its accessible keyboard component.");
+}
+
+if (!/navigatorWithStandalone\.standalone === true/.test(source)) {
+  failures.push("The custom keyboard must remain scoped to installed iOS PWA mode by default.");
+}
+
+if (!/setDraftForChat\(chatId, textFromComposerEditor\(editor\)\)/.test(source)) {
+  failures.push("Custom-key mutations must immediately persist through the per-chat draft store.");
+}
+
+if (!/onPointerDown=\{startBackspaceRepeat\}/.test(source)) {
+  failures.push("The custom keyboard must preserve press-and-hold Backspace behavior.");
+}
+
+if (!/\.chat-workspace\.has-custom-keyboard[\s\S]*grid-template-rows: auto auto auto auto minmax\(0, 1fr\) auto auto/.test(styles)) {
+  failures.push("The custom keyboard must reserve its own mobile grid row instead of overlaying the composer.");
 }
 
 if (/className=["']file-input["']/.test(source)) {
