@@ -3393,7 +3393,6 @@ export function App() {
   const lastVisibleMessageKey = visibleMessageItems.at(-1)?.renderKey ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
-  const topbarProjectLabel = selectedChat?.projectName ?? selectedChatSummary?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
   const topbarTitle = selectedChat?.title ?? selectedChatSummary?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
   const serverDisplayName = state?.server.name || "Codex";
 
@@ -6765,7 +6764,7 @@ export function App() {
             <Menu size={18} />
           </button>
           <div className="chat-title-copy">
-            <p className="overline">{topbarProjectLabel}</p>
+            <p className="overline">{serverDisplayName}</p>
             <h2>{topbarTitle}</h2>
           </div>
           <div className="chat-topbar-actions">
