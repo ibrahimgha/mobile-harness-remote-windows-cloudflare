@@ -650,6 +650,17 @@ function messageAgeSeconds(createdAt: string, nowMs: number) {
   return Number.isFinite(createdMs) ? Math.max(0, Math.floor((nowMs - createdMs) / 1000)) : 0;
 }
 
+function formatMessageAge(createdAt: string, nowMs: number) {
+  const totalSeconds = messageAgeSeconds(createdAt, nowMs);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function messageRunSettingsLabel(message: VisibleChatMessage, options: CodexRunSettingsOptions | undefined) {
   if (!message.model && !message.reasoningEffort) {
     return "";
@@ -6855,7 +6866,7 @@ export function App() {
                         <div className="thinking-status">
                           <span className="thinking-label">Thinking</span>
                           <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
-                            {messageAgeSeconds(message.createdAt, durationNow)}s
+                            {formatMessageAge(message.createdAt, durationNow)}
                           </span>
                         </div>
                       ) : null}

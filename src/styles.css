@@ -2463,10 +2463,14 @@ p {
 }
 
 .thinking-age {
-  min-width: 2.5ch;
+  min-width: 4ch;
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  opacity: 0.72;
+  font-size: 0.62rem;
+  font-weight: 300;
+  line-height: 1;
+  text-align: right;
+  opacity: 0.64;
 }
 
 .chat-message-group.is-live-thinking-group {
