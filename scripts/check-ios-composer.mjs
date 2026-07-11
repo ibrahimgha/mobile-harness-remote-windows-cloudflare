@@ -120,8 +120,44 @@ if (!/\.custom-keyboard\s*\{[\s\S]{0,360}touch-action: none/.test(styles)) {
   failures.push("The custom keyboard must opt out of browser touch gestures during rapid typing.");
 }
 
-if (!/\.custom-key::before\s*\{[\s\S]{0,360}inset: 0 2\.5px/.test(styles)) {
+if (!/\.custom-key::before\s*\{[\s\S]{0,360}inset: 0 3px/.test(styles)) {
   failures.push("Visible key spacing must be painted inside contiguous touch targets.");
+}
+
+if (!/\.custom-keyboard-row\.row-2\s*\{[\s\S]{0,80}padding-inline: 4\.5%/.test(styles)) {
+  failures.push("The home row must retain the measured iOS horizontal offset.");
+}
+
+if (!/\.custom-key\.is-modifier\s*\{[\s\S]{0,160}flex-grow: 1\.2/.test(styles)) {
+  failures.push("Shift and Backspace must retain the measured iOS width relative to letter keys.");
+}
+
+if (!/\.custom-key\.is-space-key\s*\{[\s\S]{0,100}flex-grow: 4\.8/.test(styles)) {
+  failures.push("The Space key must retain its measured iOS row proportion.");
+}
+
+if (!/\.custom-key\.is-return-key\s*\{[\s\S]{0,80}flex-grow: 2\.7/.test(styles)) {
+  failures.push("The Return key must retain its measured iOS row proportion.");
+}
+
+if (!/className="custom-keyboard-footer"[\s\S]{0,500}className="custom-keyboard-dismiss"/.test(source)) {
+  failures.push("Keyboard dismissal must remain in the iOS-style bottom utility strip.");
+}
+
+if (!/className="custom-key-preview"/.test(source)) {
+  failures.push("Letter keys must render the iOS-style press preview without React state.");
+}
+
+if (!/\.custom-key-preview\s*\{[\s\S]{0,220}bottom: 72px;[\s\S]{0,120}width: calc\(100% \+ 24px\)/.test(styles)) {
+  failures.push("The key preview must preserve the measured two-row iOS balloon geometry.");
+}
+
+if (!/\.custom-key:active \.custom-key-preview[\s\S]{0,140}animation: iosKeyPreviewIn 80ms/.test(styles)) {
+  failures.push("Letter previews must use the fast iOS-style keypress animation.");
+}
+
+if (!/@keyframes iosKeyPreviewIn/.test(styles)) {
+  failures.push("The iOS key preview animation must remain defined.");
 }
 
 if (!/\.custom-key:active::before\s*\{[\s\S]{0,120}transform: scale\(0\.97\)/.test(styles)) {

@@ -2841,7 +2841,7 @@ p {
 }
 
 .custom-keyboard-row.row-2 {
-  padding-inline: 5%;
+  padding-inline: 4.5%;
 }
 
 .custom-key {
@@ -2872,7 +2872,7 @@ p {
 .custom-key::before {
   content: "";
   position: absolute;
-  inset: 0 2.5px;
+  inset: 0 3px;
   z-index: -1;
   border-radius: 6px;
   background: var(--custom-keycap-background);
@@ -2882,9 +2882,66 @@ p {
   transition: transform 60ms linear, box-shadow 60ms linear;
 }
 
+.custom-key-label {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.custom-key-preview {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: 8;
+  width: calc(100% + 24px);
+  height: 60px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  color: #171a1d;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(19, 24, 28, 0.24), 0 2px 5px rgba(19, 24, 28, 0.16);
+  font-size: 1.65rem;
+  font-weight: 450;
+  line-height: 1;
+  pointer-events: none;
+  transform-origin: 50% 100%;
+}
+
+.custom-key-preview::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: -72px;
+  left: 12px;
+  height: 80px;
+  border-radius: 0 0 6px 6px;
+  background: #ffffff;
+  pointer-events: none;
+}
+
+.custom-keyboard-row.row-1 > .custom-key:first-child .custom-key-preview {
+  left: calc(50% + 8px);
+}
+
+.custom-keyboard-row.row-1 > .custom-key:first-child .custom-key-preview::after {
+  right: 20px;
+  left: 4px;
+}
+
+.custom-keyboard-row.row-1 > .custom-key:last-child .custom-key-preview {
+  left: calc(50% - 8px);
+}
+
+.custom-keyboard-row.row-1 > .custom-key:last-child .custom-key-preview::after {
+  right: 4px;
+  left: 20px;
+}
+
 .custom-key.is-modifier {
   --custom-keycap-background: #aeb4ba;
-  flex-grow: 1.35;
+  flex-grow: 1.2;
   color: #1f2529;
 }
 
@@ -2894,23 +2951,67 @@ p {
 }
 
 .custom-key.is-space-key {
-  flex-grow: 4.5;
+  flex-grow: 4.8;
   font-size: 0.82rem;
 }
 
 .custom-key.is-mode-key {
-  flex-grow: 1.55;
+  flex-grow: 1.35;
   font-size: 0.82rem;
   font-weight: 700;
 }
 
+.custom-key.is-return-key {
+  flex-grow: 2.7;
+}
+
 .custom-key:active {
+  z-index: 10;
   transform: none;
 }
 
 .custom-key:active::before {
   box-shadow: none;
   transform: scale(0.97);
+}
+
+.custom-key:active .custom-key-preview {
+  display: flex;
+  animation: iosKeyPreviewIn 80ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.custom-keyboard-footer {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 10px;
+}
+
+.custom-keyboard-dismiss {
+  display: inline-flex;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: #171a1d;
+  background: transparent;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.custom-keyboard-dismiss:active {
+  background: rgba(31, 37, 41, 0.1);
+}
+
+.custom-keyboard-dismiss:focus-visible {
+  outline: 2px solid rgba(16, 163, 127, 0.72);
+  outline-offset: 1px;
 }
 
 .custom-key:focus-visible {
@@ -2941,6 +3042,18 @@ p {
 
   to {
     transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes iosKeyPreviewIn {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(3px) scale(0.92);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
   }
 }
 
@@ -3106,12 +3219,12 @@ p {
   }
 
   .chat-workspace.has-custom-keyboard .chat-thread::after {
-    flex-basis: calc(278px + env(safe-area-inset-bottom, 0px));
-    block-size: calc(278px + env(safe-area-inset-bottom, 0px));
+    flex-basis: calc(328px + env(safe-area-inset-bottom, 0px));
+    block-size: calc(328px + env(safe-area-inset-bottom, 0px));
   }
 
   .remote-shell.has-custom-keyboard .scroll-bottom-control {
-    bottom: calc(273px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(323px + env(safe-area-inset-bottom, 0px));
   }
 
   .chat-workspace > * {

@@ -2403,7 +2403,12 @@ function CustomKeyboard({
               onClick={(event) => pressOnAccessibleClick(event, () => pressText(key))}
               key={key}
             >
-              {mode === "letters" && shifted ? key.toUpperCase() : key}
+              <span className="custom-key-label">{mode === "letters" && shifted ? key.toUpperCase() : key}</span>
+              {mode === "letters" ? (
+                <span className="custom-key-preview" aria-hidden="true">
+                  {shifted ? key.toUpperCase() : key}
+                </span>
+              ) : null}
             </button>
           ))}
           {rowIndex === 2 ? (
@@ -2473,7 +2478,7 @@ function CustomKeyboard({
           .
         </button>
         <button
-          className="custom-key is-modifier"
+          className="custom-key is-modifier is-return-key"
           type="button"
           tabIndex={-1}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText("\n"))}
@@ -2482,8 +2487,10 @@ function CustomKeyboard({
         >
           <CornerDownLeft size={19} />
         </button>
+      </div>
+      <div className="custom-keyboard-footer">
         <button
-          className="custom-key is-modifier"
+          className="custom-keyboard-dismiss"
           type="button"
           tabIndex={-1}
           onPointerDown={(event) => pressOnPointerDown(event, onClose)}
