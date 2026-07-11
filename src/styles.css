@@ -663,7 +663,7 @@ p {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #3297e7, #7558dc);
+  background: var(--ink);
   transition: width 180ms ease;
 }
 
