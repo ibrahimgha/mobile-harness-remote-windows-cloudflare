@@ -36,6 +36,18 @@ if (!/onPointerDown=\{startBackspaceRepeat\}/.test(source)) {
   failures.push("The custom keyboard must preserve press-and-hold Backspace behavior.");
 }
 
+if (!/onPointerDown=\{\(event\) => pressOnPointerDown\(event, \(\) => pressText\(key\)\)\}/.test(source)) {
+  failures.push("Custom keyboard character keys must activate immediately on pointerdown so rapid iOS taps are not dropped.");
+}
+
+if (/onClick=\{\(\) => pressText\(key\)\}/.test(source)) {
+  failures.push("Do not move custom character entry back to delayed synthesized click events.");
+}
+
+if (!/event\.detail !== 0[\s\S]{0,120}return/.test(source)) {
+  failures.push("Pointer-generated clicks must be ignored after immediate key activation while detail=0 assistive clicks remain supported.");
+}
+
 if (!/closeOnOutsidePointer[\s\S]*data-custom-keyboard-root/.test(source)) {
   failures.push("The custom keyboard must dismiss from explicit outside-pointer handling, not editor blur.");
 }
@@ -46,6 +58,10 @@ if (/onBlur=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(false\)/.test(source
 
 if (!/\.chat-workspace\.has-custom-keyboard[\s\S]*grid-template-rows: auto auto auto auto minmax\(0, 1fr\) auto auto/.test(styles)) {
   failures.push("The custom keyboard must reserve its own mobile grid row instead of overlaying the composer.");
+}
+
+if (!/\.custom-keyboard-slot\s*\{[\s\S]{0,180}padding-top: 8px/.test(styles)) {
+  failures.push("The custom keyboard slot must preserve a stable 8px gap below the composer.");
 }
 
 if (/className=["']file-input["']/.test(source)) {

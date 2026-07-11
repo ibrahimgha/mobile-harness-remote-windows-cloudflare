@@ -2474,10 +2474,11 @@ p {
 }
 
 .chat-message-group.is-live-thinking-group {
-  display: flex;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: calc(100% + 32px);
+  height: 260px;
   margin-inline: -16px;
-  flex-direction: column;
   gap: 4px;
 }
 
@@ -2489,6 +2490,7 @@ p {
 }
 
 .chat-bubble.is-live-thinking {
+  display: flex;
   width: 100%;
   max-width: none;
   min-width: 0;
@@ -2496,10 +2498,13 @@ p {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  overflow-y: auto;
 }
 
 .chat-bubble.is-live-thinking .message-markdown,
 .chat-bubble.is-live-thinking .message-empty {
+  width: 100%;
+  margin-block: auto;
   padding: 4px 16px 10px;
 }
 
@@ -3039,15 +3044,17 @@ p {
     position: relative;
     z-index: 1100;
     min-width: 0;
+    padding-top: 8px;
+    background: #f5f6f1;
   }
 
   .chat-workspace.has-custom-keyboard .chat-thread::after {
-    flex-basis: calc(270px + env(safe-area-inset-bottom, 0px));
-    block-size: calc(270px + env(safe-area-inset-bottom, 0px));
+    flex-basis: calc(278px + env(safe-area-inset-bottom, 0px));
+    block-size: calc(278px + env(safe-area-inset-bottom, 0px));
   }
 
   .remote-shell.has-custom-keyboard .scroll-bottom-control {
-    bottom: calc(265px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(273px + env(safe-area-inset-bottom, 0px));
   }
 
   .chat-workspace > * {
@@ -3147,6 +3154,7 @@ p {
 @media (max-width: 640px) {
   .chat-message-group.is-live-thinking-group {
     width: calc(100% + 20px);
+    height: 240px;
     margin-inline: -10px;
   }
 

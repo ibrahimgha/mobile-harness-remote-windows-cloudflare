@@ -2199,9 +2199,8 @@ function shouldUseCustomKeyboard() {
 }
 
 function insertIntoComposer(editor: HTMLDivElement, text: string) {
-  editor.focus({ preventScroll: true });
-  if (document.execCommand("insertText", false, text)) {
-    return;
+  if (document.activeElement !== editor) {
+    editor.focus({ preventScroll: true });
   }
 
   const selection = window.getSelection();
@@ -2226,7 +2225,9 @@ function insertIntoComposer(editor: HTMLDivElement, text: string) {
 }
 
 function deleteFromComposer(editor: HTMLDivElement) {
-  editor.focus({ preventScroll: true });
+  if (document.activeElement !== editor) {
+    editor.focus({ preventScroll: true });
+  }
   if (document.execCommand("delete", false)) {
     return;
   }
@@ -2306,6 +2307,24 @@ function CustomKeyboard({
     }
   };
 
+  // iOS can defer or drop synthesized click events during rapid multi-key tapping.
+  // Mutate the composer on pointerdown; reserve detail=0 clicks for assistive activation.
+  const pressOnPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, action: () => void) => {
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    action();
+  };
+
+  const pressOnAccessibleClick = (event: ReactMouseEvent<HTMLButtonElement>, action: () => void) => {
+    if (event.detail !== 0) {
+      return;
+    }
+    event.preventDefault();
+    action();
+  };
+
   const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     onBackspace();
@@ -2331,7 +2350,8 @@ function CustomKeyboard({
               className={`custom-key is-modifier ${shifted ? "is-active" : ""}`}
               type="button"
               tabIndex={-1}
-              onClick={() => setShifted((current) => !current)}
+              onPointerDown={(event) => pressOnPointerDown(event, () => setShifted((current) => !current))}
+              onClick={(event) => pressOnAccessibleClick(event, () => setShifted((current) => !current))}
               aria-label={shifted ? "Turn off shift" : "Shift"}
               aria-pressed={shifted}
             >
@@ -2342,13 +2362,25 @@ function CustomKeyboard({
               className="custom-key is-modifier"
               type="button"
               tabIndex={-1}
-              onClick={() => setMode(mode === "numbers" ? "symbols" : "numbers")}
+              onPointerDown={(event) =>
+                pressOnPointerDown(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
+              }
+              onClick={(event) =>
+                pressOnAccessibleClick(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
+              }
             >
               {mode === "numbers" ? "#+=" : "123"}
             </button>
           ) : null}
           {row.map((key) => (
-            <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(key)} key={key}>
+            <button
+              className="custom-key"
+              type="button"
+              tabIndex={-1}
+              onPointerDown={(event) => pressOnPointerDown(event, () => pressText(key))}
+              onClick={(event) => pressOnAccessibleClick(event, () => pressText(key))}
+              key={key}
+            >
               {mode === "letters" && shifted ? key.toUpperCase() : key}
             </button>
           ))}
@@ -2361,6 +2393,7 @@ function CustomKeyboard({
               onPointerUp={stopBackspaceRepeat}
               onPointerCancel={stopBackspaceRepeat}
               onPointerLeave={stopBackspaceRepeat}
+              onClick={(event) => pressOnAccessibleClick(event, onBackspace)}
               aria-label="Backspace"
             >
               <Delete size={20} />
@@ -2373,26 +2406,68 @@ function CustomKeyboard({
           className="custom-key is-modifier is-mode-key"
           type="button"
           tabIndex={-1}
-          onClick={() => {
-            setMode(mode === "letters" ? "numbers" : "letters");
-            setShifted(false);
-          }}
+          onPointerDown={(event) =>
+            pressOnPointerDown(event, () => {
+              setMode(mode === "letters" ? "numbers" : "letters");
+              setShifted(false);
+            })
+          }
+          onClick={(event) =>
+            pressOnAccessibleClick(event, () => {
+              setMode(mode === "letters" ? "numbers" : "letters");
+              setShifted(false);
+            })
+          }
         >
           {mode === "letters" ? "123" : "ABC"}
         </button>
-        <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(",")} aria-label="Comma">
+        <button
+          className="custom-key"
+          type="button"
+          tabIndex={-1}
+          onPointerDown={(event) => pressOnPointerDown(event, () => pressText(","))}
+          onClick={(event) => pressOnAccessibleClick(event, () => pressText(","))}
+          aria-label="Comma"
+        >
           ,
         </button>
-        <button className="custom-key is-space-key" type="button" tabIndex={-1} onClick={() => pressText(" ")}>
+        <button
+          className="custom-key is-space-key"
+          type="button"
+          tabIndex={-1}
+          onPointerDown={(event) => pressOnPointerDown(event, () => pressText(" "))}
+          onClick={(event) => pressOnAccessibleClick(event, () => pressText(" "))}
+        >
           space
         </button>
-        <button className="custom-key" type="button" tabIndex={-1} onClick={() => pressText(".")} aria-label="Period">
+        <button
+          className="custom-key"
+          type="button"
+          tabIndex={-1}
+          onPointerDown={(event) => pressOnPointerDown(event, () => pressText("."))}
+          onClick={(event) => pressOnAccessibleClick(event, () => pressText("."))}
+          aria-label="Period"
+        >
           .
         </button>
-        <button className="custom-key is-modifier" type="button" tabIndex={-1} onClick={() => pressText("\n")} aria-label="Return">
+        <button
+          className="custom-key is-modifier"
+          type="button"
+          tabIndex={-1}
+          onPointerDown={(event) => pressOnPointerDown(event, () => pressText("\n"))}
+          onClick={(event) => pressOnAccessibleClick(event, () => pressText("\n"))}
+          aria-label="Return"
+        >
           <CornerDownLeft size={19} />
         </button>
-        <button className="custom-key is-modifier" type="button" tabIndex={-1} onClick={onClose} aria-label="Hide keyboard">
+        <button
+          className="custom-key is-modifier"
+          type="button"
+          tabIndex={-1}
+          onPointerDown={(event) => pressOnPointerDown(event, onClose)}
+          onClick={(event) => pressOnAccessibleClick(event, onClose)}
+          aria-label="Hide keyboard"
+        >
           <ChevronDown size={21} />
         </button>
       </div>
