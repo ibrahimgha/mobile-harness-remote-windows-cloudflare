@@ -2359,8 +2359,11 @@ p {
 
 .thinking-label {
   display: inline-block;
+  color: #687378;
   color: transparent;
-  background: linear-gradient(100deg, var(--muted) 20%, var(--text) 46%, var(--muted) 72%);
+  background-color: #687378;
+  background-image: linear-gradient(100deg, #687378 18%, #15191d 46%, #687378 74%);
+  background-repeat: no-repeat;
   background-size: 220% 100%;
   background-clip: text;
   -webkit-background-clip: text;
