@@ -465,6 +465,8 @@ async function parseSessionFile(
   let lastAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let lastFinalAssistantAfterPrompt: ChatMessageExcerpt | null = null;
   let newestRecordMs = Number.NaN;
+  let currentTurnSettings: Pick<ChatTranscriptMessage, "model" | "reasoningEffort"> = {};
+  let lastPromptTranscriptIndex = -1;
   const transcriptMessages: ChatTranscriptMessage[] = [];
   const appendTranscriptMessage = (message: Omit<ChatTranscriptMessage, "id"> & { id?: string }) => {
     const nextMessage: ChatTranscriptMessage = {
@@ -549,7 +551,15 @@ async function parseSessionFile(
           query?: unknown;
           changes?: unknown;
           source_chat_id?: unknown;
-          source_title?: unknown;
+           source_title?: unknown;
+          model?: string;
+          effort?: string;
+          collaboration_mode?: {
+            settings?: {
+              model?: string;
+              reasoning_effort?: string;
+            };
+          };
           error?: {
             message?: unknown;
           };
@@ -567,6 +577,20 @@ async function parseSessionFile(
 
       const timestamp = record.timestamp ?? new Date(stat.mtimeMs).toISOString();
       const payload = record.payload;
+
+      if (record.type === "turn_context" && payload) {
+        const model = payload.collaboration_mode?.settings?.model ?? payload.model;
+        const reasoningEffort = payload.collaboration_mode?.settings?.reasoning_effort ?? payload.effort;
+        currentTurnSettings = {
+          ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoningEffort: reasoningEffort as ChatTranscriptMessage["reasoningEffort"] } : {})
+        };
+
+        if (lastPromptTranscriptIndex >= 0) {
+          Object.assign(transcriptMessages[lastPromptTranscriptIndex], currentTurnSettings);
+        }
+        return;
+      }
 
       if (record.type === "error" || record.type === "turn.failed") {
         appendTranscriptMessage({
@@ -730,8 +754,10 @@ async function parseSessionFile(
           kind: "user_prompt",
           label: "You",
           text,
-          createdAt: timestamp
+          createdAt: timestamp,
+          ...currentTurnSettings
         });
+        lastPromptTranscriptIndex = transcriptMessages.length - 1;
       }
 
       if (payload.role === "assistant" && text) {
@@ -754,7 +780,8 @@ async function parseSessionFile(
           label: isFinalAnswer ? "Codex" : "Codex update",
           text,
           createdAt: timestamp,
-          isFinal: isFinalAnswer
+          isFinal: isFinalAnswer,
+          ...currentTurnSettings
         });
 
         if (isFinalAnswer) {

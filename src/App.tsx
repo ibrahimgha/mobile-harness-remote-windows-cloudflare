@@ -169,6 +169,8 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
   durationMs?: number;
   voiceNoteUrl?: string;
   voiceNoteMimeType?: string;
+  model?: string;
+  reasoningEffort?: CodexRunSettings["reasoningEffort"];
 };
 
 type VisibleChatMessage = ChatTranscriptMessage & {
@@ -566,7 +568,26 @@ function formatDate(value: string) {
     return "";
   }
 
-  return date.toLocaleString();
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  });
+}
+
+function messageRunSettingsLabel(message: VisibleChatMessage, options: CodexRunSettingsOptions | undefined) {
+  if (!message.model && !message.reasoningEffort) {
+    return "";
+  }
+
+  const modelLabel = message.model
+    ? options?.modelCapabilities?.[message.model]?.label ?? settingLabel(message.model)
+    : "Default";
+  const reasoningLabel = message.reasoningEffort ? settingLabel(message.reasoningEffort) : "Default";
+  return `${modelLabel} · ${reasoningLabel}`;
 }
 
 function responseRunDuration(messages: ChatTranscriptMessage[], responseIndex: number) {
@@ -6468,6 +6489,10 @@ export function App() {
               {visibleMessageItems.length ? (
                 visibleMessageItems.map(({ message, renderKey }, index) => {
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
+                  const runSettingsLabel =
+                    message.role === "user" || isFinalCodexMessage(message)
+                      ? messageRunSettingsLabel(message, state?.runner.settingsOptions)
+                      : "";
                   const showFinalFallbackSeparator =
                     message.role === "assistant" &&
                     message.isFinal &&
@@ -6488,6 +6513,7 @@ export function App() {
                         <div className="bubble-meta">
                           <span>{chatMessageLabel(message)}</span>
                           <time>{formatDate(message.createdAt)}</time>
+                          {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
                           {runDuration ? (
                             <span className="bubble-duration" title="Run duration">
                               <Clock3 size={12} />

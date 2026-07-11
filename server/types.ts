@@ -150,6 +150,8 @@ export type ChatTranscriptMessage = ChatMessageExcerpt & {
   callId?: string;
   status?: string;
   durationMs?: number;
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
 };
 
 export type ChatMessageViewMode = "all" | "final" | "codex";

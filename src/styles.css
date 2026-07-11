@@ -2347,6 +2347,11 @@ p {
   white-space: nowrap;
 }
 
+.bubble-run-settings {
+  font-weight: 700;
+  opacity: 0.86;
+}
+
 .job-stop-button {
   display: inline-grid;
   width: 26px;
