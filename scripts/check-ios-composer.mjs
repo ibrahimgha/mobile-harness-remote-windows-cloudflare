@@ -112,6 +112,27 @@ if (!/\.custom-keyboard-slot\s*\{[\s\S]{0,180}padding-top: 8px/.test(styles)) {
   failures.push("The custom keyboard slot must preserve a stable 8px gap below the composer.");
 }
 
+if (!/\.custom-keyboard-row\s*\{[\s\S]{0,260}gap: 0/.test(styles)) {
+  failures.push("Custom keyboard touch targets must be contiguous; CSS row gaps create dead tap zones on iOS.");
+}
+
+if (!/\.custom-keyboard\s*\{[\s\S]{0,360}touch-action: none/.test(styles)) {
+  failures.push("The custom keyboard must opt out of browser touch gestures during rapid typing.");
+}
+
+if (!/\.custom-key::before\s*\{[\s\S]{0,360}inset: 0 2\.5px/.test(styles)) {
+  failures.push("Visible key spacing must be painted inside contiguous touch targets.");
+}
+
+if (!/\.custom-key:active::before\s*\{[\s\S]{0,120}transform: scale\(0\.97\)/.test(styles)) {
+  failures.push("Pressed-key animation must not shrink the real touch hitbox.");
+}
+
+const activeKeyBlock = styles.match(/\.custom-key:active\s*\{([^}]*)\}/)?.[1] ?? "";
+if (/transform:\s*scale\(/.test(activeKeyBlock)) {
+  failures.push("Never transform the custom key element itself; transforms alter rapid-touch hit testing.");
+}
+
 if (!/\.chat-workspace\.has-custom-keyboard \.composer\s*\{[\s\S]{0,100}width: 100%/.test(styles)) {
   failures.push("The mobile composer geometry must remain expanded while the custom keyboard is open, even if WebKit moves DOM focus.");
 }

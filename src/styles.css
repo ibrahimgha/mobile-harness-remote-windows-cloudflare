@@ -2827,14 +2827,16 @@ p {
   border-top: 1px solid rgba(29, 35, 39, 0.14);
   background: #d2d5d9;
   box-shadow: 0 -1px 8px rgba(23, 26, 31, 0.08);
-  touch-action: manipulation;
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
 }
 
 .custom-keyboard-row {
   display: flex;
-  gap: 5px;
+  /* Keep real touch targets contiguous. Visual spacing belongs to the keycap
+     pseudo-element so rapid iOS taps cannot land in dead strips between keys. */
+  gap: 0;
   min-width: 0;
 }
 
@@ -2843,7 +2845,10 @@ p {
 }
 
 .custom-key {
+  --custom-keycap-background: #ffffff;
   display: inline-flex;
+  position: relative;
+  isolation: isolate;
   flex: 1 1 0;
   min-width: 0;
   min-height: 44px;
@@ -2852,27 +2857,40 @@ p {
   justify-content: center;
   padding: 0 3px;
   border: 0;
-  border-radius: 6px;
   color: #171a1d;
-  background: #ffffff;
-  box-shadow: 0 1px 0 rgba(19, 24, 28, 0.28);
+  background: transparent;
+  box-shadow: none;
   font-family: inherit;
   font-size: 1.08rem;
   font-weight: 450;
   line-height: 1;
   cursor: pointer;
+  touch-action: none;
   -webkit-tap-highlight-color: transparent;
 }
 
+.custom-key::before {
+  content: "";
+  position: absolute;
+  inset: 0 2.5px;
+  z-index: -1;
+  border-radius: 6px;
+  background: var(--custom-keycap-background);
+  box-shadow: 0 1px 0 rgba(19, 24, 28, 0.28);
+  pointer-events: none;
+  transform: scale(1);
+  transition: transform 60ms linear, box-shadow 60ms linear;
+}
+
 .custom-key.is-modifier {
+  --custom-keycap-background: #aeb4ba;
   flex-grow: 1.35;
   color: #1f2529;
-  background: #aeb4ba;
 }
 
 .custom-key.is-modifier.is-active {
+  --custom-keycap-background: var(--mint);
   color: var(--teal-strong);
-  background: var(--mint);
 }
 
 .custom-key.is-space-key {
@@ -2887,6 +2905,10 @@ p {
 }
 
 .custom-key:active {
+  transform: none;
+}
+
+.custom-key:active::before {
   box-shadow: none;
   transform: scale(0.97);
 }
