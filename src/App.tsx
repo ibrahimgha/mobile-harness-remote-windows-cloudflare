@@ -65,6 +65,7 @@ type BridgeState = {
     platform: string;
   };
   server: {
+    name: string;
     uptimeSeconds: number;
     clients: number;
   };
@@ -75,7 +76,19 @@ type BridgeState = {
     recentJobs: CodexRunJob[];
     settings: CodexRunSettings;
     settingsOptions: CodexRunSettingsOptions;
+    usage: CodexUsage | null;
   };
+};
+
+type CodexUsageWindow = {
+  usedPercent: number;
+  resetsAt?: number;
+};
+
+type CodexUsage = {
+  updatedAt: string;
+  fiveHour?: CodexUsageWindow;
+  weekly?: CodexUsageWindow;
 };
 
 type CodexRunSettings = {
@@ -2167,6 +2180,42 @@ function JobStatusIcon({ job }: { job: CodexRunJob }) {
   return <Clock3 size={15} />;
 }
 
+function NotificationButton({
+  status,
+  busy,
+  onClick
+}: {
+  status: RemoteNotificationState;
+  busy: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`icon-button notification-button ${status === "enabled" ? "is-active" : ""}`}
+      type="button"
+      onClick={onClick}
+      disabled={busy || status === "unsupported" || status === "denied"}
+      aria-label={status === "enabled" ? "Send test notification" : "Enable notifications"}
+      title={
+        status === "enabled"
+          ? "Send test notification"
+          : status === "denied"
+            ? "Notifications are blocked in browser settings"
+            : "Enable notifications"
+      }
+    >
+      {busy ? (
+        <Loader2 className="spin" size={18} />
+      ) : status === "denied" || status === "unsupported" ? (
+        <BellOff size={18} />
+      ) : (
+        <Bell size={18} />
+      )}
+      <span className="notification-label">{notificationLabel(status)}</span>
+    </button>
+  );
+}
+
 function StatusControls({
   socketLive,
   state,
@@ -2196,29 +2245,7 @@ function StatusControls({
         <MonitorUp size={15} />
         {state ? `${state.runner.activeJobs}/${state.runner.queuedJobs}` : "0/0"}
       </span>
-      <button
-        className={`icon-button notification-button ${notificationStatus === "enabled" ? "is-active" : ""}`}
-        type="button"
-        onClick={onNotifications}
-        disabled={notificationBusy || notificationStatus === "unsupported" || notificationStatus === "denied"}
-        aria-label={notificationStatus === "enabled" ? "Send test notification" : "Enable notifications"}
-        title={
-          notificationStatus === "enabled"
-            ? "Send test notification"
-            : notificationStatus === "denied"
-              ? "Notifications are blocked in browser settings"
-              : "Enable notifications"
-        }
-      >
-        {notificationBusy ? (
-          <Loader2 className="spin" size={18} />
-        ) : notificationStatus === "denied" || notificationStatus === "unsupported" ? (
-          <BellOff size={18} />
-        ) : (
-          <Bell size={18} />
-        )}
-        <span className="notification-label">{notificationLabel(notificationStatus)}</span>
-      </button>
+      <NotificationButton status={notificationStatus} busy={notificationBusy} onClick={onNotifications} />
       <button className="icon-button" type="button" onClick={onLogout} aria-label="Sign out">
         <LogOut size={18} />
       </button>
@@ -2263,14 +2290,37 @@ function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
   return `${setting.modelLabel} ${setting.effortLabel}`;
 }
 
+function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | undefined }) {
+  const percent = Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
+  const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
+  const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
+    ? resetDate.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hour12: true })
+    : "Waiting for Codex usage data";
+
+  return (
+    <div className="usage-meter" title={`Resets ${resetLabel}`}>
+      <div className="usage-meter-label">
+        <span>{label}</span>
+        <strong>{usage ? `${Math.round(percent)}%` : "--"}</strong>
+      </div>
+      <div className="usage-meter-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <small>{usage ? `Resets ${resetLabel}` : resetLabel}</small>
+    </div>
+  );
+}
+
 function RunSettingsPanel({
   settings,
   options,
+  usage,
   busy,
   onChange
 }: {
   settings?: CodexRunSettings;
   options?: CodexRunSettingsOptions;
+  usage?: CodexUsage | null;
   busy: boolean;
   onChange: (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => void;
 }) {
@@ -2434,8 +2484,9 @@ function RunSettingsPanel({
       ) : null}
 
       {advancedVisible ? (
-        <div className="run-settings-grid">
-          <label>
+        <>
+          <div className="run-settings-grid">
+            <label>
             <span>Model</span>
             <select
               value={current.model}
@@ -2479,8 +2530,13 @@ function RunSettingsPanel({
                 </option>
               ))}
             </select>
-          </label>
-        </div>
+            </label>
+          </div>
+          <div className="usage-meters" aria-label="Codex usage limits">
+            <UsageBar label="5 hours" usage={usage?.fiveHour} />
+            <UsageBar label="Weekly" usage={usage?.weekly} />
+          </div>
+        </>
       ) : null}
     </section>
   );
@@ -3063,6 +3119,7 @@ export function App() {
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
   const topbarProjectLabel = selectedChat?.projectName ?? selectedChatSummary?.projectName ?? (chatShellIsLoading ? "Loading" : "Project");
   const topbarTitle = selectedChat?.title ?? selectedChatSummary?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
+  const serverDisplayName = state?.server.name || "Codex";
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -6046,9 +6103,17 @@ export function App() {
     <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
-          <div>
-            <h1>Codex Remote</h1>
-            <span>{chatIndex?.totalChats ?? 0} chats</span>
+          <div className="sidebar-heading-row">
+            <div className="sidebar-title-copy">
+              <h1>{serverDisplayName}</h1>
+              <span>{chatIndex?.totalChats ?? 0} chats</span>
+            </div>
+            <div className="sidebar-account-actions">
+              <NotificationButton status={notificationStatus} busy={notificationBusy} onClick={handleNotificationsClick} />
+              <button className="icon-button" type="button" onClick={logout} aria-label="Sign out" title="Sign out">
+                <LogOut size={18} />
+              </button>
+            </div>
           </div>
           <div className="sidebar-actions">
             <button
@@ -6085,16 +6150,6 @@ export function App() {
             >
               <FileText size={18} />
             </button>
-            <button
-              className={`icon-button ${runBoardOpen ? "is-active" : ""}`}
-              type="button"
-              onClick={openRunBoard}
-              aria-label="Open active runs board"
-              aria-pressed={runBoardOpen}
-              title="Active runs board"
-            >
-              <MonitorUp size={18} />
-            </button>
             <button className="icon-button" type="button" onClick={refreshWorkspace} aria-label="Refresh chats">
               {loadingChats ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
             </button>
@@ -6104,20 +6159,10 @@ export function App() {
           </div>
         </div>
 
-        <div className="mobile-menu-controls">
-          <StatusControls
-            socketLive={socketLive}
-            state={state}
-            notificationStatus={notificationStatus}
-            notificationBusy={notificationBusy}
-            onNotifications={handleNotificationsClick}
-            onLogout={logout}
-          />
-        </div>
-
         <RunSettingsPanel
           settings={state?.runner.settings}
           options={state?.runner.settingsOptions}
+          usage={state?.runner.usage}
           busy={settingsSaving}
           onChange={updateRunSettings}
         />

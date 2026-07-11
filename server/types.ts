@@ -21,6 +21,7 @@ export type BridgeState = {
     platform: NodeJS.Platform;
   };
   server: {
+    name: string;
     uptimeSeconds: number;
     port: number;
     clients: number;
@@ -35,6 +36,7 @@ export type BridgeState = {
     activeJobs: number;
     queuedJobs: number;
     recentJobs: CodexRunJob[];
+    usage: CodexUsage | null;
   };
   recentEvents: BridgeEvent[];
 };
@@ -52,6 +54,17 @@ export type CodexRunSettings = {
   reasoningEffort: CodexReasoningEffort;
   speed: CodexRunSpeed;
   updatedAt: string;
+};
+
+export type CodexUsageWindow = {
+  usedPercent: number;
+  resetsAt?: number;
+};
+
+export type CodexUsage = {
+  updatedAt: string;
+  fiveHour?: CodexUsageWindow;
+  weekly?: CodexUsageWindow;
 };
 
 export type CodexModelCapability = {

@@ -14,6 +14,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
+import { getCachedCodexUsage, refreshCodexUsage } from "./codexUsage.js";
 import { cleanDictationWithCodex } from "./dictationCleaner.js";
 import {
   getDefaultProjectsRoot,
@@ -34,6 +35,7 @@ import {
 } from "./webPush.js";
 
 const port = Number(process.env.PORT ?? 8787);
+const serverName = process.env.REMOTE_SERVER_NAME?.trim() || os.hostname();
 const clientOrigin = process.env.CLIENT_ORIGIN;
 const controlToken = process.env.CONTROL_TOKEN?.trim() ?? "";
 const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
@@ -772,6 +774,7 @@ function getState(): BridgeState {
       platform: process.platform
     },
     server: {
+      name: serverName,
       uptimeSeconds: Math.round(process.uptime()),
       port,
       clients: wss.clients.size
@@ -785,7 +788,8 @@ function getState(): BridgeState {
       settingsOptions: getRunSettingsOptions(),
       activeJobs: runner.activeJobs,
       queuedJobs: runner.queuedJobs,
-      recentJobs: runner.recentJobs
+      recentJobs: runner.recentJobs,
+      usage: getCachedCodexUsage()
     },
     recentEvents: events
   };
@@ -2152,6 +2156,10 @@ wss.on("connection", (socket: WebSocket) => {
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
 server.on("close", () => clearInterval(socketHeartbeat));
+void refreshCodexUsage();
+const usageRefreshTimer = setInterval(() => void refreshCodexUsage(), 30000);
+usageRefreshTimer.unref();
+server.on("close", () => clearInterval(usageRefreshTimer));
 
 server.on("upgrade", (request, socket, head) => {
   const host = request.headers.host ?? `localhost:${port}`;
