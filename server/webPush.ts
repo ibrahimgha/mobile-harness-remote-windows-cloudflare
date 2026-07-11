@@ -273,27 +273,21 @@ function notificationLabel(value: string | undefined, fallback: string): string 
 export function formatJobPushNotification(
   job: CodexRunJob,
   event: "completed" | "failed",
-  context: { serverName: string; projectName?: string; chatName?: string }
+  context: { projectName?: string; chatName?: string }
 ): { title: string; body: string } {
-  const serverName = notificationLabel(context.serverName, "Codex Remote");
   const projectName = notificationLabel(context.projectName, path.basename(job.projectPath) || "Project");
   const chatName = notificationLabel(context.chatName, job.promptPreview || `Chat ${job.chatId.slice(0, 8)}`);
 
   return {
-    title: `${serverName} · ${projectName}`,
+    title: projectName,
     body: `${chatName} · ${event === "completed" ? "Done" : "Failed"}`
   };
 }
 
-export async function sendJobPushNotification(
-  job: CodexRunJob,
-  event: "completed" | "failed",
-  serverName: string
-): Promise<SendResult> {
+export async function sendJobPushNotification(job: CodexRunJob, event: "completed" | "failed"): Promise<SendResult> {
   clearSessionCache();
   const chat = await getChat(job.chatId).catch(() => null);
   const { title, body } = formatJobPushNotification(job, event, {
-    serverName,
     projectName: chat?.projectName,
     chatName: chat?.title
   });

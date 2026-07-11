@@ -1555,16 +1555,14 @@ function projectNameFromPath(projectPath: string) {
 }
 
 function completionNotificationCopy(
-  serverName: string,
   job: CodexRunJob,
   chat?: Pick<ChatDetail, "projectName" | "title"> | null
 ) {
-  const normalizedServerName = serverName.replace(/\s+/g, " ").trim() || "Codex Remote";
   const projectName = chat?.projectName?.replace(/\s+/g, " ").trim() || projectNameFromPath(job.projectPath);
   const chatName = chat?.title?.replace(/\s+/g, " ").trim() || previewText(job.promptPreview, `Chat ${job.chatId.slice(0, 8)}`);
 
   return {
-    title: `${normalizedServerName} · ${projectName}`,
+    title: projectName,
     body: `${chatName} · ${job.status === "completed" ? "Done" : "Failed"}`
   };
 }
@@ -3096,7 +3094,6 @@ export function App() {
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
-  const serverNameRef = useRef("Codex Remote");
   const draft = selectedChatId ? (draftsByChat[selectedChatId] ?? readChatDraft(localStorage, selectedChatId)) : "";
   const latestDraftRef = useRef(draft);
   latestDraftRef.current = draft;
@@ -3744,9 +3741,9 @@ export function App() {
     async (job: CodexRunJob) => {
       try {
         const chat = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(job.chatId)}`);
-        return completionNotificationCopy(serverNameRef.current, job, chat);
+        return completionNotificationCopy(job, chat);
       } catch {
-        return completionNotificationCopy(serverNameRef.current, job);
+        return completionNotificationCopy(job);
       }
     },
     [apiFetch]
@@ -5073,12 +5070,6 @@ export function App() {
   useEffect(() => {
     notificationStatusRef.current = notificationStatus;
   }, [notificationStatus]);
-
-  useEffect(() => {
-    if (state?.server.name) {
-      serverNameRef.current = state.server.name;
-    }
-  }, [state?.server.name]);
 
   useEffect(() => {
     void refreshNotificationStatus();
