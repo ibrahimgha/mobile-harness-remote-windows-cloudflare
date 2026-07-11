@@ -29,6 +29,7 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Zap,
   Wifi,
   WifiOff,
   X
@@ -2160,6 +2161,24 @@ function settingLabel(value: string) {
     .join(" ");
 }
 
+const codexPowerSettings: Array<{
+  model: string;
+  reasoningEffort: CodexRunSettings["reasoningEffort"];
+  modelLabel: string;
+  effortLabel: string;
+}> = [
+  { model: "gpt-5.6-terra", reasoningEffort: "low", modelLabel: "5.6 Terra", effortLabel: "Low" },
+  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "5.6 Sol", effortLabel: "Low" },
+  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "5.6 Sol", effortLabel: "Standard" },
+  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "5.6 Sol", effortLabel: "Extended" },
+  { model: "gpt-5.6-sol", reasoningEffort: "xhigh", modelLabel: "5.6 Sol", effortLabel: "High" },
+  { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "5.6 Sol", effortLabel: "Ultra" }
+];
+
+function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
+  return `${setting.modelLabel} ${setting.effortLabel}`;
+}
+
 function RunSettingsPanel({
   settings,
   options,
@@ -2186,60 +2205,199 @@ function RunSettingsPanel({
   const selectedCapability = available.modelCapabilities?.[current.model];
   const availableReasoningEfforts = selectedCapability?.reasoningEfforts ?? available.reasoningEfforts;
   const availableSpeeds = selectedCapability?.speeds ?? available.speeds;
+  const powerSettings = useMemo(
+    () =>
+      codexPowerSettings.filter((setting) => {
+        if (!available.models.includes(setting.model)) {
+          return false;
+        }
+
+        const capability = available.modelCapabilities?.[setting.model];
+        return capability ? capability.reasoningEfforts.includes(setting.reasoningEffort) : true;
+      }),
+    [available.modelCapabilities, available.models]
+  );
+  const selectedPowerIndex = powerSettings.findIndex(
+    (setting) => setting.model === current.model && setting.reasoningEffort === current.reasoningEffort
+  );
+  const [powerPreviewIndex, setPowerPreviewIndex] = useState(Math.max(selectedPowerIndex, 0));
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const powerCommitTimerRef = useRef<number | undefined>(undefined);
+  const compactModeAvailable = powerSettings.length >= 2 && selectedPowerIndex >= 0;
+  const advancedVisible = advancedOpen || !compactModeAvailable;
+  const safePowerPreviewIndex = Math.min(Math.max(powerPreviewIndex, 0), Math.max(powerSettings.length - 1, 0));
+  const previewPowerSetting = powerSettings[safePowerPreviewIndex];
+  const powerPercent = powerSettings.length > 1 ? (safePowerPreviewIndex / (powerSettings.length - 1)) * 100 : 0;
+  const powerFillWidth = `calc(${powerPercent}% + ${14 - powerPercent * 0.28}px)`;
+  const fastModeSupported = availableSpeeds.includes("priority");
+  const fastModeEnabled = current.speed === "priority";
+  const ultraSelected = previewPowerSetting?.reasoningEffort === "ultra";
+
+  useEffect(() => {
+    if (selectedPowerIndex >= 0) {
+      setPowerPreviewIndex(selectedPowerIndex);
+    }
+  }, [selectedPowerIndex]);
+
+  useEffect(
+    () => () => {
+      if (powerCommitTimerRef.current !== undefined) {
+        window.clearTimeout(powerCommitTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const commitPowerSetting = (index: number) => {
+    const selection = powerSettings[index];
+    if (!selection || (selection.model === current.model && selection.reasoningEffort === current.reasoningEffort)) {
+      return;
+    }
+
+    onChange({ model: selection.model, reasoningEffort: selection.reasoningEffort });
+  };
+
+  const previewAndQueuePowerSetting = (index: number) => {
+    setPowerPreviewIndex(index);
+    if (powerCommitTimerRef.current !== undefined) {
+      window.clearTimeout(powerCommitTimerRef.current);
+    }
+    powerCommitTimerRef.current = window.setTimeout(() => {
+      powerCommitTimerRef.current = undefined;
+      commitPowerSetting(index);
+    }, 160);
+  };
+
+  const commitQueuedPowerSetting = (index: number) => {
+    if (powerCommitTimerRef.current !== undefined) {
+      window.clearTimeout(powerCommitTimerRef.current);
+      powerCommitTimerRef.current = undefined;
+    }
+    commitPowerSetting(index);
+  };
+
+  const currentLabel = compactModeAvailable && previewPowerSetting
+    ? powerSettingLabel(previewPowerSetting)
+    : `${available.modelCapabilities?.[current.model]?.label ?? settingLabel(current.model)} ${settingLabel(current.reasoningEffort)}`;
 
   return (
-    <section className="run-settings-panel" aria-label="Global Codex run settings">
-      <div className="run-settings-header">
-        <span>Run settings</span>
-        <span className="run-settings-status">{busy ? <Loader2 className="spin" size={13} /> : "Global"}</span>
+    <section className="run-settings-panel" aria-label="Global Codex run settings" data-advanced={advancedVisible}>
+      <div className="run-settings-summary">
+        <span className="run-settings-power-value">
+          {busy ? <Loader2 className="spin" size={13} /> : null}
+          {currentLabel}
+        </span>
+        <button
+          className="run-settings-advanced-toggle"
+          type="button"
+          aria-expanded={advancedVisible}
+          disabled={!compactModeAvailable}
+          onClick={() => setAdvancedOpen((open) => !open)}
+        >
+          <span>Advanced</span>
+          <ChevronRight size={13} aria-hidden="true" />
+        </button>
       </div>
-      <div className="run-settings-grid">
-        <label>
-          <span>Model</span>
-          <select
-            value={current.model}
-            disabled={busy}
-            onChange={(event) => onChange({ model: event.currentTarget.value })}
-            aria-label="Global model"
+
+      {!advancedVisible ? (
+        <div className="run-settings-power-row" data-ultra={ultraSelected}>
+          <div className="run-settings-power-slider">
+            <span className="run-settings-power-track" aria-hidden="true">
+              <span className="run-settings-power-fill" style={{ width: powerFillWidth }} />
+              {powerSettings.map((setting, index) => {
+                const tickPercent = powerSettings.length > 1 ? (index / (powerSettings.length - 1)) * 100 : 0;
+                const tickLeft = `calc(${tickPercent}% + ${14 - tickPercent * 0.28}px)`;
+                return (
+                  <span
+                    className="run-settings-power-tick"
+                    data-selected={index <= safePowerPreviewIndex}
+                    key={`${setting.model}:${setting.reasoningEffort}`}
+                    style={{ left: tickLeft }}
+                  />
+                );
+              })}
+            </span>
+            <input
+              aria-label="Global power"
+              aria-valuetext={currentLabel}
+              type="range"
+              min={0}
+              max={Math.max(powerSettings.length - 1, 1)}
+              step={1}
+              value={safePowerPreviewIndex}
+              disabled={busy || powerSettings.length < 2}
+              onChange={(event) => previewAndQueuePowerSetting(Number(event.currentTarget.value))}
+              onPointerUp={(event) => commitQueuedPowerSetting(Number(event.currentTarget.value))}
+              onKeyUp={(event) => {
+                if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+                  commitQueuedPowerSetting(Number(event.currentTarget.value));
+                }
+              }}
+            />
+          </div>
+          <button
+            className="run-settings-fast-toggle"
+            type="button"
+            aria-label={fastModeEnabled ? "Enable standard speed" : "Enable fast mode"}
+            aria-pressed={fastModeEnabled}
+            disabled={busy || !fastModeSupported}
+            title="1.5x speed, more usage"
+            onClick={() => onChange({ speed: fastModeEnabled ? "default" : "priority" })}
           >
-            {available.models.map((model) => (
-              <option key={model} value={model}>
-                {available.modelCapabilities?.[model]?.label ?? (model === "default" ? "Default" : model)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Reasoning</span>
-          <select
-            value={current.reasoningEffort}
-            disabled={busy}
-            onChange={(event) => onChange({ reasoningEffort: event.currentTarget.value as CodexRunSettings["reasoningEffort"] })}
-            aria-label="Global reasoning level"
-          >
-            {availableReasoningEfforts.map((effort) => (
-              <option key={effort} value={effort}>
-                {settingLabel(effort)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Speed</span>
-          <select
-            value={current.speed}
-            disabled={busy}
-            onChange={(event) => onChange({ speed: event.currentTarget.value as CodexRunSettings["speed"] })}
-            aria-label="Global speed"
-          >
-            {availableSpeeds.map((speed) => (
-              <option key={speed} value={speed}>
-                {settingLabel(speed)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+            <Zap size={17} fill={fastModeEnabled ? "currentColor" : "none"} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
+      {advancedVisible ? (
+        <div className="run-settings-grid">
+          <label>
+            <span>Model</span>
+            <select
+              value={current.model}
+              disabled={busy}
+              onChange={(event) => onChange({ model: event.currentTarget.value })}
+              aria-label="Global model"
+            >
+              {available.models.map((model) => (
+                <option key={model} value={model}>
+                  {available.modelCapabilities?.[model]?.label ?? (model === "default" ? "Default" : model)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Reasoning</span>
+            <select
+              value={current.reasoningEffort}
+              disabled={busy}
+              onChange={(event) => onChange({ reasoningEffort: event.currentTarget.value as CodexRunSettings["reasoningEffort"] })}
+              aria-label="Global reasoning level"
+            >
+              {availableReasoningEfforts.map((effort) => (
+                <option key={effort} value={effort}>
+                  {settingLabel(effort)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Speed</span>
+            <select
+              value={current.speed}
+              disabled={busy}
+              onChange={(event) => onChange({ speed: event.currentTarget.value as CodexRunSettings["speed"] })}
+              aria-label="Global speed"
+            >
+              {availableSpeeds.map((speed) => (
+                <option key={speed} value={speed}>
+                  {settingLabel(speed)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
     </section>
   );
 }
