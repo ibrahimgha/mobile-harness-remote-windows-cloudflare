@@ -28,8 +28,36 @@ if (!/navigatorWithStandalone\.standalone === true/.test(source)) {
   failures.push("The custom keyboard must remain scoped to installed iOS PWA mode by default.");
 }
 
-if (!/setDraftForChat\(chatId, textFromComposerEditor\(editor\)\)/.test(source)) {
-  failures.push("Custom-key mutations must immediately persist through the per-chat draft store.");
+if (!/pendingCustomKeyboardDraftRef\.current = \{ chatId, text: rawTextFromComposerEditor\(editor\) \}/.test(source)) {
+  failures.push("Custom-key mutations must stage their exact plain text for per-chat draft persistence.");
+}
+
+if (!/customKeyboardDraftSyncDelayMs = 80/.test(source)) {
+  failures.push("Custom keyboard draft persistence must batch rapid taps into an 80ms idle window.");
+}
+
+if (!/insertTextAtSelection[\s\S]*deleteTextBackward[\s\S]*composerSelectionRef/.test(source)) {
+  failures.push("Custom keyboard editing must use explicit plain-text selection offsets.");
+}
+
+if (/document\.execCommand\(/.test(source)) {
+  failures.push("Do not use deprecated execCommand editing; it causes unstable WebKit caret movement.");
+}
+
+if (/insertTextAtSelection\(currentText, selectionInsideComposer|deleteTextBackward\(currentText, selectionInsideComposer/.test(source)) {
+  failures.push("Custom key presses must use the saved caret offsets instead of re-reading WebKit selection state.");
+}
+
+if (/addEventListener\("selectionchange"/.test(source)) {
+  failures.push("Do not feed asynchronous WebKit selectionchange events back into the custom keyboard caret model.");
+}
+
+if (!/restoreCustomKeyboardComposerFocus[\s\S]{0,360}restoreComposerSelection\(/.test(source)) {
+  failures.push("Recovering custom-keyboard focus must restore the saved range without rewriting the editor text.");
+}
+
+if (!/else if \(!customKeyboardOpen\) \{\s*rememberComposerSelection\(editor\)/.test(source)) {
+  failures.push("Draft state updates must not re-read WebKit selection while the custom keyboard owns the caret.");
 }
 
 if (!/onPointerDown=\{startBackspaceRepeat\}/.test(source)) {
