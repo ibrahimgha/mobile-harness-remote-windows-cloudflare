@@ -23,3 +23,11 @@ assert.deepEqual(formatJobPushNotification(job, "failed", {}), {
   title: "Fallback project",
   body: "Fallback chat · Failed"
 });
+
+assert.deepEqual(
+  formatJobPushNotification({ ...job, projectPath: "/var/www/Fallback project" }, "failed", {}),
+  {
+    title: "Fallback project",
+    body: "Fallback chat · Failed"
+  }
+);

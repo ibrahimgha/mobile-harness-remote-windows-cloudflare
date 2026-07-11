@@ -270,12 +270,16 @@ function notificationLabel(value: string | undefined, fallback: string): string 
   return value?.replace(/\s+/g, " ").trim() || fallback;
 }
 
+function projectNameFromPath(projectPath: string): string {
+  return path.posix.basename(projectPath.replace(/\\/g, "/"));
+}
+
 export function formatJobPushNotification(
   job: CodexRunJob,
   event: "completed" | "failed",
   context: { projectName?: string; chatName?: string }
 ): { title: string; body: string } {
-  const projectName = notificationLabel(context.projectName, path.basename(job.projectPath) || "Project");
+  const projectName = notificationLabel(context.projectName, projectNameFromPath(job.projectPath) || "Project");
   const chatName = notificationLabel(context.chatName, job.promptPreview || `Chat ${job.chatId.slice(0, 8)}`);
 
   return {
