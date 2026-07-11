@@ -2179,6 +2179,7 @@ function DictationWaveform({ processing, barsRef }: { processing: boolean; barsR
 }
 
 type CustomKeyboardMode = "letters" | "numbers" | "symbols";
+const customKeyboardExitDurationMs = 240;
 
 function shouldUseCustomKeyboard() {
   const override = new URLSearchParams(window.location.search).get("customKeyboard");
@@ -2280,10 +2281,12 @@ const customKeyboardRows: Record<CustomKeyboardMode, string[][]> = {
 function CustomKeyboard({
   onText,
   onBackspace,
+  onRequestComposerFocus,
   onClose
 }: {
   onText: (text: string) => void;
   onBackspace: () => void;
+  onRequestComposerFocus: () => void;
   onClose: () => void;
 }) {
   const [mode, setMode] = useState<CustomKeyboardMode>("letters");
@@ -2318,10 +2321,12 @@ function CustomKeyboard({
   };
 
   const pressOnAccessibleClick = (event: ReactMouseEvent<HTMLButtonElement>, action: () => void) => {
+    // Prevent WebKit's synthesized click from focusing the key after pointerdown.
+    // That focus transfer collapses the mobile composer and changes the scroll geometry.
+    event.preventDefault();
     if (event.detail !== 0) {
       return;
     }
-    event.preventDefault();
     action();
   };
 
@@ -2342,6 +2347,11 @@ function CustomKeyboard({
       role="group"
       aria-label="On-screen keyboard"
       onPointerDown={(event) => event.preventDefault()}
+      onFocusCapture={(event) => {
+        if (event.target instanceof HTMLButtonElement) {
+          onRequestComposerFocus();
+        }
+      }}
     >
       {rows.map((row, rowIndex) => (
         <div className={`custom-keyboard-row row-${rowIndex + 1}`} key={`${mode}-${rowIndex}`}>
@@ -3028,6 +3038,7 @@ export function App() {
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [customKeyboardEnabled] = useState(shouldUseCustomKeyboard);
   const [customKeyboardOpen, setCustomKeyboardOpen] = useState(false);
+  const [customKeyboardMounted, setCustomKeyboardMounted] = useState(false);
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
@@ -3039,6 +3050,7 @@ export function App() {
   const chatDetailRequestRef = useRef(0);
   const sendHandledOnPointerDownRef = useRef(false);
   const promptReceiptClearTimerRef = useRef<number | undefined>(undefined);
+  const customKeyboardExitTimerRef = useRef<number | undefined>(undefined);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -3123,6 +3135,12 @@ export function App() {
   const closeCustomKeyboard = useCallback(() => {
     setCustomKeyboardOpen(false);
     composerEditorRef.current?.blur();
+  }, []);
+  const restoreCustomKeyboardComposerFocus = useCallback(() => {
+    const editor = composerEditorRef.current;
+    if (editor && document.activeElement !== editor) {
+      editor.focus({ preventScroll: true });
+    }
   }, []);
 
   const authHeaders = useMemo(
@@ -5363,6 +5381,30 @@ export function App() {
   }, [dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
 
   useEffect(() => {
+    window.clearTimeout(customKeyboardExitTimerRef.current);
+    customKeyboardExitTimerRef.current = undefined;
+
+    if (customKeyboardOpen) {
+      setCustomKeyboardMounted(true);
+      return;
+    }
+
+    if (!customKeyboardMounted) {
+      return;
+    }
+
+    customKeyboardExitTimerRef.current = window.setTimeout(() => {
+      setCustomKeyboardMounted(false);
+      customKeyboardExitTimerRef.current = undefined;
+    }, customKeyboardExitDurationMs);
+
+    return () => {
+      window.clearTimeout(customKeyboardExitTimerRef.current);
+      customKeyboardExitTimerRef.current = undefined;
+    };
+  }, [customKeyboardMounted, customKeyboardOpen]);
+
+  useEffect(() => {
     if (!customKeyboardOpen) {
       return;
     }
@@ -6475,7 +6517,7 @@ export function App() {
   }
 
   return (
-    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${customKeyboardOpen ? "has-custom-keyboard" : ""}`}>
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${customKeyboardMounted ? "has-custom-keyboard" : ""}`}>
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
           <div className="sidebar-heading-row">
@@ -6827,7 +6869,7 @@ export function App() {
         </div>
       ) : null}
 
-      <section className={`chat-workspace ${customKeyboardOpen ? "has-custom-keyboard" : ""}`} aria-label="Selected chat">
+      <section className={`chat-workspace ${customKeyboardMounted ? "has-custom-keyboard" : ""}`} aria-label="Selected chat">
         <header className="chat-topbar">
           <button
             className="icon-button mobile-menu-button"
@@ -7244,11 +7286,17 @@ export function App() {
           </div>
         </div>
 
-        {customKeyboardEnabled && customKeyboardOpen ? (
-          <div id="custom-chat-keyboard" className="custom-keyboard-slot" data-custom-keyboard-root="true">
+        {customKeyboardEnabled && customKeyboardMounted ? (
+          <div
+            id="custom-chat-keyboard"
+            className={`custom-keyboard-slot ${customKeyboardOpen ? "is-open" : "is-closing"}`}
+            data-custom-keyboard-root="true"
+            aria-hidden={!customKeyboardOpen}
+          >
             <CustomKeyboard
               onText={insertCustomKeyboardText}
               onBackspace={backspaceCustomKeyboardText}
+              onRequestComposerFocus={restoreCustomKeyboardComposerFocus}
               onClose={closeCustomKeyboard}
             />
           </div>

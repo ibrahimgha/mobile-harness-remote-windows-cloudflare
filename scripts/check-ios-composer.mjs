@@ -44,8 +44,12 @@ if (/onClick=\{\(\) => pressText\(key\)\}/.test(source)) {
   failures.push("Do not move custom character entry back to delayed synthesized click events.");
 }
 
-if (!/event\.detail !== 0[\s\S]{0,120}return/.test(source)) {
-  failures.push("Pointer-generated clicks must be ignored after immediate key activation while detail=0 assistive clicks remain supported.");
+if (!/const pressOnAccessibleClick[\s\S]{0,420}event\.preventDefault\(\);[\s\S]{0,120}event\.detail !== 0/.test(source)) {
+  failures.push("Every synthesized key click must prevent its button from stealing composer focus before pointer clicks are ignored.");
+}
+
+if (!/onFocusCapture[\s\S]{0,180}onRequestComposerFocus\(\)/.test(source)) {
+  failures.push("If WebKit still focuses a custom key, the keyboard must immediately restore the stable composer focus.");
 }
 
 if (!/closeOnOutsidePointer[\s\S]*data-custom-keyboard-root/.test(source)) {
@@ -62,6 +66,22 @@ if (!/\.chat-workspace\.has-custom-keyboard[\s\S]*grid-template-rows: auto auto 
 
 if (!/\.custom-keyboard-slot\s*\{[\s\S]{0,180}padding-top: 8px/.test(styles)) {
   failures.push("The custom keyboard slot must preserve a stable 8px gap below the composer.");
+}
+
+if (!/\.chat-workspace\.has-custom-keyboard \.composer\s*\{[\s\S]{0,100}width: 100%/.test(styles)) {
+  failures.push("The mobile composer geometry must remain expanded while the custom keyboard is open, even if WebKit moves DOM focus.");
+}
+
+if (!/customKeyboardMounted[\s\S]*customKeyboardExitDurationMs/.test(source)) {
+  failures.push("The custom keyboard must remain mounted long enough to complete its close animation.");
+}
+
+if (!/custom-keyboard-slot \$\{customKeyboardOpen \? "is-open" : "is-closing"\}/.test(source)) {
+  failures.push("The mounted custom keyboard must expose explicit opening and closing animation states.");
+}
+
+if (!/@keyframes customKeyboardIn[\s\S]*@keyframes customKeyboardOut/.test(styles)) {
+  failures.push("The custom keyboard must preserve its iOS-style enter and exit slide animations.");
 }
 
 if (/className=["']file-input["']/.test(source)) {
