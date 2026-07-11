@@ -2527,20 +2527,23 @@ function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
 }
 
 function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | undefined }) {
-  const percent = Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
+  const usedPercent = Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
+  const remainingPercent = 100 - usedPercent;
   const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
   const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
-    ? resetDate.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hour12: true })
+    ? label === "Weekly"
+      ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
     : "Waiting for Codex usage data";
 
   return (
     <div className="usage-meter" title={`Resets ${resetLabel}`}>
       <div className="usage-meter-label">
         <span>{label}</span>
-        <strong>{usage ? `${Math.round(percent)}%` : "--"}</strong>
+        <strong>{usage ? `${Math.round(remainingPercent)}% left` : "--"}</strong>
       </div>
-      <div className="usage-meter-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}>
-        <span style={{ width: `${percent}%` }} />
+      <div className="usage-meter-track" role="progressbar" aria-label={`${label} remaining`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(remainingPercent)}>
+        <span style={{ width: `${remainingPercent}%` }} />
       </div>
       <small>{usage ? `Resets ${resetLabel}` : resetLabel}</small>
     </div>
@@ -5286,6 +5289,27 @@ export function App() {
   }, [dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
 
   useEffect(() => {
+    if (!customKeyboardOpen) {
+      return;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.closest('[data-composer="chat"]') || target.closest('[data-custom-keyboard-root="true"]')) {
+        return;
+      }
+
+      setCustomKeyboardOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+  }, [customKeyboardOpen]);
+
+  useEffect(() => {
     const editor = composerEditorRef.current;
 
     if (editor) {
@@ -7067,11 +7091,6 @@ export function App() {
                     setCustomKeyboardOpen(true);
                   }
                 }}
-                onBlur={() => {
-                  if (customKeyboardEnabled) {
-                    setCustomKeyboardOpen(false);
-                  }
-                }}
                 onInput={(event) => {
                   const inputChatId = event.currentTarget.dataset.chatId;
                   if (inputChatId) {
@@ -7152,7 +7171,7 @@ export function App() {
         </div>
 
         {customKeyboardEnabled && customKeyboardOpen ? (
-          <div id="custom-chat-keyboard" className="custom-keyboard-slot">
+          <div id="custom-chat-keyboard" className="custom-keyboard-slot" data-custom-keyboard-root="true">
             <CustomKeyboard
               onText={insertCustomKeyboardText}
               onBackspace={backspaceCustomKeyboardText}

@@ -36,6 +36,14 @@ if (!/onPointerDown=\{startBackspaceRepeat\}/.test(source)) {
   failures.push("The custom keyboard must preserve press-and-hold Backspace behavior.");
 }
 
+if (!/closeOnOutsidePointer[\s\S]*data-custom-keyboard-root/.test(source)) {
+  failures.push("The custom keyboard must dismiss from explicit outside-pointer handling, not editor blur.");
+}
+
+if (/onBlur=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(false\)/.test(source)) {
+  failures.push("Do not close the custom keyboard from composer blur; iOS may blur it while pressing a key.");
+}
+
 if (!/\.chat-workspace\.has-custom-keyboard[\s\S]*grid-template-rows: auto auto auto auto minmax\(0, 1fr\) auto auto/.test(styles)) {
   failures.push("The custom keyboard must reserve its own mobile grid row instead of overlaying the composer.");
 }
