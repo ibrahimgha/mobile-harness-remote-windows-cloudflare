@@ -2448,18 +2448,20 @@ p {
 
 .thinking-label {
   display: inline-block;
-  color: #687378;
   color: transparent;
   background-color: #687378;
-  background-image: linear-gradient(100deg, #687378 18%, #15191d 46%, #687378 74%);
+  background-image: linear-gradient(100deg, #687378 18%, #687378 34%, #14191d 50%, #aeb8b8 58%, #687378 74%);
   background-repeat: no-repeat;
-  background-size: 220% 100%;
+  background-position: 160% 50%;
+  background-size: 240% 100%;
   background-clip: text;
   -webkit-background-clip: text;
-  animation: thinking-shine 1.8s linear infinite;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shine 1.5s linear infinite;
   font-size: clamp(1.35rem, 3vw, 1.8rem);
   font-weight: 300;
   line-height: 1.15;
+  will-change: background-position;
 }
 
 .thinking-age {
@@ -2510,19 +2512,11 @@ p {
 
 @keyframes thinking-shine {
   from {
-    background-position: 120% 0;
+    background-position: 160% 50%;
   }
 
   to {
-    background-position: -120% 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .thinking-label {
-    animation: none;
-    color: var(--muted);
-    background: none;
+    background-position: -160% 50%;
   }
 }
 
@@ -2958,6 +2952,15 @@ p {
     animation-duration: 200ms !important;
     transition-duration: 200ms !important;
   }
+
+  /* These requested microinteractions remain useful in the iOS PWA even when its WebKit view reports reduced motion. */
+  .thinking-label {
+    animation: thinking-shine 1.5s linear infinite !important;
+  }
+
+  .composer {
+    transition-duration: 200ms !important;
+  }
 }
 
 @media (max-width: 920px) {
@@ -3284,12 +3287,14 @@ p {
 
   .composer {
     width: 70%;
+    max-width: 100%;
     justify-self: center;
     margin-top: -16px;
     padding: 15px max(12px, env(safe-area-inset-left)) calc(min(max(2px, env(safe-area-inset-bottom)), 8px) + 24px)
       max(12px, env(safe-area-inset-right));
     background: transparent;
-    transition: width 220ms ease, padding-bottom 220ms ease;
+    transition: width 200ms cubic-bezier(0.2, 0, 0, 1), padding-bottom 200ms cubic-bezier(0.2, 0, 0, 1);
+    will-change: width, padding-bottom;
   }
 
   .composer::before {

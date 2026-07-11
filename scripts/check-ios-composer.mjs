@@ -52,6 +52,10 @@ if (!/onFocusCapture[\s\S]{0,180}onRequestComposerFocus\(\)/.test(source)) {
   failures.push("If WebKit still focuses a custom key, the keyboard must immediately restore the stable composer focus.");
 }
 
+if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(true\)/.test(source)) {
+  failures.push("Tapping an already-focused composer must reopen the custom keyboard after an explicit dismissal.");
+}
+
 if (!/closeOnOutsidePointer[\s\S]*data-custom-keyboard-root/.test(source)) {
   failures.push("The custom keyboard must dismiss from explicit outside-pointer handling, not editor blur.");
 }
@@ -70,6 +74,22 @@ if (!/\.custom-keyboard-slot\s*\{[\s\S]{0,180}padding-top: 8px/.test(styles)) {
 
 if (!/\.chat-workspace\.has-custom-keyboard \.composer\s*\{[\s\S]{0,100}width: 100%/.test(styles)) {
   failures.push("The mobile composer geometry must remain expanded while the custom keyboard is open, even if WebKit moves DOM focus.");
+}
+
+if (!/\.composer\s*\{[\s\S]{0,180}width: 70%;[\s\S]{0,420}transition: width 200ms/.test(styles)) {
+  failures.push("The idle mobile composer must animate from 70% width over exactly 200ms.");
+}
+
+if (!/\.thinking-label\s*\{[\s\S]{0,520}-webkit-text-fill-color: transparent;[\s\S]{0,120}animation: thinking-shine 1\.5s linear infinite;/.test(styles)) {
+  failures.push("The live Thinking label must keep its WebKit-safe text shimmer.");
+}
+
+if (
+  !/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]{0,1400}\.thinking-label\s*\{[\s\S]{0,120}animation: thinking-shine 1\.5s linear infinite !important;[\s\S]{0,240}\.composer\s*\{[\s\S]{0,100}transition-duration: 200ms !important;/.test(
+    styles
+  )
+) {
+  failures.push("The requested composer and Thinking microinteractions must survive iOS WebKit reduced-motion overrides.");
 }
 
 if (!/customKeyboardMounted[\s\S]*customKeyboardExitDurationMs/.test(source)) {
