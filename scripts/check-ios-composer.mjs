@@ -56,8 +56,20 @@ if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(true\)/.test
   failures.push("Tapping an already-focused composer must reopen the custom keyboard after an explicit dismissal.");
 }
 
-if (!/closeOnOutsidePointer[\s\S]*data-custom-keyboard-root/.test(source)) {
-  failures.push("The custom keyboard must dismiss from explicit outside-pointer handling, not editor blur.");
+if (!/armOutsideTap[\s\S]*cancelOutsideTapOnMove[\s\S]*finishOutsideTap/.test(source)) {
+  failures.push("The custom keyboard must distinguish a completed outside tap from a scrolling pointer gesture.");
+}
+
+if (!/Math\.hypot[\s\S]{0,220}customKeyboardTapSlopPx/.test(source)) {
+  failures.push("Outside keyboard dismissal must cancel after meaningful pointer movement.");
+}
+
+if (!/target\.closest\("\.scroll-bottom-control"\)/.test(source)) {
+  failures.push("The scroll-to-bottom control must never dismiss the custom keyboard.");
+}
+
+if (/addEventListener\("pointerdown", closeOnOutsidePointer/.test(source)) {
+  failures.push("Do not dismiss the custom keyboard on pointerdown; scrolling starts with the same event.");
 }
 
 if (/onBlur=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(false\)/.test(source)) {

@@ -58,6 +58,11 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { mergeTranscriptWindow } from "./chatRefresh";
 import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
+import {
+  nextLiveThinkingDelayMs,
+  nextLiveThinkingStatus,
+  type LiveThinkingStatus
+} from "./liveThinking";
 
 type BridgeState = {
   bridge: {
@@ -564,7 +569,8 @@ function messagesForViewMode(
     return settledMessages;
   }
 
-  const thinkingId = activeJob?.id ?? latestUpdate?.id ?? "latest-turn";
+  const latestPrompt = latestPromptIndex >= 0 ? messages[latestPromptIndex] : undefined;
+  const thinkingId = activeJob?.id ?? (latestPrompt ? stableHash(chatMessageStableSignature(latestPrompt)) : "latest-turn");
   const thinkingMessage: VisibleChatMessage = latestUpdate
     ? { ...latestUpdate, id: `live-thinking-${thinkingId}`, label: "Thinking", isLiveThinking: true }
     : {
@@ -2175,6 +2181,7 @@ function DictationWaveform({ processing, barsRef }: { processing: boolean; barsR
 
 type CustomKeyboardMode = "letters" | "numbers" | "symbols";
 const customKeyboardExitDurationMs = 240;
+const customKeyboardTapSlopPx = 10;
 
 function shouldUseCustomKeyboard() {
   const override = new URLSearchParams(window.location.search).get("customKeyboard");
@@ -3037,6 +3044,10 @@ export function App() {
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
+  const [liveThinkingDisplay, setLiveThinkingDisplay] = useState<{ runKey: string; status: LiveThinkingStatus }>({
+    runKey: "",
+    status: "Thinking"
+  });
   const [scrollDistanceFromBottom, setScrollDistanceFromBottom] = useState(0);
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -3478,7 +3489,11 @@ export function App() {
       };
     });
   }, [visibleMessages]);
-  const selectedViewHasLiveThinking = visibleMessages.some((message) => message.isLiveThinking);
+  const liveThinkingMessage = visibleMessages.find((message) => message.isLiveThinking);
+  const selectedViewHasLiveThinking = Boolean(liveThinkingMessage);
+  const liveThinkingRunKey = liveThinkingMessage ? `${selectedChatId ?? "chat"}:${liveThinkingMessage.id}` : "";
+  const liveThinkingStatus =
+    liveThinkingDisplay.runKey === liveThinkingRunKey ? liveThinkingDisplay.status : "Thinking";
   const lastVisibleMessageKey = visibleMessageItems.at(-1)?.renderKey ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
@@ -5199,6 +5214,40 @@ export function App() {
   }, [activeRunJobKey, selectedJob?.id, selectedJob?.status, selectedViewHasLiveThinking]);
 
   useEffect(() => {
+    if (!liveThinkingRunKey) {
+      return;
+    }
+
+    let timeoutId: number | undefined;
+    let stopped = false;
+
+    setLiveThinkingDisplay({ runKey: liveThinkingRunKey, status: "Thinking" });
+
+    const scheduleNextStatus = () => {
+      timeoutId = window.setTimeout(() => {
+        if (stopped) {
+          return;
+        }
+
+        setLiveThinkingDisplay((current) => ({
+          runKey: liveThinkingRunKey,
+          status: nextLiveThinkingStatus(current.runKey === liveThinkingRunKey ? current.status : "Thinking")
+        }));
+        scheduleNextStatus();
+      }, nextLiveThinkingDelayMs());
+    };
+
+    scheduleNextStatus();
+
+    return () => {
+      stopped = true;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [liveThinkingRunKey]);
+
+  useEffect(() => {
     if (!authenticated || !selectedChatId || isTemporaryChatId(selectedChatId)) {
       return;
     }
@@ -5402,20 +5451,79 @@ export function App() {
       return;
     }
 
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
+    let pendingOutsideTap: { pointerId: number; x: number; y: number } | null = null;
+
+    const isKeyboardDismissalExempt = (target: EventTarget | null) => {
       if (!(target instanceof Element)) {
-        return;
-      }
-      if (target.closest('[data-composer="chat"]') || target.closest('[data-custom-keyboard-root="true"]')) {
-        return;
+        return false;
       }
 
-      setCustomKeyboardOpen(false);
+      return Boolean(
+        target.closest('[data-composer="chat"]') ||
+          target.closest('[data-custom-keyboard-root="true"]') ||
+          target.closest(".scroll-bottom-control")
+      );
     };
 
-    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+    const armOutsideTap = (event: PointerEvent) => {
+      if (!event.isPrimary || event.button !== 0 || isKeyboardDismissalExempt(event.target)) {
+        pendingOutsideTap = null;
+        return;
+      }
+
+      pendingOutsideTap = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY
+      };
+    };
+
+    const cancelOutsideTapOnMove = (event: PointerEvent) => {
+      if (!pendingOutsideTap || event.pointerId !== pendingOutsideTap.pointerId) {
+        return;
+      }
+
+      if (
+        Math.hypot(event.clientX - pendingOutsideTap.x, event.clientY - pendingOutsideTap.y) >
+        customKeyboardTapSlopPx
+      ) {
+        pendingOutsideTap = null;
+      }
+    };
+
+    const finishOutsideTap = (event: PointerEvent) => {
+      if (!pendingOutsideTap || event.pointerId !== pendingOutsideTap.pointerId) {
+        return;
+      }
+
+      const completedTap = pendingOutsideTap;
+      pendingOutsideTap = null;
+      if (isKeyboardDismissalExempt(event.target)) {
+        return;
+      }
+
+      const movement = Math.hypot(event.clientX - completedTap.x, event.clientY - completedTap.y);
+      if (movement <= customKeyboardTapSlopPx) {
+        setCustomKeyboardOpen(false);
+      }
+    };
+
+    const cancelOutsideTap = (event: PointerEvent) => {
+      if (pendingOutsideTap?.pointerId === event.pointerId) {
+        pendingOutsideTap = null;
+      }
+    };
+
+    document.addEventListener("pointerdown", armOutsideTap, true);
+    document.addEventListener("pointermove", cancelOutsideTapOnMove, true);
+    document.addEventListener("pointerup", finishOutsideTap, true);
+    document.addEventListener("pointercancel", cancelOutsideTap, true);
+    return () => {
+      document.removeEventListener("pointerdown", armOutsideTap, true);
+      document.removeEventListener("pointermove", cancelOutsideTapOnMove, true);
+      document.removeEventListener("pointerup", finishOutsideTap, true);
+      document.removeEventListener("pointercancel", cancelOutsideTap, true);
+    };
   }, [customKeyboardOpen]);
 
   useEffect(() => {
@@ -6997,7 +7105,7 @@ export function App() {
                     <div className={`chat-message-group ${message.isLiveThinking ? "is-live-thinking-group" : ""}`} data-render-key={renderKey} key={renderKey}>
                       {message.isLiveThinking ? (
                         <div className="thinking-status">
-                          <span className="thinking-label">Thinking</span>
+                          <span className="thinking-label">{liveThinkingStatus}</span>
                           <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
                             {formatMessageAge(message.createdAt, durationNow)}
                           </span>
