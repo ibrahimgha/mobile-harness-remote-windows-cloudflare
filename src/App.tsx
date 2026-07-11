@@ -524,36 +524,40 @@ function messagesForViewMode(
       isFinalCodexMessage(message)
   );
 
-  if (activeJob?.status !== "running") {
-    return settledMessages;
+  // Transcript order remains reliable when websocket job state arrives late or is
+  // lost across a service/PWA restart, so use the latest turn as the authority.
+  let latestPromptIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestPromptIndex = index;
+      break;
+    }
   }
-
-  const runStartedMs = Date.parse(activeJob.startedAt ?? activeJob.createdAt) || 0;
-  const finalArrived = messages.some(
-    (message) => isFinalCodexMessage(message) && (Date.parse(message.createdAt) || 0) >= runStartedMs
-  );
+  const latestTurnMessages = latestPromptIndex >= 0 ? messages.slice(latestPromptIndex + 1) : [];
+  const finalArrived = latestTurnMessages.some(isFinalCodexMessage);
 
   if (finalArrived) {
     return settledMessages;
   }
 
-  const latestUpdate = [...messages]
+  const latestUpdate = [...latestTurnMessages]
     .reverse()
-    .find(
-      (message) =>
-        message.role === "assistant" &&
-        !isFinalCodexMessage(message) &&
-        (Date.parse(message.createdAt) || 0) >= runStartedMs
-    );
+    .find((message) => message.role === "assistant" && !isFinalCodexMessage(message));
+
+  if (!latestUpdate && activeJob?.status !== "running") {
+    return settledMessages;
+  }
+
+  const thinkingId = activeJob?.id ?? latestUpdate?.id ?? "latest-turn";
   const thinkingMessage: VisibleChatMessage = latestUpdate
-    ? { ...latestUpdate, id: `live-thinking-${activeJob.id}`, label: "Thinking", isLiveThinking: true }
+    ? { ...latestUpdate, id: `live-thinking-${thinkingId}`, label: "Thinking", isLiveThinking: true }
     : {
-        id: `live-thinking-${activeJob.id}`,
+        id: `live-thinking-${thinkingId}`,
         role: "assistant",
         kind: "assistant_commentary",
         label: "Thinking",
         text: "",
-        createdAt: activeJob.startedAt ?? activeJob.createdAt,
+        createdAt: activeJob?.startedAt ?? activeJob?.createdAt ?? new Date().toISOString(),
         isLiveThinking: true
       };
 
@@ -688,30 +692,6 @@ function separatorText(message: ChatTranscriptMessage) {
   }
 
   return message.text;
-}
-
-function chatMessageLabel(message: VisibleChatMessage) {
-  if (message.isRunFailure) {
-    return "Codex run failed";
-  }
-
-  if (message.label) {
-    return message.label;
-  }
-
-  if (message.role === "user") {
-    return "You";
-  }
-
-  if (message.role === "assistant") {
-    return message.kind === "assistant_commentary" ? "Codex update" : "Codex";
-  }
-
-  if (message.role === "tool") {
-    return message.kind === "tool_call" ? "Tool call" : "Tool output";
-  }
-
-  return "System";
 }
 
 function chatMessageEmptyText(message: VisibleChatMessage) {
@@ -3077,6 +3057,7 @@ export function App() {
       };
     });
   }, [visibleMessages]);
+  const selectedViewHasLiveThinking = visibleMessages.some((message) => message.isLiveThinking);
   const lastVisibleMessageKey = visibleMessageItems.at(-1)?.renderKey ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
@@ -4786,7 +4767,7 @@ export function App() {
   }, [authenticated, selectedInstructionFile, token]);
 
   useEffect(() => {
-    if (selectedJob?.status !== "running" && !activeRunJobKey) {
+    if (selectedJob?.status !== "running" && !activeRunJobKey && !selectedViewHasLiveThinking) {
       return;
     }
 
@@ -4797,7 +4778,7 @@ export function App() {
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [activeRunJobKey, selectedJob?.id, selectedJob?.status]);
+  }, [activeRunJobKey, selectedJob?.id, selectedJob?.status, selectedViewHasLiveThinking]);
 
   useEffect(() => {
     if (!authenticated || !selectedChatId || isTemporaryChatId(selectedChatId)) {
@@ -6560,9 +6541,7 @@ export function App() {
                     <div className="chat-message-group" data-render-key={renderKey} key={renderKey}>
                       <article className={chatMessageClassName(message)} data-render-key={renderKey}>
                         <div className="bubble-meta">
-                          <span className={message.isLiveThinking ? "thinking-label" : undefined}>
-                            {message.isLiveThinking ? "Thinking" : chatMessageLabel(message)}
-                          </span>
+                          {message.isLiveThinking ? <span className="thinking-label">Thinking</span> : null}
                           {message.isLiveThinking ? (
                             <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
                               {messageAgeSeconds(message.createdAt, durationNow)}s
