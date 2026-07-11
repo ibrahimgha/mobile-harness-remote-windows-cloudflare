@@ -763,26 +763,6 @@ function previewText(text: string, fallback: string) {
   return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
 }
 
-function notificationResponseSummary(text: string, fallback: string) {
-  const normalized = text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
-    .replace(/[#>*_~|[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!normalized) {
-    return fallback;
-  }
-
-  const words = normalized.split(" ").filter(Boolean);
-  const summary = words.slice(0, 10).join(" ");
-
-  return words.length > 10 ? `${summary}...` : summary;
-}
-
 function cleanDictatedPrompt(text: string) {
   return text
     .replace(/\bnew line\b/gi, "\n")
@@ -1563,6 +1543,21 @@ async function getFreshPushSubscription(registration: ServiceWorkerRegistration,
 function projectNameFromPath(projectPath: string) {
   const parts = projectPath.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) || "Codex";
+}
+
+function completionNotificationCopy(
+  serverName: string,
+  job: CodexRunJob,
+  chat?: Pick<ChatDetail, "projectName" | "title"> | null
+) {
+  const normalizedServerName = serverName.replace(/\s+/g, " ").trim() || "Codex Remote";
+  const projectName = chat?.projectName?.replace(/\s+/g, " ").trim() || projectNameFromPath(job.projectPath);
+  const chatName = chat?.title?.replace(/\s+/g, " ").trim() || previewText(job.promptPreview, `Chat ${job.chatId.slice(0, 8)}`);
+
+  return {
+    title: `${normalizedServerName} · ${projectName}`,
+    body: `${chatName} · ${job.status === "completed" ? "Done" : "Failed"}`
+  };
 }
 
 function notificationLabel(status: RemoteNotificationState) {
@@ -3075,6 +3070,7 @@ export function App() {
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
+  const serverNameRef = useRef("Codex Remote");
   const draft = selectedChatId ? (draftsByChat[selectedChatId] ?? readChatDraft(localStorage, selectedChatId)) : "";
   const setDraftForChat = useCallback((chatId: string, text: string) => {
     writeChatDraft(localStorage, chatId, text);
@@ -3637,23 +3633,14 @@ export function App() {
     [ensureNotificationRegistration]
   );
 
-  const localNotificationBodyForJob = useCallback(
+  const localNotificationCopyForJob = useCallback(
     async (job: CodexRunJob) => {
-      if (job.status === "failed") {
-        return notificationResponseSummary(job.message ?? "", "Run failed before response");
-      }
-
       try {
         const chat = await apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(job.chatId)}`);
-
-        if (chat.lastResponse?.text) {
-          return notificationResponseSummary(chat.lastResponse.text, "Response unavailable");
-        }
+        return completionNotificationCopy(serverNameRef.current, job, chat);
       } catch {
-        // Fall back to the prompt preview below.
+        return completionNotificationCopy(serverNameRef.current, job);
       }
-
-      return notificationResponseSummary(job.promptPreview, "Response unavailable");
     },
     [apiFetch]
   );
@@ -4981,6 +4968,12 @@ export function App() {
   }, [notificationStatus]);
 
   useEffect(() => {
+    if (state?.server.name) {
+      serverNameRef.current = state.server.name;
+    }
+  }, [state?.server.name]);
+
+  useEffect(() => {
     void refreshNotificationStatus();
   }, [refreshNotificationStatus]);
 
@@ -5563,9 +5556,9 @@ export function App() {
 
           if (job.status === "completed" || job.status === "failed") {
             if (notificationStatusRef.current === "local") {
-              void localNotificationBodyForJob(job).then((body) =>
+              void localNotificationCopyForJob(job).then(({ title, body }) =>
                 showLocalNotification({
-                  title: job.status === "completed" ? "Codex finished" : "Codex failed",
+                  title,
                   body,
                   tag: `codex-job-${job.id}`,
                   chatId: job.chatId,
@@ -5611,7 +5604,7 @@ export function App() {
     loadChatJobs,
     loadChats,
     loadState,
-    localNotificationBodyForJob,
+    localNotificationCopyForJob,
     rememberJob,
     showLocalNotification,
     token

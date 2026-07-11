@@ -33,8 +33,6 @@ const runtimeDir = path.resolve(process.cwd(), ".runtime");
 const subscriptionsPath = path.join(runtimeDir, "web-push-subscriptions.json");
 const vapidPath = path.join(runtimeDir, "web-push-vapid.json");
 const vapidSubject = process.env.WEB_PUSH_SUBJECT?.trim() || "mailto:codex-remote@bit68-infra.com";
-const maxNotificationSummaryWords = 10;
-
 let vapidReady: Promise<{ publicKey: string; privateKey: string }> | null = null;
 
 function subscriptionId(endpoint: string): string {
@@ -268,65 +266,37 @@ export async function sendTestPushNotification(): Promise<SendResult> {
   });
 }
 
-function summarizeResponseForNotification(text: string): string {
-  const normalized = text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
-    .replace(/[#>*_~|[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!normalized) {
-    return "Response unavailable";
-  }
-
-  const words = normalized.split(" ").filter(Boolean);
-  const summary = words.slice(0, maxNotificationSummaryWords).join(" ");
-
-  return words.length > maxNotificationSummaryWords ? `${summary}...` : summary;
+function notificationLabel(value: string | undefined, fallback: string): string {
+  return value?.replace(/\s+/g, " ").trim() || fallback;
 }
 
-function isUsefulSummary(summary: string): boolean {
-  return Boolean(summary && !/^response unavailable$/i.test(summary) && !/^run failed before response$/i.test(summary));
+export function formatJobPushNotification(
+  job: CodexRunJob,
+  event: "completed" | "failed",
+  context: { serverName: string; projectName?: string; chatName?: string }
+): { title: string; body: string } {
+  const serverName = notificationLabel(context.serverName, "Codex Remote");
+  const projectName = notificationLabel(context.projectName, path.basename(job.projectPath) || "Project");
+  const chatName = notificationLabel(context.chatName, job.promptPreview || `Chat ${job.chatId.slice(0, 8)}`);
+
+  return {
+    title: `${serverName} · ${projectName}`,
+    body: `${chatName} · ${event === "completed" ? "Done" : "Failed"}`
+  };
 }
 
-async function readTranscriptResponseSummary(job: CodexRunJob): Promise<string | null> {
-  try {
-    clearSessionCache();
-    const chat = await getChat(job.chatId);
-    const response = chat?.lastResponse?.text;
-
-    if (!response) {
-      return null;
-    }
-
-    const summary = summarizeResponseForNotification(response);
-    return isUsefulSummary(summary) ? summary : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readLastMessageSummary(job: CodexRunJob): Promise<string | null> {
-  try {
-    const response = await fs.readFile(job.logPaths.lastMessage, "utf8");
-    const summary = summarizeResponseForNotification(response);
-    return isUsefulSummary(summary) ? summary : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function sendJobPushNotification(job: CodexRunJob, event: "completed" | "failed"): Promise<SendResult> {
-  const title = event === "completed" ? "Codex finished" : "Codex failed";
-  const responseSummary = (await readTranscriptResponseSummary(job)) ?? (await readLastMessageSummary(job));
-  const body =
-    responseSummary ??
-    (event === "failed"
-      ? summarizeResponseForNotification(job.message ?? "Run failed before response")
-      : "Response unavailable");
+export async function sendJobPushNotification(
+  job: CodexRunJob,
+  event: "completed" | "failed",
+  serverName: string
+): Promise<SendResult> {
+  clearSessionCache();
+  const chat = await getChat(job.chatId).catch(() => null);
+  const { title, body } = formatJobPushNotification(job, event, {
+    serverName,
+    projectName: chat?.projectName,
+    chatName: chat?.title
+  });
 
   return sendPushPayload({
     title,

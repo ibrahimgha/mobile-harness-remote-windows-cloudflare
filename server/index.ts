@@ -69,7 +69,7 @@ const runner = new CodexRunner({
     });
 
     if (event === "completed" || event === "failed") {
-      void sendJobPushNotification(job, event)
+      void sendJobPushNotification(job, event, serverName)
         .then((result) => {
           if (result.attempted || result.removed || result.failed) {
             pushEvent(result.failed ? "error" : "status", "Push notification processed", {
