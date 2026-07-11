@@ -54,6 +54,7 @@ import {
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { mergeTranscriptWindow } from "./chatRefresh";
+import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
 
 type BridgeState = {
   bridge: {
@@ -307,16 +308,33 @@ type DictationVoiceNote = {
   mimeType: string;
 };
 
+type SpeechRecognitionAlternativeLike = {
+  transcript: string;
+  confidence?: number;
+};
+
+type SpeechRecognitionResultLike = ArrayLike<SpeechRecognitionAlternativeLike> & {
+  isFinal: boolean;
+};
+
 type SpeechRecognitionLike = EventTarget & {
   continuous: boolean;
   interimResults: boolean;
+  maxAlternatives: number;
   lang: string;
-  onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResultLike> }) => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
   abort: () => void;
+};
+
+type DictationCleanupResult = {
+  ok: boolean;
+  text?: string;
+  source?: "codex" | "browser";
+  message?: string;
 };
 
 type PromptReceipt = {
@@ -699,6 +717,22 @@ function cleanDictatedPrompt(text: string) {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function bestSpeechRecognitionTranscript(result: SpeechRecognitionResultLike | undefined) {
+  if (!result?.length) {
+    return "";
+  }
+
+  let best = result[0];
+  for (let index = 1; index < result.length; index += 1) {
+    const candidate = result[index];
+    if ((candidate?.confidence ?? -1) > (best?.confidence ?? -1)) {
+      best = candidate;
+    }
+  }
+
+  return best?.transcript?.trim() ?? "";
 }
 
 function speechRecognitionConstructor() {
@@ -2530,7 +2564,9 @@ export function App() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
-  const [draft, setDraft] = useState("");
+  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(() =>
+    initialChatSelection.id ? { [initialChatSelection.id]: readChatDraft(localStorage, initialChatSelection.id) } : {}
+  );
   const [sending, setSending] = useState(false);
   const [stoppingJobIds, setStoppingJobIds] = useState<Set<string>>(() => new Set());
   const [, setNotice] = useState("");
@@ -2590,6 +2626,8 @@ export function App() {
   const dictationRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationFinalTranscriptRef = useRef("");
   const dictationTranscriptRef = useRef("");
+  const dictationChatIdRef = useRef<string | null>(null);
+  const dictationDraftSnapshotRef = useRef("");
   const dictationBarsRef = useRef<HTMLDivElement | null>(null);
   const dictationAudioContextRef = useRef<AudioContext | null>(null);
   const dictationAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -2603,6 +2641,32 @@ export function App() {
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
+  const draft = selectedChatId ? (draftsByChat[selectedChatId] ?? readChatDraft(localStorage, selectedChatId)) : "";
+  const setDraftForChat = useCallback((chatId: string, text: string) => {
+    writeChatDraft(localStorage, chatId, text);
+    setDraftsByChat((current) => {
+      if ((current[chatId] ?? "") === text) {
+        return current;
+      }
+
+      const next = { ...current };
+      if (text) {
+        next[chatId] = text;
+      } else {
+        delete next[chatId];
+      }
+      return next;
+    });
+  }, []);
+  const setDraft = useCallback(
+    (text: string) => {
+      const chatId = selectedChatIdRef.current;
+      if (chatId) {
+        setDraftForChat(chatId, text);
+      }
+    },
+    [setDraftForChat]
+  );
 
   const authHeaders = useMemo(
     () => ({
@@ -5516,11 +5580,7 @@ export function App() {
   }
 
   function currentDictationTranscript() {
-    return cleanDictatedPrompt(
-      dictationTranscriptRef.current ||
-        dictationFinalTranscriptRef.current ||
-        (composerEditorRef.current ? textFromComposerEditor(composerEditorRef.current) : "")
-    );
+    return cleanDictatedPrompt(dictationTranscriptRef.current || dictationFinalTranscriptRef.current);
   }
 
   async function waitForDictationTranscript(timeoutMs = 2200) {
@@ -5539,6 +5599,26 @@ export function App() {
     return bestTranscript;
   }
 
+  async function improveDictationTranscript(chatId: string, rawTranscript: string) {
+    setNotice("Improving transcription...");
+
+    try {
+      const result = await apiFetch<DictationCleanupResult>(`/api/chats/${encodeURIComponent(chatId)}/dictation/clean`, {
+        method: "POST",
+        body: JSON.stringify({
+          rawTranscript,
+          draftContext: dictationDraftSnapshotRef.current,
+          language: navigator.language || "en-US"
+        })
+      });
+      const cleaned = cleanDictatedPrompt(result.text ?? rawTranscript);
+      return cleaned || rawTranscript;
+    } catch (error) {
+      setNotice(error instanceof Error ? `${error.message}; using browser transcript` : "Using browser transcript");
+      return rawTranscript;
+    }
+  }
+
   function stopDictation() {
     dictationRecognitionRef.current?.stop();
     dictationRecognitionRef.current = null;
@@ -5552,6 +5632,8 @@ export function App() {
     }
 
     stopDictationTracks();
+    dictationChatIdRef.current = null;
+    dictationDraftSnapshotRef.current = "";
     setDictationRecording(false);
     setDictationProcessing(false);
   }
@@ -5574,6 +5656,7 @@ export function App() {
     }
 
     try {
+      const dictationChatId = selectedChatId;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = supportedAudioMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
@@ -5585,17 +5668,20 @@ export function App() {
       dictationChunksRef.current = [];
       dictationFinalTranscriptRef.current = "";
       dictationTranscriptRef.current = "";
+      dictationChatIdRef.current = dictationChatId;
+      dictationDraftSnapshotRef.current = draft;
       startDictationWaveform(stream);
 
       recognition.continuous = true;
       recognition.interimResults = true;
+      recognition.maxAlternatives = 5;
       recognition.lang = navigator.language || "en-US";
       recognition.onresult = (event) => {
         let interim = "";
 
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
-          const transcript = result?.[0]?.transcript ?? "";
+          const transcript = bestSpeechRecognitionTranscript(result);
 
           if (result?.isFinal) {
             dictationFinalTranscriptRef.current = `${dictationFinalTranscriptRef.current} ${transcript}`.trim();
@@ -5606,14 +5692,6 @@ export function App() {
 
         const cleaned = cleanDictatedPrompt(`${dictationFinalTranscriptRef.current} ${interim}`.trim());
         dictationTranscriptRef.current = cleaned;
-
-        if (cleaned) {
-          setDraft(cleaned);
-          if (composerEditorRef.current) {
-            syncComposerEditorText(composerEditorRef.current, cleaned);
-            setComposerExpanded(composerShouldExpand(composerEditorRef.current));
-          }
-        }
       };
       recognition.onerror = (event) => {
         setNotice(event.error ? `Dictation error: ${event.error}` : "Dictation error");
@@ -5637,13 +5715,18 @@ export function App() {
           stopDictationTracks();
           setDictationRecording(false);
 
-          const transcript = await waitForDictationTranscript();
+          const rawTranscript = await waitForDictationTranscript();
+          const targetChatId = dictationChatIdRef.current;
 
-          if (!transcript) {
+          if (!rawTranscript || !targetChatId) {
             setNotice("No speech was transcribed. Try recording again.");
+            dictationChatIdRef.current = null;
+            dictationDraftSnapshotRef.current = "";
             setDictationProcessing(false);
             return;
           }
+
+          const transcript = await improveDictationTranscript(targetChatId, rawTranscript);
 
           const voiceNoteUrl = await readBlobAsDataUrl(blob).catch(() => URL.createObjectURL(blob));
           const voiceNote = {
@@ -5652,8 +5735,10 @@ export function App() {
           };
 
           try {
-            await sendPrompt({ textOverride: transcript, voiceNote });
+            await sendPrompt({ textOverride: transcript, voiceNote, chatIdOverride: targetChatId, preserveDraft: true });
           } finally {
+            dictationChatIdRef.current = null;
+            dictationDraftSnapshotRef.current = "";
             setDictationProcessing(false);
           }
         },
@@ -5668,21 +5753,30 @@ export function App() {
       stopDictationTracks();
       mediaRecorderRef.current = null;
       dictationRecognitionRef.current = null;
+      dictationChatIdRef.current = null;
+      dictationDraftSnapshotRef.current = "";
       setDictationRecording(false);
       setDictationProcessing(false);
       setNotice(error instanceof Error ? error.message : "Could not start dictation");
     }
   }
 
-  async function sendPrompt(options: { textOverride?: string; voiceNote?: DictationVoiceNote } = {}) {
+  async function sendPrompt(
+    options: {
+      textOverride?: string;
+      voiceNote?: DictationVoiceNote;
+      chatIdOverride?: string;
+      preserveDraft?: boolean;
+    } = {}
+  ) {
     const outgoingDraft = options.textOverride ?? draft;
-    const outgoingAttachments = options.textOverride ? [] : pendingAttachments;
+    const outgoingAttachments = options.voiceNote ? [] : pendingAttachments;
+    const targetChatId = options.chatIdOverride ?? selectedChatId;
 
-    if (sending || !selectedChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
+    if (sending || !targetChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
       return;
     }
 
-    const targetChatId = selectedChatId;
     const optimisticAt = new Date().toISOString();
     const previousAttachments = pendingAttachments;
     let receiptId: string | undefined;
@@ -5726,18 +5820,22 @@ export function App() {
         setNotice(result.message ?? "Queued on server for this chat");
       }
 
-      setDraft("");
-      if (composerEditorRef.current) {
-        syncComposerEditorText(composerEditorRef.current, "");
+      if (!options.preserveDraft) {
+        setDraftForChat(targetChatId, "");
+        if (selectedChatIdRef.current === targetChatId && composerEditorRef.current) {
+          syncComposerEditorText(composerEditorRef.current, "");
+        }
       }
-      if (!options.textOverride) {
+      if (!options.voiceNote) {
         setPendingAttachments([]);
         setAttachmentUploadStatuses({});
       }
       void loadState();
       void loadChatJobs(targetChatId);
     } catch (error) {
-      setPendingAttachments(previousAttachments);
+      if (!options.voiceNote) {
+        setPendingAttachments(previousAttachments);
+      }
       if (receiptId) {
         clearPromptReceipt(receiptId);
       }
@@ -6555,6 +6653,7 @@ export function App() {
               <DictationWaveform processing={dictationProcessing} barsRef={dictationBarsRef} />
             ) : (
               <div
+                id={composerInputId(selectedChatId)}
                 ref={composerEditorRef}
                 className="composer-editor"
                 role="textbox"
@@ -6563,6 +6662,7 @@ export function App() {
                 aria-disabled={!selectedChatId || sending}
                 data-placeholder="New prompt"
                 data-disabled={!selectedChatId || sending ? "true" : "false"}
+                data-chat-id={selectedChatId ?? ""}
                 contentEditable={Boolean(selectedChatId && !sending)}
                 suppressContentEditableWarning
                 inputMode="text"
@@ -6573,7 +6673,10 @@ export function App() {
                 data-lpignore="true"
                 data-1p-ignore="true"
                 onInput={(event) => {
-                  setDraft(textFromComposerEditor(event.currentTarget));
+                  const inputChatId = event.currentTarget.dataset.chatId;
+                  if (inputChatId) {
+                    setDraftForChat(inputChatId, textFromComposerEditor(event.currentTarget));
+                  }
                   setComposerExpanded(composerShouldExpand(event.currentTarget));
                 }}
                 onPaste={(event) => {

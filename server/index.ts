@@ -14,6 +14,7 @@ import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } f
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
+import { cleanDictationWithCodex } from "./dictationCleaner.js";
 import {
   getDefaultProjectsRoot,
   resolveNewProjectPath,
@@ -1847,6 +1848,76 @@ app.post("/api/chats/:id/files", requireControlAuth, async (req, res) => {
 
     pushEvent("error", message, {
       action: "chat-files-upload-failed",
+      chatId,
+      request: requestContext(req),
+      error: describeError(error)
+    });
+    res.status(500).json({ ok: false, message });
+  }
+});
+
+app.post("/api/chats/:id/dictation/clean", requireControlAuth, async (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const rawTranscript = typeof req.body?.rawTranscript === "string" ? req.body.rawTranscript.trim() : "";
+  const draftContext = typeof req.body?.draftContext === "string" ? req.body.draftContext : "";
+  const language = typeof req.body?.language === "string" ? req.body.language : "";
+
+  if (!rawTranscript) {
+    res.status(400).json({ ok: false, message: "Transcript is empty" });
+    return;
+  }
+
+  if (rawTranscript.length > maxPromptLength) {
+    res.status(400).json({ ok: false, message: `Transcript is longer than the ${maxPromptLength} character safety limit` });
+    return;
+  }
+
+  try {
+    const chat = await getChat(chatId);
+    if (!chat) {
+      res.status(404).json({ ok: false, message: "Chat not found" });
+      return;
+    }
+
+    try {
+      const cleaned = await cleanDictationWithCodex({
+        cliPath: runner.cliPath,
+        projectName: chat.projectName,
+        chatTitle: chat.title,
+        rawTranscript,
+        draftContext,
+        language
+      });
+      const text = cleaned.trim() || rawTranscript;
+
+      pushEvent("action", "Voice transcript cleaned for prompt", {
+        action: "dictation-cleaned",
+        chatId,
+        route: "POST /api/chats/:id/dictation/clean",
+        request: requestContext(req),
+        rawLength: rawTranscript.length,
+        cleanedLength: text.length
+      });
+      res.json({ ok: true, text, source: "codex" });
+    } catch (error) {
+      pushEvent("status", "Voice transcript cleanup fell back to browser recognition", {
+        action: "dictation-cleanup-fallback",
+        chatId,
+        route: "POST /api/chats/:id/dictation/clean",
+        request: requestContext(req),
+        error: describeError(error)
+      });
+      res.json({
+        ok: true,
+        text: rawTranscript,
+        source: "browser",
+        message: "Codex cleanup was unavailable; using the browser transcript"
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not clean dictation";
+    pushEvent("error", message, {
+      action: "dictation-cleanup-failed",
       chatId,
       request: requestContext(req),
       error: describeError(error)
