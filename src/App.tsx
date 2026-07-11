@@ -6451,6 +6451,7 @@ export function App() {
               onClick={cycleSelectedChatMessageViewMode}
               disabled={!selectedChatId}
               aria-label={`Message view: ${selectedChatMessageViewMeta.title}. Press to switch.`}
+              aria-pressed={selectedChatMessageViewMode === "final"}
               title={`${selectedChatMessageViewMeta.description} Press to switch.`}
             >
               <Eye size={18} />
@@ -6538,27 +6539,31 @@ export function App() {
                   }
 
                   return (
-                    <div className="chat-message-group" data-render-key={renderKey} key={renderKey}>
-                      <article className={chatMessageClassName(message)} data-render-key={renderKey}>
-                        <div className="bubble-meta">
-                          {message.isLiveThinking ? <span className="thinking-label">Thinking</span> : null}
-                          {message.isLiveThinking ? (
-                            <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
-                              {messageAgeSeconds(message.createdAt, durationNow)}s
-                            </span>
-                          ) : null}
-                          <time>{formatDate(message.createdAt)}</time>
-                          {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
-                          {runDuration ? (
-                            <span className="bubble-duration" title="Run duration">
-                              <Clock3 size={12} />
-                              {runDuration}
-                            </span>
-                          ) : null}
-                          {message.role === "user" && message.kind !== "voice_note" ? (
-                            <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
-                          ) : null}
+                    <div className={`chat-message-group ${message.isLiveThinking ? "is-live-thinking-group" : ""}`} data-render-key={renderKey} key={renderKey}>
+                      {message.isLiveThinking ? (
+                        <div className="thinking-status">
+                          <span className="thinking-label">Thinking</span>
+                          <span className="thinking-age" aria-label={`${messageAgeSeconds(message.createdAt, durationNow)} seconds since latest Codex update`}>
+                            {messageAgeSeconds(message.createdAt, durationNow)}s
+                          </span>
                         </div>
+                      ) : null}
+                      <article className={chatMessageClassName(message)} data-render-key={renderKey}>
+                        {!message.isLiveThinking ? (
+                          <div className="bubble-meta">
+                            <time>{formatDate(message.createdAt)}</time>
+                            {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
+                            {runDuration ? (
+                              <span className="bubble-duration" title="Run duration">
+                                <Clock3 size={12} />
+                                {runDuration}
+                              </span>
+                            ) : null}
+                            {message.role === "user" && message.kind !== "voice_note" ? (
+                              <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
+                            ) : null}
+                          </div>
+                        ) : null}
                         {message.isLiveThinking && !message.text ? null : message.kind === "voice_note" ? (
                           <VoiceNotePlayer message={message} />
                         ) : (

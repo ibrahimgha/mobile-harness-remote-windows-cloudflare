@@ -576,11 +576,16 @@ p {
   padding: 0 10px;
 }
 
-.message-view-button.is-final,
-.message-view-button.is-codex {
+.message-view-button.is-final {
   color: var(--teal-strong);
   border-color: #a8d8cd;
   background: var(--mint);
+}
+
+.message-view-button.is-codex {
+  color: var(--muted);
+  border-color: var(--line);
+  background: var(--surface);
 }
 
 .message-view-label {
@@ -2353,12 +2358,16 @@ p {
 }
 
 .thinking-label {
+  display: inline-block;
   color: transparent;
   background: linear-gradient(100deg, var(--muted) 20%, var(--text) 46%, var(--muted) 72%);
   background-size: 220% 100%;
   background-clip: text;
   -webkit-background-clip: text;
   animation: thinking-shine 1.8s linear infinite;
+  font-size: clamp(1.35rem, 3vw, 1.8rem);
+  font-weight: 300;
+  line-height: 1.15;
 }
 
 .thinking-age {
@@ -2368,8 +2377,34 @@ p {
   opacity: 0.72;
 }
 
+.chat-message-group.is-live-thinking-group {
+  display: flex;
+  width: calc(100% + 32px);
+  margin-inline: -16px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.thinking-status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-inline: 16px;
+}
+
 .chat-bubble.is-live-thinking {
-  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-bubble.is-live-thinking .message-markdown,
+.chat-bubble.is-live-thinking .message-empty {
+  padding: 4px 16px 10px;
 }
 
 @keyframes thinking-shine {
@@ -2932,6 +2967,20 @@ p {
     box-shadow: none;
   }
 
+  .chat-message-group.is-live-thinking-group {
+    width: calc(100% + 24px);
+    margin-inline: -12px;
+  }
+
+  .thinking-status {
+    padding-inline: 12px;
+  }
+
+  .chat-bubble.is-live-thinking .message-markdown,
+  .chat-bubble.is-live-thinking .message-empty {
+    padding-inline: 12px;
+  }
+
   .message-markdown,
   .message-empty {
     overflow: visible;
@@ -2940,6 +2989,17 @@ p {
 }
 
 @media (max-width: 640px) {
+  .chat-message-group.is-live-thinking-group {
+    width: calc(100% + 20px);
+    margin-inline: -10px;
+  }
+
+  .thinking-status,
+  .chat-bubble.is-live-thinking .message-markdown,
+  .chat-bubble.is-live-thinking .message-empty {
+    padding-inline: 10px;
+  }
+
   .sidebar-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
