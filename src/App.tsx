@@ -69,6 +69,7 @@ import {
   nextLiveThinkingStatus,
   type LiveThinkingStatus
 } from "./liveThinking";
+import { applySidebarOrder, captureSidebarOrder, type SidebarOrderSnapshot } from "./sidebarOrder";
 
 type BridgeState = {
   bridge: {
@@ -2835,13 +2836,15 @@ function RunSettingsPanel({
   options,
   usage,
   busy,
-  onChange
+  onChange,
+  compactOnly = false
 }: {
   settings?: CodexRunSettings;
   options?: CodexRunSettingsOptions;
   usage?: CodexUsage | null;
   busy: boolean;
   onChange: (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => void;
+  compactOnly?: boolean;
 }) {
   const current = settings ?? {
     model: "default",
@@ -2933,6 +2936,64 @@ function RunSettingsPanel({
     ? powerSettingLabel(previewPowerSetting)
     : `${available.modelCapabilities?.[current.model]?.label ?? settingLabel(current.model)} ${settingLabel(current.reasoningEffort)}`;
 
+  const compactPowerControl = compactModeAvailable ? (
+    <div className="run-settings-power-row" data-ultra={ultraSelected}>
+      <div className="run-settings-power-slider">
+        <span className="run-settings-power-track" aria-hidden="true">
+          <span className="run-settings-power-fill" style={{ width: powerFillWidth }} />
+          {powerSettings.map((setting, index) => {
+            const tickPercent = powerSettings.length > 1 ? (index / (powerSettings.length - 1)) * 100 : 0;
+            const tickLeft = `calc(${tickPercent}% + ${14 - tickPercent * 0.28}px)`;
+            return (
+              <span
+                className="run-settings-power-tick"
+                data-selected={index <= safePowerPreviewIndex}
+                key={`${setting.model}:${setting.reasoningEffort}`}
+                style={{ left: tickLeft }}
+              />
+            );
+          })}
+        </span>
+        <input
+          aria-label={compactOnly ? "Composer global power" : "Global power"}
+          aria-valuetext={currentLabel}
+          type="range"
+          min={0}
+          max={Math.max(powerSettings.length - 1, 1)}
+          step={1}
+          value={safePowerPreviewIndex}
+          disabled={busy || powerSettings.length < 2}
+          onChange={(event) => previewAndQueuePowerSetting(Number(event.currentTarget.value))}
+          onPointerUp={(event) => commitQueuedPowerSetting(Number(event.currentTarget.value))}
+          onKeyUp={(event) => {
+            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+              commitQueuedPowerSetting(Number(event.currentTarget.value));
+            }
+          }}
+        />
+      </div>
+      <button
+        className="run-settings-fast-toggle"
+        type="button"
+        aria-label={fastModeEnabled ? "Enable standard speed" : "Enable fast mode"}
+        aria-pressed={fastModeEnabled}
+        disabled={busy || !fastModeSupported}
+        title="1.5x speed, more usage"
+        onClick={() => onChange({ speed: fastModeEnabled ? "default" : "priority" })}
+      >
+        <Zap size={17} fill={fastModeEnabled ? "currentColor" : "none"} aria-hidden="true" />
+      </button>
+    </div>
+  ) : null;
+
+  if (compactOnly) {
+    return compactPowerControl ? (
+      <div className="composer-power-control" aria-label={`${currentLabel} run settings`}>
+        {compactPowerControl}
+      </div>
+    ) : null;
+  }
+
   return (
     <section className="run-settings-panel" aria-label="Global Codex run settings" data-advanced={advancedVisible}>
       <div className="run-settings-summary">
@@ -2952,55 +3013,7 @@ function RunSettingsPanel({
         </button>
       </div>
 
-      {!advancedVisible ? (
-        <div className="run-settings-power-row" data-ultra={ultraSelected}>
-          <div className="run-settings-power-slider">
-            <span className="run-settings-power-track" aria-hidden="true">
-              <span className="run-settings-power-fill" style={{ width: powerFillWidth }} />
-              {powerSettings.map((setting, index) => {
-                const tickPercent = powerSettings.length > 1 ? (index / (powerSettings.length - 1)) * 100 : 0;
-                const tickLeft = `calc(${tickPercent}% + ${14 - tickPercent * 0.28}px)`;
-                return (
-                  <span
-                    className="run-settings-power-tick"
-                    data-selected={index <= safePowerPreviewIndex}
-                    key={`${setting.model}:${setting.reasoningEffort}`}
-                    style={{ left: tickLeft }}
-                  />
-                );
-              })}
-            </span>
-            <input
-              aria-label="Global power"
-              aria-valuetext={currentLabel}
-              type="range"
-              min={0}
-              max={Math.max(powerSettings.length - 1, 1)}
-              step={1}
-              value={safePowerPreviewIndex}
-              disabled={busy || powerSettings.length < 2}
-              onChange={(event) => previewAndQueuePowerSetting(Number(event.currentTarget.value))}
-              onPointerUp={(event) => commitQueuedPowerSetting(Number(event.currentTarget.value))}
-              onKeyUp={(event) => {
-                if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
-                  commitQueuedPowerSetting(Number(event.currentTarget.value));
-                }
-              }}
-            />
-          </div>
-          <button
-            className="run-settings-fast-toggle"
-            type="button"
-            aria-label={fastModeEnabled ? "Enable standard speed" : "Enable fast mode"}
-            aria-pressed={fastModeEnabled}
-            disabled={busy || !fastModeSupported}
-            title="1.5x speed, more usage"
-            onClick={() => onChange({ speed: fastModeEnabled ? "default" : "priority" })}
-          >
-            <Zap size={17} fill={fastModeEnabled ? "currentColor" : "none"} aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
+      {!advancedVisible ? compactPowerControl : null}
 
       {advancedVisible ? (
         <>
@@ -3207,6 +3220,7 @@ export function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [chatTurnLimits, setChatTurnLimits] = useState<Record<string, number>>({});
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarOrderSnapshot, setSidebarOrderSnapshot] = useState<SidebarOrderSnapshot | null>(null);
   const [runBoardOpen, setRunBoardOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [instructionsLoading, setInstructionsLoading] = useState(false);
@@ -3562,12 +3576,34 @@ export function App() {
   const selectedChatMessageViewMeta = chatMessageViewModeMeta(selectedChatMessageViewMode);
   const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
   const normalizedSidebarSearch = sidebarSearch.trim().toLowerCase();
-  const filteredProjectGroups = useMemo(() => {
-    if (!chatIndex || !normalizedSidebarSearch) {
-      return chatIndex?.projects ?? [];
+
+  useEffect(() => {
+    if (!menuOpen) {
+      setSidebarOrderSnapshot(null);
+      return;
     }
 
-    return chatIndex.projects
+    if (chatIndex) {
+      setSidebarOrderSnapshot((current) => current ?? captureSidebarOrder(chatIndex.projects));
+    }
+  }, [chatIndex, menuOpen]);
+
+  const sidebarProjectGroups = useMemo(() => {
+    if (!chatIndex) {
+      return [];
+    }
+
+    return menuOpen && sidebarOrderSnapshot
+      ? applySidebarOrder(chatIndex.projects, sidebarOrderSnapshot)
+      : chatIndex.projects;
+  }, [chatIndex, menuOpen, sidebarOrderSnapshot]);
+
+  const filteredProjectGroups = useMemo(() => {
+    if (!normalizedSidebarSearch) {
+      return sidebarProjectGroups;
+    }
+
+    return sidebarProjectGroups
       .map((project) => {
         const projectMatches = project.projectName.toLowerCase().includes(normalizedSidebarSearch);
         const chats = projectMatches
@@ -3582,7 +3618,7 @@ export function App() {
           : null;
       })
       .filter((project): project is ChatProjectGroup => Boolean(project));
-  }, [chatIndex, normalizedSidebarSearch]);
+  }, [normalizedSidebarSearch, sidebarProjectGroups]);
   const queuedServerJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
 
@@ -7300,6 +7336,16 @@ export function App() {
                 const listId = `project-${project.projectPath.replace(/[^a-z0-9]/gi, "-")}`;
                 const isCollapsed = !normalizedSidebarSearch && collapsedProjects.has(project.projectPath);
                 const ChevronIcon = isCollapsed ? ChevronRight : ChevronDown;
+                let projectActiveCount = 0;
+                let projectHasRunningJob = false;
+
+                for (const chat of project.chats) {
+                  const activeJob = activeJobsByChatId.get(chat.id);
+                  if (activeJob) {
+                    projectActiveCount += activeJob.count;
+                    projectHasRunningJob ||= activeJob.running;
+                  }
+                }
 
                 return (
                   <section key={project.projectPath} className="project-group">
@@ -7318,7 +7364,18 @@ export function App() {
                           {project.projectPath}
                         </span>
                       </span>
-                      <span className="project-count">{project.chats.length}</span>
+                      <span className="project-meta">
+                        {isCollapsed && projectActiveCount > 0 ? (
+                          <span
+                            className={`chat-active-indicator project-active-indicator ${projectHasRunningJob ? "is-running" : ""}`}
+                            title={`${projectActiveCount} active command${projectActiveCount === 1 ? "" : "s"} in this project`}
+                          >
+                            <Loader2 className="spin" size={13} />
+                            {projectActiveCount > 1 ? <span>{projectActiveCount}</span> : null}
+                          </span>
+                        ) : null}
+                        <span className="project-count">{project.chats.length}</span>
+                      </span>
                     </button>
                     {!isCollapsed ? (
                       <div id={listId} className="chat-list">
@@ -7709,6 +7766,13 @@ export function App() {
         ) : null}
 
         <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
+          <RunSettingsPanel
+            compactOnly
+            settings={state?.runner.settings}
+            options={state?.runner.settingsOptions}
+            busy={settingsSaving}
+            onChange={updateRunSettings}
+          />
           <div className="composer-field">
             <button
               className="attach-button"

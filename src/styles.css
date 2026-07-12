@@ -1179,6 +1179,18 @@ p {
   font-weight: 700;
 }
 
+.project-meta {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.project-active-indicator {
+  flex: 0 0 auto;
+}
+
 .chat-list {
   display: grid;
   gap: 6px;
@@ -1994,6 +2006,10 @@ p {
   border-top: 0;
   background: transparent;
   overflow-anchor: none;
+}
+
+.composer-power-control {
+  display: none;
 }
 
 .composer-field {
@@ -3103,6 +3119,10 @@ p {
   .composer {
     transition-duration: 200ms !important;
   }
+
+  .composer-power-control {
+    transition-duration: 200ms, 200ms, 0s !important;
+  }
 }
 
 @media (max-width: 920px) {
@@ -3437,6 +3457,44 @@ p {
     background: transparent;
     transition: width 200ms cubic-bezier(0.2, 0, 0, 1), padding-bottom 200ms cubic-bezier(0.2, 0, 0, 1);
     will-change: width, padding-bottom;
+  }
+
+  .composer-power-control {
+    position: absolute;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(100% - 12px);
+    left: max(12px, env(safe-area-inset-left));
+    z-index: 3;
+    display: block;
+    padding: 2px 6px;
+    border-radius: 14px;
+    opacity: 0;
+    visibility: hidden;
+    background: color-mix(in srgb, #f5f6f1 88%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    pointer-events: none;
+    transform: translateY(7px) scale(0.96);
+    transform-origin: bottom center;
+    transition:
+      opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+      transform 200ms cubic-bezier(0.2, 0, 0, 1),
+      visibility 0s linear 200ms;
+    will-change: opacity, transform;
+  }
+
+  .composer:focus-within .composer-power-control,
+  .composer.is-expanded .composer-power-control,
+  .chat-workspace.has-custom-keyboard .composer .composer-power-control {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+    transition-delay: 0s;
+  }
+
+  .composer-power-control .run-settings-power-row {
+    min-height: 32px;
   }
 
   .composer::before {
