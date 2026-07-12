@@ -29,6 +29,8 @@ assert.equal(readChatDraft(storage, chatB), "Typed for B");
 writeChatDraft(storage, chatA, "");
 assert.equal(readChatDraft(storage, chatA), "");
 assert.equal(readChatDraft(storage, chatB), "Typed for B");
+values.set(chatDraftStorageKey(chatA), "\n");
+assert.equal(readChatDraft(storage, chatA), "");
 
 const cleanupPrompt = buildDictationCleanupPrompt({
   projectName: "Remote",

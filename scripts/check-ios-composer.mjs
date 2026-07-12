@@ -186,6 +186,14 @@ if (!/restoreCustomKeyboardComposerFocus[\s\S]{0,360}restoreComposerSelection\(/
   failures.push("Recovering custom-keyboard focus must restore the saved range without rewriting the editor text.");
 }
 
+if (!/function scrollComposerCaretIntoView[\s\S]{0,500}normalized\.end === text\.length[\s\S]{0,180}editor\.scrollTop = editor\.scrollHeight/.test(source)) {
+  failures.push("An overflowing prompt must follow a newly created line when the caret is at the end.");
+}
+
+if (!/browserSelection\.addRange\(range\);\s*scrollComposerCaretIntoView\(editor, text, normalized\)/.test(source)) {
+  failures.push("Every restored custom-keyboard caret must be revealed inside an overflowing composer.");
+}
+
 if (!/else if \(!customKeyboardOpen\) \{\s*rememberComposerSelection\(editor\)/.test(source)) {
   failures.push("Draft state updates must not re-read WebKit selection while the custom keyboard owns the caret.");
 }
@@ -389,6 +397,10 @@ if (!/\.composer-editor\s*\{\s*display: block;[\s\S]{0,360}caret-color: var\(--i
 
 if (!/@media \(max-width: 920px\)[\s\S]*\.composer-editor\s*\{[\s\S]{0,140}max-height: min\(40dvh, 320px\)/.test(styles)) {
   failures.push("The mobile prompt must grow well beyond six lines before it becomes internally scrollable.");
+}
+
+if (!/\.composer-editor::after\s*\{[\s\S]{0,220}content: "\\200B"/.test(styles)) {
+  failures.push("A trailing custom-keyboard newline must render a visible final line without changing text offsets.");
 }
 
 if (!/\.thinking-label\s*\{[\s\S]{0,520}-webkit-text-fill-color: transparent;[\s\S]{0,120}animation: thinking-shine 1\.5s linear infinite;/.test(styles)) {

@@ -2288,6 +2288,39 @@ function selectionInsideComposer(editor: HTMLDivElement, fallback: TextSelection
   );
 }
 
+function scrollComposerCaretIntoView(editor: HTMLDivElement, text: string, selection: TextSelection) {
+  if (editor.scrollHeight <= editor.clientHeight) {
+    return;
+  }
+
+  const normalized = normalizeTextSelection(text, selection);
+  if (normalized.start === normalized.end && normalized.end === text.length) {
+    // A collapsed range immediately after a trailing newline has no reliable
+    // client rect in iOS WebKit. Following the end explicitly keeps new lines visible.
+    editor.scrollTop = editor.scrollHeight;
+    return;
+  }
+
+  const browserSelection = window.getSelection();
+  if (!browserSelection?.rangeCount) {
+    return;
+  }
+
+  const range = browserSelection.getRangeAt(0);
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    return;
+  }
+
+  const caretRect = range.getBoundingClientRect();
+  const editorRect = editor.getBoundingClientRect();
+  const inset = 6;
+  if (caretRect.bottom > editorRect.bottom - inset) {
+    editor.scrollTop += caretRect.bottom - editorRect.bottom + inset;
+  } else if (caretRect.top < editorRect.top + inset) {
+    editor.scrollTop -= editorRect.top + inset - caretRect.top;
+  }
+}
+
 function restoreComposerSelection(editor: HTMLDivElement, text: string, selection: TextSelection) {
   if (document.activeElement !== editor) {
     editor.focus({ preventScroll: true });
@@ -2311,6 +2344,7 @@ function restoreComposerSelection(editor: HTMLDivElement, text: string, selectio
 
   browserSelection.removeAllRanges();
   browserSelection.addRange(range);
+  scrollComposerCaretIntoView(editor, text, normalized);
   return normalized;
 }
 

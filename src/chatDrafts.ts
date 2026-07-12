@@ -16,7 +16,8 @@ export function readChatDraft(storage: DraftStorage, chatId: string | null | und
   }
 
   try {
-    return storage.getItem(chatDraftStorageKey(chatId)) ?? "";
+    const draft = storage.getItem(chatDraftStorageKey(chatId)) ?? "";
+    return draft.trim() ? draft : "";
   } catch {
     return "";
   }

@@ -2805,6 +2805,13 @@ p {
   pointer-events: none;
 }
 
+.composer-editor::after {
+  /* A trailing newline in a lone text node has no final line box in WebKit.
+     This invisible anchor makes Return reveal that line without altering text offsets. */
+  content: "\200B";
+  pointer-events: none;
+}
+
 .composer-editor[data-disabled="true"] {
   color: var(--muted);
   opacity: 1;
