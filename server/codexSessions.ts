@@ -40,8 +40,33 @@ type ParseSessionOptions = {
   messageMode?: ChatMessageViewMode;
 };
 
+type SessionMetaPayload = {
+  id?: string;
+  cwd?: string;
+  timestamp?: string;
+  type?: string;
+  role?: string;
+  phase?: string;
+  content?: unknown;
+  source?: unknown;
+  thread_source?: string;
+};
+
 export function clearSessionCache() {
   summarySessionsCache = null;
+}
+
+export function isSubagentSessionMeta(payload: SessionMetaPayload): boolean {
+  if (payload.thread_source?.toLowerCase() === "subagent") {
+    return true;
+  }
+
+  return Boolean(
+    payload.source &&
+      typeof payload.source === "object" &&
+      !Array.isArray(payload.source) &&
+      "subagent" in payload.source
+  );
 }
 
 function textFromContent(content: unknown): string {
@@ -483,19 +508,14 @@ async function parseSessionFile(
       const record = JSON.parse(line) as {
         timestamp?: string;
         type?: string;
-        payload?: {
-          id?: string;
-          cwd?: string;
-          timestamp?: string;
-          type?: string;
-          role?: string;
-          phase?: string;
-          content?: unknown;
-          source?: string;
-        };
+        payload?: SessionMetaPayload;
       };
 
       if (record.type === "session_meta" && record.payload) {
+        if (isSubagentSessionMeta(record.payload)) {
+          return null;
+        }
+
         id = record.payload.id ?? id;
         projectPath = normalizeProjectPath(record.payload.cwd ?? projectPath);
         createdAt = record.payload.timestamp ?? record.timestamp ?? createdAt;
@@ -505,7 +525,7 @@ async function parseSessionFile(
           newestRecordMs = Number.isFinite(newestRecordMs) ? Math.max(newestRecordMs, metaMs) : metaMs;
         }
 
-        source = record.payload.source;
+        source = typeof record.payload.source === "string" ? record.payload.source : undefined;
         break;
       }
     } catch {
