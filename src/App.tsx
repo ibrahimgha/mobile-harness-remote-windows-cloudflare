@@ -2183,7 +2183,7 @@ function DictationWaveform({ processing, barsRef }: { processing: boolean; barsR
 type CustomKeyboardMode = "letters" | "numbers" | "symbols";
 const customKeyboardExitDurationMs = 240;
 const customKeyboardTapSlopPx = 10;
-const customKeyboardDraftSyncDelayMs = 240;
+const customKeyboardDraftSyncDelayMs = 750;
 
 function shouldUseCustomKeyboard() {
   const override = new URLSearchParams(window.location.search).get("customKeyboard");
@@ -2308,10 +2308,16 @@ function CustomKeyboard({
   onRequestComposerFocus: () => void;
   onClose: () => void;
 }) {
+  const keyboardRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<CustomKeyboardMode>("letters");
   const [shifted, setShifted] = useState(false);
+  const modeRef = useRef<CustomKeyboardMode>(mode);
+  const shiftedRef = useRef(shifted);
   const backspaceDelayRef = useRef<number | undefined>(undefined);
   const backspaceRepeatRef = useRef<number | undefined>(undefined);
+
+  modeRef.current = mode;
+  shiftedRef.current = shifted;
 
   const stopBackspaceRepeat = useCallback(() => {
     window.clearTimeout(backspaceDelayRef.current);
@@ -2320,28 +2326,42 @@ function CustomKeyboard({
     backspaceRepeatRef.current = undefined;
   }, []);
 
-  useEffect(() => stopBackspaceRepeat, [stopBackspaceRepeat]);
+  const setKeyboardMode = useCallback((nextMode: CustomKeyboardMode) => {
+    modeRef.current = nextMode;
+    setMode(nextMode);
+  }, []);
 
-  const pressText = (text: string) => {
-    onText(mode === "letters" && shifted ? text.toUpperCase() : text);
-    if (mode === "letters" && shifted) {
+  const setKeyboardShifted = useCallback((nextShifted: boolean) => {
+    shiftedRef.current = nextShifted;
+    setShifted(nextShifted);
+  }, []);
+
+  const pressText = useCallback((text: string) => {
+    const shouldShift = modeRef.current === "letters" && shiftedRef.current;
+    onText(shouldShift ? text.toUpperCase() : text);
+    if (shouldShift) {
+      shiftedRef.current = false;
       setShifted(false);
     }
-  };
+  }, [onText]);
 
-  // WebKit may omit secondary Pointer Events when two quick taps overlap. Touch
-  // Events still report every contact, so iOS commits keys on touchstart and uses
-  // Pointer Events only for mouse/pen input.
-  const pressOnTouchStart = (event: ReactTouchEvent<HTMLButtonElement>, action: () => void) => {
-    event.preventDefault();
-    action();
-  };
+  const toggleShift = useCallback(() => {
+    setKeyboardShifted(!shiftedRef.current);
+  }, [setKeyboardShifted]);
+
+  const toggleAlternateMode = useCallback(() => {
+    setKeyboardMode(modeRef.current === "numbers" ? "symbols" : "numbers");
+  }, [setKeyboardMode]);
+
+  const toggleLettersMode = useCallback(() => {
+    setKeyboardMode(modeRef.current === "letters" ? "numbers" : "letters");
+    setKeyboardShifted(false);
+  }, [setKeyboardMode, setKeyboardShifted]);
 
   // iOS can defer or drop synthesized click events during rapid multi-key tapping.
   // Mutate the composer on pointerdown; reserve detail=0 clicks for assistive activation.
   const pressOnPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, action: () => void) => {
     if (event.pointerType === "touch") {
-      event.preventDefault();
       return;
     }
     if (event.pointerType === "mouse" && event.button !== 0) {
@@ -2361,13 +2381,13 @@ function CustomKeyboard({
     action();
   };
 
-  const beginBackspaceRepeat = () => {
+  const beginBackspaceRepeat = useCallback(() => {
     onBackspace();
     stopBackspaceRepeat();
     backspaceDelayRef.current = window.setTimeout(() => {
       backspaceRepeatRef.current = window.setInterval(onBackspace, 70);
     }, 360);
-  };
+  }, [onBackspace, stopBackspaceRepeat]);
 
   const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -2376,19 +2396,135 @@ function CustomKeyboard({
     }
   };
 
-  const startBackspaceRepeatFromTouch = (event: ReactTouchEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    beginBackspaceRepeat();
-  };
+  const commitTouchAction = useCallback(
+    (action: string, value: string) => {
+      switch (action) {
+        case "text":
+          pressText(value);
+          break;
+        case "shift":
+          toggleShift();
+          break;
+        case "alternate-mode":
+          toggleAlternateMode();
+          break;
+        case "letters-mode":
+          toggleLettersMode();
+          break;
+        case "close":
+          onClose();
+          break;
+      }
+    },
+    [onClose, pressText, toggleAlternateMode, toggleLettersMode, toggleShift]
+  );
+
+  useEffect(() => {
+    const keyboard = keyboardRef.current;
+    if (!keyboard) {
+      return;
+    }
+
+    type TrackedTouch = {
+      action: string;
+      button: HTMLButtonElement;
+      value: string;
+    };
+
+    const activeTouches = new Map<number, TrackedTouch>();
+    const keyAtTouch = (touch: Touch): TrackedTouch | null => {
+      const hit = document.elementFromPoint(touch.clientX, touch.clientY);
+      const button = hit instanceof Element ? hit.closest("button[data-keyboard-action]") : null;
+      if (!(button instanceof HTMLButtonElement) || !keyboard.contains(button)) {
+        return null;
+      }
+
+      return {
+        action: button.dataset.keyboardAction ?? "",
+        button,
+        value: button.dataset.keyboardValue ?? ""
+      };
+    };
+
+    const releaseTouch = (touch: Touch, commit: boolean) => {
+      const tracked = activeTouches.get(touch.identifier);
+      if (!tracked) {
+        return;
+      }
+
+      activeTouches.delete(touch.identifier);
+      tracked.button.classList.remove("is-touch-active");
+      if (tracked.action === "backspace") {
+        stopBackspaceRepeat();
+      } else if (commit) {
+        commitTouchAction(tracked.action, tracked.value);
+      }
+    };
+
+    const handleTouchStart = (event: TouchEvent) => {
+      event.preventDefault();
+      for (const touch of Array.from(event.changedTouches)) {
+        if (activeTouches.has(touch.identifier)) {
+          continue;
+        }
+
+        const tracked = keyAtTouch(touch);
+        if (!tracked) {
+          continue;
+        }
+
+        activeTouches.set(touch.identifier, tracked);
+        tracked.button.classList.add("is-touch-active");
+        if (tracked.action === "backspace") {
+          beginBackspaceRepeat();
+        }
+      }
+    };
+
+    const handleTouchEnd = (event: TouchEvent) => {
+      event.preventDefault();
+      // Native touchend preserves release order when fingers overlap. Committing
+      // here avoids the out-of-order rolls produced by per-button touchstart.
+      for (const touch of Array.from(event.changedTouches)) {
+        releaseTouch(touch, true);
+      }
+    };
+
+    const handleTouchCancel = (event: TouchEvent) => {
+      for (const touch of Array.from(event.changedTouches)) {
+        releaseTouch(touch, false);
+      }
+    };
+
+    keyboard.addEventListener("touchstart", handleTouchStart, { passive: false });
+    keyboard.addEventListener("touchend", handleTouchEnd, { passive: false });
+    keyboard.addEventListener("touchcancel", handleTouchCancel, { passive: false });
+    return () => {
+      keyboard.removeEventListener("touchstart", handleTouchStart);
+      keyboard.removeEventListener("touchend", handleTouchEnd);
+      keyboard.removeEventListener("touchcancel", handleTouchCancel);
+      for (const tracked of activeTouches.values()) {
+        tracked.button.classList.remove("is-touch-active");
+      }
+      stopBackspaceRepeat();
+    };
+  }, [beginBackspaceRepeat, commitTouchAction, stopBackspaceRepeat]);
+
+  useEffect(() => stopBackspaceRepeat, [stopBackspaceRepeat]);
 
   const rows = customKeyboardRows[mode];
 
   return (
     <div
+      ref={keyboardRef}
       className="custom-keyboard"
       role="group"
       aria-label="On-screen keyboard"
-      onPointerDown={(event) => event.preventDefault()}
+      onPointerDown={(event) => {
+        if (event.pointerType !== "touch") {
+          event.preventDefault();
+        }
+      }}
       onFocusCapture={(event) => {
         if (event.target instanceof HTMLButtonElement) {
           onRequestComposerFocus();
@@ -2402,9 +2538,9 @@ function CustomKeyboard({
               className={`custom-key is-modifier ${shifted ? "is-active" : ""}`}
               type="button"
               tabIndex={-1}
-              onTouchStart={(event) => pressOnTouchStart(event, () => setShifted((current) => !current))}
-              onPointerDown={(event) => pressOnPointerDown(event, () => setShifted((current) => !current))}
-              onClick={(event) => pressOnAccessibleClick(event, () => setShifted((current) => !current))}
+              data-keyboard-action="shift"
+              onPointerDown={(event) => pressOnPointerDown(event, toggleShift)}
+              onClick={(event) => pressOnAccessibleClick(event, toggleShift)}
               aria-label={shifted ? "Turn off shift" : "Shift"}
               aria-pressed={shifted}
             >
@@ -2415,15 +2551,9 @@ function CustomKeyboard({
               className="custom-key is-modifier"
               type="button"
               tabIndex={-1}
-              onTouchStart={(event) =>
-                pressOnTouchStart(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
-              }
-              onPointerDown={(event) =>
-                pressOnPointerDown(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
-              }
-              onClick={(event) =>
-                pressOnAccessibleClick(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
-              }
+              data-keyboard-action="alternate-mode"
+              onPointerDown={(event) => pressOnPointerDown(event, toggleAlternateMode)}
+              onClick={(event) => pressOnAccessibleClick(event, toggleAlternateMode)}
             >
               {mode === "numbers" ? "#+=" : "123"}
             </button>
@@ -2433,7 +2563,8 @@ function CustomKeyboard({
               className="custom-key"
               type="button"
               tabIndex={-1}
-              onTouchStart={(event) => pressOnTouchStart(event, () => pressText(key))}
+              data-keyboard-action="text"
+              data-keyboard-value={key}
               onPointerDown={(event) => pressOnPointerDown(event, () => pressText(key))}
               onClick={(event) => pressOnAccessibleClick(event, () => pressText(key))}
               key={key}
@@ -2451,9 +2582,7 @@ function CustomKeyboard({
               className="custom-key is-modifier"
               type="button"
               tabIndex={-1}
-              onTouchStart={startBackspaceRepeatFromTouch}
-              onTouchEnd={stopBackspaceRepeat}
-              onTouchCancel={stopBackspaceRepeat}
+              data-keyboard-action="backspace"
               onPointerDown={startBackspaceRepeat}
               onPointerUp={stopBackspaceRepeat}
               onPointerCancel={stopBackspaceRepeat}
@@ -2471,24 +2600,9 @@ function CustomKeyboard({
           className="custom-key is-modifier is-mode-key"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) =>
-            pressOnTouchStart(event, () => {
-              setMode(mode === "letters" ? "numbers" : "letters");
-              setShifted(false);
-            })
-          }
-          onPointerDown={(event) =>
-            pressOnPointerDown(event, () => {
-              setMode(mode === "letters" ? "numbers" : "letters");
-              setShifted(false);
-            })
-          }
-          onClick={(event) =>
-            pressOnAccessibleClick(event, () => {
-              setMode(mode === "letters" ? "numbers" : "letters");
-              setShifted(false);
-            })
-          }
+          data-keyboard-action="letters-mode"
+          onPointerDown={(event) => pressOnPointerDown(event, toggleLettersMode)}
+          onClick={(event) => pressOnAccessibleClick(event, toggleLettersMode)}
         >
           {mode === "letters" ? "123" : "ABC"}
         </button>
@@ -2496,7 +2610,8 @@ function CustomKeyboard({
           className="custom-key"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) => pressOnTouchStart(event, () => pressText(","))}
+          data-keyboard-action="text"
+          data-keyboard-value=","
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText(","))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText(","))}
           aria-label="Comma"
@@ -2507,7 +2622,8 @@ function CustomKeyboard({
           className="custom-key is-space-key"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) => pressOnTouchStart(event, () => pressText(" "))}
+          data-keyboard-action="text"
+          data-keyboard-value=" "
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText(" "))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText(" "))}
         >
@@ -2517,7 +2633,8 @@ function CustomKeyboard({
           className="custom-key"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) => pressOnTouchStart(event, () => pressText("."))}
+          data-keyboard-action="text"
+          data-keyboard-value="."
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText("."))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText("."))}
           aria-label="Period"
@@ -2528,7 +2645,8 @@ function CustomKeyboard({
           className="custom-key is-modifier is-return-key"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) => pressOnTouchStart(event, () => pressText("\n"))}
+          data-keyboard-action="text"
+          data-keyboard-value={"\n"}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText("\n"))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText("\n"))}
           aria-label="Return"
@@ -2541,7 +2659,7 @@ function CustomKeyboard({
           className="custom-keyboard-dismiss"
           type="button"
           tabIndex={-1}
-          onTouchStart={(event) => pressOnTouchStart(event, onClose)}
+          data-keyboard-action="close"
           onPointerDown={(event) => pressOnPointerDown(event, onClose)}
           onClick={(event) => pressOnAccessibleClick(event, onClose)}
           aria-label="Hide keyboard"
@@ -3702,6 +3820,15 @@ export function App() {
       });
       const payload = await readJsonResponse<T>(response, "API request failed");
 
+      if (response.status === 401) {
+        localStorage.removeItem(tokenKey);
+        setToken("");
+        setLoginToken("");
+        setAuthenticated(false);
+        setState(null);
+        setAuthError("Authentication expired. Enter the current control token.");
+      }
+
       if (!response.ok) {
         throw new Error(payload.message ?? "Request failed");
       }
@@ -3942,6 +4069,7 @@ export function App() {
 
   const verifyToken = useCallback(
     async (value: string) => {
+      const verifiesStoredToken = localStorage.getItem(tokenKey) === value;
       setCheckingAuth(true);
       setAuthError("");
 
@@ -3965,6 +4093,11 @@ export function App() {
         setState(payload.state ?? null);
         setAuthenticated(true);
       } catch (error) {
+        if (verifiesStoredToken) {
+          localStorage.removeItem(tokenKey);
+          setToken("");
+          setLoginToken("");
+        }
         setAuthenticated(false);
         setAuthError(error instanceof Error ? error.message : "Invalid token");
       } finally {
@@ -5820,6 +5953,9 @@ export function App() {
         setSocketLive(false);
 
         if (!stopped) {
+          // A token rotation rejects the reconnect before the socket can open.
+          // Probe authenticated HTTP immediately so a stale PWA returns to Unlock.
+          void loadState();
           scheduleReconnect();
         }
       });

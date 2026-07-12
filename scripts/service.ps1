@@ -58,6 +58,27 @@ function Write-ServiceLog {
   }
 }
 
+function Sync-ProjectControlToken {
+  $envPath = Join-Path $ProjectRoot ".env"
+  if (-not (Test-Path -LiteralPath $envPath)) {
+    Remove-Item Env:CONTROL_TOKEN -ErrorAction SilentlyContinue
+    return
+  }
+
+  $line = Get-Content -LiteralPath $envPath |
+    Where-Object { $_ -match "^\s*CONTROL_TOKEN\s*=" } |
+    Select-Object -Last 1
+
+  if ([string]::IsNullOrWhiteSpace($line)) {
+    Remove-Item Env:CONTROL_TOKEN -ErrorAction SilentlyContinue
+    return
+  }
+
+  # dotenv preserves inherited variables by default. Make the project file
+  # authoritative so token rotation survives service and watchdog restarts.
+  $env:CONTROL_TOKEN = ($line -replace "^\s*CONTROL_TOKEN\s*=\s*", "").Trim().Trim('"').Trim("'")
+}
+
 function Join-CandidatePath {
   param(
     [AllowNull()]
@@ -400,6 +421,7 @@ function Start-Remote {
   }
 
   Ensure-Build
+  Sync-ProjectControlToken
 
   $appPid = Read-Pid -Path $AppPidFile
   $tunnelPid = Read-Pid -Path $TunnelPidFile

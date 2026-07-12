@@ -32,16 +32,31 @@ if (!/const text = textOverride \?\? rawTextFromComposerEditor\(editor\);[\s\S]{
   failures.push("Custom-key mutations must stage their exact plain text for per-chat draft persistence.");
 }
 
-if (!/customKeyboardDraftSyncDelayMs = 240/.test(source)) {
-  failures.push("Custom keyboard draft persistence must batch rapid taps into a 240ms idle window.");
+if (!/customKeyboardDraftSyncDelayMs = 750/.test(source)) {
+  failures.push("Custom keyboard draft persistence must leave a 750ms quiet window around rapid typing.");
 }
 
 if (!/customKeyboardEditRef[\s\S]*insertTextAtSelection\(current\.text, current\.selection, text\)/.test(source)) {
   failures.push("Rapid custom-key input must mutate one authoritative text-and-selection model.");
 }
 
-if (!/onTouchStart=\{\(event\) => pressOnTouchStart\(event, \(\) => pressText\(key\)\)\}/.test(source)) {
-  failures.push("Character keys must commit from touchstart so overlapping iOS taps are not dropped.");
+if (!/addEventListener\("touchstart", handleTouchStart, \{ passive: false \}\)/.test(source)) {
+  failures.push("The keyboard must track iOS contacts from one non-passive native touch listener.");
+}
+
+if (!/addEventListener\("touchend", handleTouchEnd, \{ passive: false \}\)/.test(source)) {
+  failures.push("The keyboard must commit tracked contacts in native touch-release order.");
+}
+
+if (
+  !/document\.elementFromPoint\(touch\.clientX, touch\.clientY\)/.test(source) ||
+  !/activeTouches\.set\(touch\.identifier, tracked\)/.test(source)
+) {
+  failures.push("Touch tracking must resolve physical coordinates and retain each independent touch identifier.");
+}
+
+if (/onTouchStart=\{\(event\) => pressOnTouchStart/.test(source)) {
+  failures.push("Do not return character entry to per-button React touch handlers; overlapping contacts can be reordered.");
 }
 
 if (!/event\.pointerType === "touch"[\s\S]{0,100}return;/.test(source)) {
@@ -176,7 +191,7 @@ if (!/@keyframes iosKeyPreviewIn/.test(styles)) {
   failures.push("The iOS key preview animation must remain defined.");
 }
 
-if (!/\.custom-key:active::before\s*\{[\s\S]{0,120}transform: scale\(0\.97\)/.test(styles)) {
+if (!/\.custom-key:active::before,\s*\.custom-key\.is-touch-active::before\s*\{[\s\S]{0,120}transform: scale\(0\.97\)/.test(styles)) {
   failures.push("Pressed-key animation must not shrink the real touch hitbox.");
 }
 
