@@ -8,6 +8,33 @@ const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), "
 const tailBytes = 8 * 1024 * 1024;
 let cachedUsage: CodexUsage | null = null;
 
+type RateLimitWindow = {
+  used_percent?: number;
+  window_minutes?: number;
+  resets_at?: number;
+};
+
+type RateLimitRecord = {
+  timestamp?: string;
+  payload?: {
+    rate_limits?: {
+      primary?: RateLimitWindow;
+      secondary?: RateLimitWindow;
+    };
+  };
+};
+
+function normalizeUsageWindow(window: RateLimitWindow | undefined) {
+  if (!window || typeof window.used_percent !== "number") {
+    return undefined;
+  }
+
+  return {
+    usedPercent: window.used_percent,
+    resetsAt: typeof window.resets_at === "number" ? window.resets_at : undefined
+  };
+}
+
 async function sessionFiles(root: string): Promise<Array<{ path: string; mtimeMs: number }>> {
   const entries = await fs.readdir(root, { withFileTypes: true });
   const nested = await Promise.all(
@@ -48,11 +75,10 @@ export async function refreshCodexUsage() {
     }
 
     const lines = (await readTail(newest.path)).split(/\r?\n/);
-    const candidates: Array<{
-      timestamp?: string;
-      primary?: { used_percent?: number; window_minutes?: number; resets_at?: number };
-      secondary?: { used_percent?: number; window_minutes?: number; resets_at?: number };
-    }> = [];
+    let fiveHour: CodexUsage["fiveHour"];
+    let weekly: CodexUsage["weekly"];
+    let newestUsageTimestamp: string | undefined;
+
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       const line = lines[index];
       if (!line?.includes('"rate_limits"')) {
@@ -60,46 +86,41 @@ export async function refreshCodexUsage() {
       }
 
       try {
-        const record = JSON.parse(line) as {
-          timestamp?: string;
-          payload?: {
-            rate_limits?: {
-              primary?: { used_percent?: number; window_minutes?: number; resets_at?: number };
-              secondary?: { used_percent?: number; window_minutes?: number; resets_at?: number };
-            };
-          };
-        };
-        if (record.payload?.rate_limits) {
-          candidates.push({ timestamp: record.timestamp, ...record.payload.rate_limits });
+        const record = JSON.parse(line) as RateLimitRecord;
+        const limits = record.payload?.rate_limits;
+        if (!limits) {
+          continue;
         }
+
+        const windows = [limits.primary, limits.secondary];
+        const recordHasKnownWindow = windows.some(
+          (window) => window?.window_minutes === 300 || window?.window_minutes === 10080
+        );
+        if (!recordHasKnownWindow) {
+          continue;
+        }
+
+        newestUsageTimestamp ??= record.timestamp;
+        fiveHour ??= normalizeUsageWindow(windows.find((window) => window?.window_minutes === 300));
+        weekly ??= normalizeUsageWindow(windows.find((window) => window?.window_minutes === 10080));
       } catch {
         continue;
       }
 
-      if (candidates.length >= 12) {
+      if (fiveHour && weekly) {
         break;
       }
     }
 
-    const grouped = new Map<string, { count: number; candidate: (typeof candidates)[number] }>();
-    for (const candidate of candidates) {
-      const key = `${candidate.primary?.resets_at ?? ""}:${candidate.secondary?.resets_at ?? ""}`;
-      const group = grouped.get(key);
-      grouped.set(key, { count: (group?.count ?? 0) + 1, candidate: group?.candidate ?? candidate });
-    }
-    const selected = [...grouped.values()].sort((a, b) => b.count - a.count)[0]?.candidate;
-    if (selected) {
-      const windows = [selected.primary, selected.secondary];
-      const fiveHour = windows.find((window) => window?.window_minutes === 300);
-      const weekly = windows.find((window) => window?.window_minutes === 10080);
-      if (fiveHour || weekly) {
-        cachedUsage = {
-          updatedAt: selected.timestamp ?? new Date(newest.mtimeMs).toISOString(),
-          fiveHour: fiveHour ? { usedPercent: fiveHour.used_percent ?? 0, resetsAt: fiveHour.resets_at } : undefined,
-          weekly: weekly ? { usedPercent: weekly.used_percent ?? 0, resetsAt: weekly.resets_at } : undefined
-        };
-        return cachedUsage;
-      }
+    const nextFiveHour = fiveHour ?? cachedUsage?.fiveHour;
+    const nextWeekly = weekly ?? cachedUsage?.weekly;
+    if (nextFiveHour || nextWeekly) {
+      cachedUsage = {
+        updatedAt: newestUsageTimestamp ?? cachedUsage?.updatedAt ?? new Date(newest.mtimeMs).toISOString(),
+        fiveHour: nextFiveHour,
+        weekly: nextWeekly
+      };
+      return cachedUsage;
     }
   } catch {
     return cachedUsage;
