@@ -44,7 +44,7 @@ const appSource = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "u
 assert.match(appSource, /id=\{composerInputId\(selectedChatId\)\}/);
 assert.match(appSource, /const commitComposerEditorState[\s\S]*setDraftForChat\(chatId, text\)/);
 assert.match(appSource, /onInput=[\s\S]{0,180}commitComposerEditorState\(event\.currentTarget\)/);
-assert.match(appSource, /onPaste=[\s\S]{0,360}commitComposerEditorState\(event\.currentTarget, selection\)/);
+assert.match(appSource, /onPaste=[\s\S]{0,900}commitComposerEditorState\(event\.currentTarget, selection\)/);
 assert.match(appSource, /pagehide[\s\S]*flushCustomKeyboardDraftSync/);
 assert.match(appSource, /const attachComposerEditor = useCallback[\s\S]*syncComposerEditorText\(editor, latestDraftRef\.current\)/);
 assert.match(appSource, /ref=\{attachComposerEditor\}/);

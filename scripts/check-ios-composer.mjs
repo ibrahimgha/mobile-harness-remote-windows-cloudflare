@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const serverSource = readFileSync(new URL("../server/index.ts", import.meta.url), "utf8");
 const failures = [];
 
 if (/<form\s+className=\{?`?composer/.test(source) || /<form\s+className=["']composer/.test(source)) {
@@ -48,7 +49,7 @@ if (
   failures.push("Paste and native input must cancel stale draft timers and replace the authoritative editor model.");
 }
 
-if (!/onPaste=[\s\S]{0,360}commitComposerEditorState\(event\.currentTarget, selection\)/.test(source)) {
+if (!/onPaste=[\s\S]{0,900}commitComposerEditorState\(event\.currentTarget, selection\)/.test(source)) {
   failures.push("Pasted text must be adopted before the next custom-key mutation.");
 }
 
@@ -64,7 +65,7 @@ if (!/addEventListener\("touchend", handleTouchEnd, \{ passive: false \}\)/.test
   failures.push("The keyboard must release tracked contacts from native touch events.");
 }
 
-if (!/handleTouchStart[\s\S]{0,1300}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source)) {
+if (!/handleTouchStart[\s\S]{0,3000}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source)) {
   failures.push("Touch characters must commit in contact-start order before overlapping fingers release.");
 }
 
@@ -74,6 +75,54 @@ if (/handleTouchEnd[\s\S]{0,500}commitTouchAction\(/.test(source)) {
 
 if (!/Character order is the order fingers land, not the order they lift/.test(source)) {
   failures.push("The touch-order invariant needs an inline regression warning for future keyboard changes.");
+}
+
+if (!/const CustomKeyboard = memo\(function CustomKeyboard/.test(source)) {
+  failures.push("App timers and polling must not rerender the custom keyboard.");
+}
+
+if (!/Touch\.target is fixed at contact start[\s\S]{0,300}touch\.target instanceof Element/.test(source)) {
+  failures.push("Touch resolution must prefer the contact's stable target over a synchronous animated hit-test.");
+}
+
+if (
+  !/scheduleCustomKeyboardDomSync[\s\S]{0,700}requestAnimationFrame/.test(source) ||
+  !/customKeyboardEditRef\.current = \{ chatId, \.\.\.mutation \};[\s\S]{0,700}scheduleCustomKeyboardDomSync\(\)/.test(source)
+) {
+  failures.push("Rapid key contacts must update the model synchronously and batch DOM/caret work by animation frame.");
+}
+
+const insertHotPath = source.match(/const insertCustomKeyboardText = useCallback\(([\s\S]*?)const backspaceCustomKeyboardText/)?.[1] ?? "";
+const backspaceHotPath = source.match(/const backspaceCustomKeyboardText = useCallback\(([\s\S]*?)const closeCustomKeyboard/)?.[1] ?? "";
+if (/applyComposerMutation|restoreComposerSelection|setDraftForChat/.test(insertHotPath + backspaceHotPath)) {
+  failures.push("The per-key hot path must not synchronously rewrite DOM, restore a Range, or rerender the app.");
+}
+
+if (
+  !/patchComposerInsertion\(editor, current\.text, current\.selection, text, mutation\.text\)/.test(insertHotPath) ||
+  !/patchComposerDeletion\(editor, current\.text, current\.selection, mutation\)/.test(backspaceHotPath)
+) {
+  failures.push("Visible text must patch only the exact inserted or deleted range during each key contact.");
+}
+
+if (/const hasContent = Boolean\(text\.trim\(\)\)/.test(source)) {
+  failures.push("The per-key draft path must not scan a large pasted string with trim().");
+}
+
+if (/capturedAt: new Date\(\)\.toISOString\(\)/.test(source)) {
+  failures.push("Real-device tracing must not allocate ISO timestamps in the touch hot path.");
+}
+
+if (!/onlyChild\.replaceData\([\s\S]{0,180}text\.slice\(prefixLength, newSuffixStart\)/.test(source)) {
+  failures.push("Large pasted drafts must patch only their changed text segment instead of replacing the entire editor.");
+}
+
+if (!/app\.post\("\/api\/debug\/keyboard-events"[\s\S]{0,2200}action: "ios-keyboard-trace"/.test(serverSource)) {
+  failures.push("Real-device keyboard traces must be accepted without broadcasting a state refresh.");
+}
+
+if (!/flushKeyboardTrace\("prompt-send"\)/.test(source)) {
+  failures.push("Real-device keyboard traces must flush after typing, outside the touch hot path.");
 }
 
 if (!/const stale = activeTouches\.get\(touch\.identifier\)[\s\S]{0,500}activeTouches\.delete\(touch\.identifier\)/.test(source)) {

@@ -1129,6 +1129,55 @@ app.get("/api/debug/events", requireControlAuth, async (req, res) => {
   }
 });
 
+app.post("/api/debug/keyboard-events", requireControlAuth, async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  const rawEvents = Array.isArray(body.events) ? body.events : null;
+  if (!rawEvents) {
+    res.status(400).json({ ok: false, message: "Keyboard trace events are required" });
+    return;
+  }
+
+  const cleanText = (value: unknown, maxLength: number) =>
+    typeof value === "string" ? value.slice(0, maxLength) : "";
+  const events = rawEvents.slice(0, 3000).map((rawEvent) => {
+    if (!rawEvent || typeof rawEvent !== "object") {
+      return { phase: "invalid" };
+    }
+
+    return Object.fromEntries(
+      Object.entries(rawEvent as Record<string, unknown>)
+        .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value) || value === null)
+        .slice(0, 24)
+        .map(([key, value]) => [key.slice(0, 64), typeof value === "string" ? value.slice(0, 256) : value])
+    );
+  });
+
+  const event: BridgeEvent = {
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+    type: "status",
+    message: "iOS custom keyboard trace",
+    detail: {
+      action: "ios-keyboard-trace",
+      sessionId: cleanText(body.sessionId, 120),
+      reason: cleanText(body.reason, 80),
+      userAgent: cleanText(body.userAgent, 500),
+      eventCount: events.length,
+      events
+    }
+  };
+
+  try {
+    await appendAuditEvent(event);
+    res.json({ ok: true, eventCount: events.length });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "Could not save keyboard trace"
+    });
+  }
+});
+
 app.get("/api/notifications/public-key", requireControlAuth, async (req, res) => {
   try {
     res.json({
