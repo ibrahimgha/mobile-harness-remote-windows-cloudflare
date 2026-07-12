@@ -2607,7 +2607,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
         tracked.button.classList.add("is-touch-active");
         if (tracked.action === "backspace") {
           beginBackspaceRepeat();
-        } else {
+        } else if (tracked.action !== "close") {
           // Character order is the order fingers land, not the order they lift.
           // Do not move this commit to touchend: overlapping iPhone taps commonly
           // release in reverse order and touchcancel would silently drop a key.
@@ -2659,7 +2659,10 @@ const CustomKeyboard = memo(function CustomKeyboard({
         }
       }}
       onFocusCapture={(event) => {
-        if (event.target instanceof HTMLButtonElement) {
+        if (
+          event.target instanceof HTMLButtonElement &&
+          event.target.dataset.keyboardAction !== "close"
+        ) {
           onRequestComposerFocus();
         }
       }}
@@ -2793,8 +2796,19 @@ const CustomKeyboard = memo(function CustomKeyboard({
           type="button"
           tabIndex={-1}
           data-keyboard-action="close"
-          onPointerDown={(event) => pressOnPointerDown(event, onClose)}
-          onClick={(event) => pressOnAccessibleClick(event, onClose)}
+          onPointerDown={(event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            onTrace({ phase: "close-pointer", pointerType: event.pointerType || "unknown" });
+            onClose();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            onClose();
+          }}
           aria-label="Hide keyboard"
         >
           <ChevronDown size={21} />
@@ -3096,8 +3110,8 @@ function RunSettingsPanel({
         />
       </div>
       {compactOnly ? (
-        <span className="composer-power-model" title={previewPowerSetting.modelLabel}>
-          {previewPowerSetting.modelLabel}
+        <span className="composer-power-model" title={`${previewPowerSetting.effortLabel} reasoning`}>
+          {previewPowerSetting.effortLabel}
         </span>
       ) : (
         <button
@@ -3398,6 +3412,7 @@ export function App() {
   const customKeyboardDraftSyncTimerRef = useRef<number | undefined>(undefined);
   const pendingCustomKeyboardDraftRef = useRef<{ chatId: string; text: string } | null>(null);
   const customKeyboardEditRef = useRef<{ chatId: string; text: string; selection: TextSelection } | null>(null);
+  const customKeyboardFocusOpenSuppressedRef = useRef(false);
   const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>(readPendingKeyboardTrace());
   const keyboardTraceSequenceRef = useRef(0);
   const keyboardTraceSessionRef = useRef(
@@ -3726,9 +3741,14 @@ export function App() {
   const closeCustomKeyboard = useCallback(() => {
     flushCustomKeyboardDomSync();
     flushCustomKeyboardDraftSync();
+    customKeyboardFocusOpenSuppressedRef.current = true;
     setCustomKeyboardOpen(false);
     composerEditorRef.current?.blur();
   }, [flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
+  const openMobileMenu = useCallback(() => {
+    closeCustomKeyboard();
+    setMenuOpen(true);
+  }, [closeCustomKeyboard]);
   const restoreCustomKeyboardComposerFocus = useCallback(() => {
     flushCustomKeyboardDomSync();
     const editor = composerEditorRef.current;
@@ -5770,7 +5790,7 @@ export function App() {
       const deltaY = Math.abs(touch.clientY - start.y);
 
       if (deltaX > 72 && deltaY < 48) {
-        setMenuOpen(true);
+        openMobileMenu();
         edgeSwipeStartRef.current = null;
       }
     }
@@ -5790,7 +5810,7 @@ export function App() {
       window.removeEventListener("touchend", onTouchEnd);
       window.removeEventListener("touchcancel", onTouchEnd);
     };
-  }, [authenticated, menuOpen]);
+  }, [authenticated, menuOpen, openMobileMenu]);
 
   useEffect(() => {
     localStorage.setItem(collapsedProjectsKey, JSON.stringify([...collapsedProjects]));
@@ -6118,8 +6138,8 @@ export function App() {
   }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
 
   useEffect(() => {
-    setCustomKeyboardOpen(false);
-  }, [dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
+    closeCustomKeyboard();
+  }, [closeCustomKeyboard, dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
 
   useEffect(() => {
     window.clearTimeout(customKeyboardExitTimerRef.current);
@@ -7765,7 +7785,7 @@ export function App() {
           <button
             className="icon-button mobile-menu-button"
             type="button"
-            onClick={() => setMenuOpen(true)}
+            onClick={openMobileMenu}
             aria-label="Open menu"
             aria-expanded={menuOpen}
           >
@@ -8103,6 +8123,7 @@ export function App() {
                 data-1p-ignore="true"
                 onPointerDown={() => {
                   if (customKeyboardEnabled && selectedChatId && !sending) {
+                    customKeyboardFocusOpenSuppressedRef.current = false;
                     setCustomKeyboardOpen(true);
                   }
                 }}
@@ -8111,7 +8132,12 @@ export function App() {
                   window.requestAnimationFrame(() => rememberComposerSelection(editor));
                 }}
                 onFocus={(event) => {
-                  if (customKeyboardEnabled && selectedChatId && !sending) {
+                  if (
+                    customKeyboardEnabled &&
+                    selectedChatId &&
+                    !sending &&
+                    !customKeyboardFocusOpenSuppressedRef.current
+                  ) {
                     setCustomKeyboardOpen(true);
                   }
                   const editor = event.currentTarget;

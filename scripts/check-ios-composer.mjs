@@ -196,8 +196,24 @@ if (!/onFocusCapture[\s\S]{0,180}onRequestComposerFocus\(\)/.test(source)) {
   failures.push("If WebKit still focuses a custom key, the keyboard must immediately restore the stable composer focus.");
 }
 
+if (!/onFocusCapture[\s\S]{0,220}dataset\.keyboardAction !== "close"[\s\S]{0,120}onRequestComposerFocus\(\)/.test(source)) {
+  failures.push("Keyboard focus recovery must not refocus the composer after the dismiss control is pressed.");
+}
+
 if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(true\)/.test(source)) {
   failures.push("Tapping an already-focused composer must reopen the custom keyboard after an explicit dismissal.");
+}
+
+if (!/closeCustomKeyboard[\s\S]{0,260}customKeyboardFocusOpenSuppressedRef\.current = true;[\s\S]{0,100}setCustomKeyboardOpen\(false\)/.test(source)) {
+  failures.push("Explicit keyboard dismissal must suppress late composer focus events from reopening it.");
+}
+
+if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}customKeyboardFocusOpenSuppressedRef\.current = false;[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
+  failures.push("A fresh composer tap must clear explicit keyboard-dismissal suppression.");
+}
+
+if (!/onFocus=\{\(event\) => \{[\s\S]{0,260}!customKeyboardFocusOpenSuppressedRef\.current[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
+  failures.push("Late composer focus must respect explicit custom-keyboard dismissal.");
 }
 
 if (!/armOutsideTap[\s\S]*cancelOutsideTapOnMove[\s\S]*finishOutsideTap/.test(source)) {
@@ -258,6 +274,34 @@ if (!/\.custom-key\.is-return-key\s*\{[\s\S]{0,80}flex-grow: 2\.7/.test(styles))
 
 if (!/className="custom-keyboard-footer"[\s\S]{0,500}className="custom-keyboard-dismiss"/.test(source)) {
   failures.push("Keyboard dismissal must remain in the iOS-style bottom utility strip.");
+}
+
+if (!/data-keyboard-action="close"[\s\S]{0,520}onPointerDown=\{\(event\) => \{[\s\S]{0,300}phase: "close-pointer"[\s\S]{0,180}onClose\(\)/.test(source)) {
+  failures.push("The keyboard dismiss button needs its own immediate Pointer Event handler instead of character-key filtering.");
+}
+
+if (!/data-keyboard-action="close"[\s\S]{0,850}onClick=\{\(event\) => \{\s*event\.preventDefault\(\);\s*onClose\(\);/.test(source)) {
+  failures.push("The idempotent keyboard dismiss command must also accept synthesized click activation without filtering event detail.");
+}
+
+if (!/tracked\.action !== "close"[\s\S]{0,320}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source)) {
+  failures.push("Delegated touch handling must skip Close so the dedicated dismiss handler cannot fire twice.");
+}
+
+if (!/const openMobileMenu = useCallback\(\(\) => \{\s*closeCustomKeyboard\(\);\s*setMenuOpen\(true\);/.test(source)) {
+  failures.push("Opening the mobile menu must synchronously flush and close the custom keyboard first.");
+}
+
+if (!/className="icon-button mobile-menu-button"[\s\S]{0,180}onClick=\{openMobileMenu\}/.test(source)) {
+  failures.push("The mobile menu button must use the keyboard-aware menu opener.");
+}
+
+if (!/deltaX > 72[\s\S]{0,160}openMobileMenu\(\)/.test(source)) {
+  failures.push("Edge-swipe menu opening must use the keyboard-aware menu opener.");
+}
+
+if (!/className="composer-power-model" title=\{`\$\{previewPowerSetting\.effortLabel\} reasoning`\}[\s\S]{0,100}\{previewPowerSetting\.effortLabel\}/.test(source)) {
+  failures.push("The compact power slider must display its selected reasoning effort instead of repeating the model name.");
 }
 
 if (!/className="custom-key-preview"/.test(source)) {
