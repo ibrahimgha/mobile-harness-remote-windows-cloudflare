@@ -2256,17 +2256,16 @@ function shouldUseCustomKeyboard() {
   return isIOS && isStandalone;
 }
 
-function selectionInsideComposer(editor: HTMLDivElement, fallback: TextSelection) {
+function browserSelectionInsideComposer(editor: HTMLDivElement) {
   const editorText = rawTextFromComposerEditor(editor);
-  const normalizedFallback = normalizeTextSelection(editorText, fallback);
   const selection = window.getSelection();
   if (!selection?.rangeCount) {
-    return normalizedFallback;
+    return null;
   }
 
   const range = selection.getRangeAt(0);
   if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
-    return normalizedFallback;
+    return null;
   }
 
   const offsetWithinEditor = (container: Node, offset: number) => {
@@ -2280,6 +2279,13 @@ function selectionInsideComposer(editor: HTMLDivElement, fallback: TextSelection
     start: offsetWithinEditor(range.startContainer, range.startOffset),
     end: offsetWithinEditor(range.endContainer, range.endOffset)
   });
+}
+
+function selectionInsideComposer(editor: HTMLDivElement, fallback: TextSelection) {
+  return (
+    browserSelectionInsideComposer(editor) ??
+    normalizeTextSelection(rawTextFromComposerEditor(editor), fallback)
+  );
 }
 
 function restoreComposerSelection(editor: HTMLDivElement, text: string, selection: TextSelection) {
@@ -3412,6 +3418,7 @@ export function App() {
   const pendingCustomKeyboardDraftRef = useRef<{ chatId: string; text: string } | null>(null);
   const customKeyboardEditRef = useRef<{ chatId: string; text: string; selection: TextSelection } | null>(null);
   const customKeyboardFocusOpenSuppressedRef = useRef(false);
+  const customKeyboardSelectionAdoptionPendingRef = useRef(false);
   const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>(readPendingKeyboardTrace());
   const keyboardTraceSequenceRef = useRef(0);
   const keyboardTraceSessionRef = useRef(
@@ -3580,6 +3587,44 @@ export function App() {
       customKeyboardEditRef.current = { chatId, text, selection };
     }
   }, []);
+  const adoptBrowserComposerSelection = useCallback((editor: HTMLDivElement) => {
+    const selection = browserSelectionInsideComposer(editor);
+    const chatId = editor.dataset.chatId;
+    if (!selection || !chatId) {
+      return false;
+    }
+
+    const text = rawTextFromComposerEditor(editor);
+    composerSelectionRef.current = selection;
+    customKeyboardEditRef.current = { chatId, text, selection };
+    recordKeyboardTrace({
+      phase: "browser-selection-adopted",
+      start: selection.start,
+      end: selection.end,
+      textLength: text.length
+    });
+    return true;
+  }, [recordKeyboardTrace]);
+  const beginBrowserComposerSelection = useCallback((editor: HTMLDivElement) => {
+    // Flush any pending model caret before WebKit performs its default tap/drag
+    // selection. Selection events are accepted only until the next custom key.
+    flushCustomKeyboardDomSync();
+    customKeyboardSelectionAdoptionPendingRef.current = true;
+    recordKeyboardTrace({
+      phase: "browser-selection-start",
+      textLength: rawTextFromComposerEditor(editor).length
+    });
+  }, [flushCustomKeyboardDomSync, recordKeyboardTrace]);
+  const adoptPendingBrowserComposerSelection = useCallback((editor: HTMLDivElement) => {
+    if (!customKeyboardSelectionAdoptionPendingRef.current) {
+      return;
+    }
+
+    adoptBrowserComposerSelection(editor);
+    // Clear before patching the DOM. Any delayed selectionchange caused by the
+    // patch must not move the authoritative caret during rapid typing.
+    customKeyboardSelectionAdoptionPendingRef.current = false;
+  }, [adoptBrowserComposerSelection]);
   const commitComposerEditorState = useCallback(
     (editor: HTMLDivElement, selectionOverride?: TextSelection) => {
       const chatId = editor.dataset.chatId;
@@ -3594,6 +3639,7 @@ export function App() {
       window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
       customKeyboardDraftSyncTimerRef.current = undefined;
       pendingCustomKeyboardDraftRef.current = null;
+      customKeyboardSelectionAdoptionPendingRef.current = false;
       composerSelectionRef.current = selection;
       customKeyboardEditRef.current = { chatId, text, selection };
       customKeyboardDraftPresenceRef.current = Boolean(text.trim());
@@ -3626,6 +3672,7 @@ export function App() {
     pendingCustomKeyboardDraftRef.current = null;
     composerSelectionRef.current = selection;
     customKeyboardEditRef.current = snapshot;
+    customKeyboardSelectionAdoptionPendingRef.current = false;
     customKeyboardDraftPresenceRef.current = Boolean(liveText.trim());
     recordKeyboardTrace({
       phase: "attachment-snapshot",
@@ -3658,6 +3705,7 @@ export function App() {
       syncComposerEditorText(editor, snapshot.text);
       composerSelectionRef.current = snapshot.selection;
     }
+    customKeyboardSelectionAdoptionPendingRef.current = false;
   }, [recordKeyboardTrace]);
   const attachComposerEditor = useCallback((editor: HTMLDivElement | null) => {
     composerEditorRef.current = editor;
@@ -3671,6 +3719,7 @@ export function App() {
     const end = rawTextFromComposerEditor(editor).length;
     composerSelectionRef.current = { start: end, end };
     customKeyboardDraftPresenceRef.current = Boolean(latestDraftRef.current.trim());
+    customKeyboardSelectionAdoptionPendingRef.current = false;
     const chatId = editor.dataset.chatId;
     if (chatId) {
       customKeyboardEditRef.current = {
@@ -3691,6 +3740,7 @@ export function App() {
         return;
       }
 
+      adoptPendingBrowserComposerSelection(editor);
       const current =
         customKeyboardEditRef.current?.chatId === chatId
           ? customKeyboardEditRef.current
@@ -3712,7 +3762,7 @@ export function App() {
       scheduleCustomKeyboardDomSync();
       scheduleCustomKeyboardDraftSync(mutation.text);
     },
-    [recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]
+    [adoptPendingBrowserComposerSelection, recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]
   );
   const backspaceCustomKeyboardText = useCallback(() => {
     const editor = composerEditorRef.current;
@@ -3721,6 +3771,7 @@ export function App() {
       return;
     }
 
+    adoptPendingBrowserComposerSelection(editor);
     const current =
       customKeyboardEditRef.current?.chatId === chatId
         ? customKeyboardEditRef.current
@@ -3740,11 +3791,12 @@ export function App() {
     });
     scheduleCustomKeyboardDomSync();
     scheduleCustomKeyboardDraftSync(mutation.text);
-  }, [recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]);
+  }, [adoptPendingBrowserComposerSelection, recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]);
   const closeCustomKeyboard = useCallback(() => {
     flushCustomKeyboardDomSync();
     flushCustomKeyboardDraftSync();
     customKeyboardFocusOpenSuppressedRef.current = true;
+    customKeyboardSelectionAdoptionPendingRef.current = false;
     setCustomKeyboardOpen(false);
     // Keyboard dismissal is also a composer dismissal. Keep the draft, but
     // return the prompt bar and power slider to their compact idle state.
@@ -3810,6 +3862,7 @@ export function App() {
   useEffect(() => {
     flushCustomKeyboardDomSync();
     flushCustomKeyboardDraftSync();
+    customKeyboardSelectionAdoptionPendingRef.current = false;
     composerSelectionRef.current = { start: 0, end: 0 };
     customKeyboardEditRef.current = null;
     customKeyboardDraftPresenceRef.current = Boolean(draft.trim());
@@ -3817,14 +3870,32 @@ export function App() {
 
   useEffect(() => {
     if (!customKeyboardOpen) {
+      customKeyboardSelectionAdoptionPendingRef.current = false;
       flushCustomKeyboardDomSync();
       flushCustomKeyboardDraftSync();
+      return;
     }
 
-    // Do not subscribe to document selectionchange while the virtual keyboard is open.
-    // iOS WebKit can deliver stale selection events after rapid pointer taps; those events
-    // must never overwrite the explicit caret offset maintained by each custom-key mutation.
-  }, [customKeyboardOpen, flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
+    const adoptSelectionFromExplicitGesture = () => {
+      if (!customKeyboardSelectionAdoptionPendingRef.current) {
+        return;
+      }
+
+      const editor = composerEditorRef.current;
+      if (editor && document.activeElement === editor) {
+        adoptBrowserComposerSelection(editor);
+      }
+    };
+
+    // WebKit finalizes a tap, drag, or selection-handle range asynchronously.
+    // Accept selectionchange only after an explicit editor gesture. The first
+    // custom-key mutation clears the gate before changing DOM, so delayed iOS
+    // events cannot corrupt the authoritative caret during rapid typing.
+    document.addEventListener("selectionchange", adoptSelectionFromExplicitGesture);
+    return () => {
+      document.removeEventListener("selectionchange", adoptSelectionFromExplicitGesture);
+    };
+  }, [adoptBrowserComposerSelection, customKeyboardOpen, flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
 
   useEffect(() => {
     chatTurnLimitsRef.current = chatTurnLimits;
@@ -8231,6 +8302,7 @@ export function App() {
                 data-1p-ignore="true"
                 onPointerDown={(event) => {
                   if (customKeyboardEnabled && selectedChatId && !sending) {
+                    beginBrowserComposerSelection(event.currentTarget);
                     customKeyboardFocusOpenSuppressedRef.current = false;
                     setComposerExpanded(composerShouldExpand(event.currentTarget));
                     setCustomKeyboardOpen(true);
@@ -8238,7 +8310,13 @@ export function App() {
                 }}
                 onPointerUp={(event) => {
                   const editor = event.currentTarget;
-                  window.requestAnimationFrame(() => rememberComposerSelection(editor));
+                  window.requestAnimationFrame(() => {
+                    if (customKeyboardEnabled && customKeyboardSelectionAdoptionPendingRef.current) {
+                      adoptBrowserComposerSelection(editor);
+                    } else {
+                      rememberComposerSelection(editor);
+                    }
+                  });
                 }}
                 onFocus={(event) => {
                   if (

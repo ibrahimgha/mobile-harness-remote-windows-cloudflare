@@ -21,6 +21,11 @@ assert.deepEqual(deleteTextBackward("abcdef", { start: 2, end: 4 }), {
   selection: { start: 2, end: 2 }
 });
 
+assert.deepEqual(deleteTextBackward("first\nsecond\nthird", { start: 3, end: 15 }), {
+  text: "firird",
+  selection: { start: 3, end: 3 }
+});
+
 assert.deepEqual(deleteTextBackward("a\u{1F642}b", { start: 3, end: 3 }), {
   text: "ab",
   selection: { start: 1, end: 1 }
@@ -36,6 +41,16 @@ assert.deepEqual(insertTextAtSelection(withNewline.text, withNewline.selection, 
   text: "first\nsecond",
   selection: { start: 12, end: 12 }
 });
+
+const longMultilinePrompt = Array.from({ length: 16 }, (_, index) => `line ${index + 1}`).join("\n");
+assert.equal(longMultilinePrompt.split("\n").length, 16);
+assert.deepEqual(
+  insertTextAtSelection(longMultilinePrompt, { start: 7, end: 7 }, " inserted"),
+  {
+    text: `${longMultilinePrompt.slice(0, 7)} inserted${longMultilinePrompt.slice(7)}`,
+    selection: { start: 16, end: 16 }
+  }
+);
 
 let burst = { text: "", selection: { start: 0, end: 0 } };
 for (let index = 0; index < 1000; index += 1) {

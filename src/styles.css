@@ -2786,6 +2786,7 @@ p {
   resize: none;
   line-height: 20px;
   outline: 0;
+  caret-color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
   -webkit-overflow-scrolling: touch;
@@ -3635,7 +3636,7 @@ p {
 
   .composer-editor {
     min-height: 34px;
-    max-height: 132px;
+    max-height: min(40dvh, 320px);
     padding: 5px 2px;
     line-height: 20px;
   }

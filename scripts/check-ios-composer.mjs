@@ -164,8 +164,22 @@ if (/insertTextAtSelection\(currentText, selectionInsideComposer|deleteTextBackw
   failures.push("Custom key presses must use the saved caret offsets instead of re-reading WebKit selection state.");
 }
 
-if (/addEventListener\("selectionchange"/.test(source)) {
-  failures.push("Do not feed asynchronous WebKit selectionchange events back into the custom keyboard caret model.");
+if (
+  !/const adoptSelectionFromExplicitGesture[\s\S]{0,260}!customKeyboardSelectionAdoptionPendingRef\.current/.test(source) ||
+  !/addEventListener\("selectionchange", adoptSelectionFromExplicitGesture\)/.test(source)
+) {
+  failures.push("WebKit selection changes must be adopted only behind an explicit composer-gesture gate.");
+}
+
+if (!/const adoptPendingBrowserComposerSelection[\s\S]{0,420}customKeyboardSelectionAdoptionPendingRef\.current = false/.test(source)) {
+  failures.push("The first custom-key mutation must close the browser-selection gate before changing DOM.");
+}
+
+if (
+  !/const insertCustomKeyboardText[\s\S]{0,500}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,300}insertTextAtSelection/.test(source) ||
+  !/const backspaceCustomKeyboardText[\s\S]{0,500}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,300}deleteTextBackward/.test(source)
+) {
+  failures.push("Insertion and Backspace must adopt a newly tapped caret or selected range before mutating text.");
 }
 
 if (!/restoreCustomKeyboardComposerFocus[\s\S]{0,360}restoreComposerSelection\(/.test(source)) {
@@ -200,7 +214,7 @@ if (!/onFocusCapture[\s\S]{0,220}dataset\.keyboardAction !== "close"[\s\S]{0,120
   failures.push("Keyboard focus recovery must not refocus the composer after the dismiss control is pressed.");
 }
 
-if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,260}setCustomKeyboardOpen\(true\)/.test(source)) {
+if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,420}setCustomKeyboardOpen\(true\)/.test(source)) {
   failures.push("Tapping an already-focused composer must reopen the custom keyboard after an explicit dismissal.");
 }
 
@@ -224,7 +238,7 @@ if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,180}customKeyboardFocusOpenSuppres
   failures.push("A fresh composer tap must clear explicit keyboard-dismissal suppression.");
 }
 
-if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,220}setComposerExpanded\(composerShouldExpand\(event\.currentTarget\)\);[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
+if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,360}setComposerExpanded\(composerShouldExpand\(event\.currentTarget\)\);[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
   failures.push("Reopening the custom keyboard must restore the prompt bar's content-driven expanded state.");
 }
 
@@ -367,6 +381,14 @@ if (!/\.composer:not\(\.uses-custom-keyboard\)\.is-expanded \.composer-power-con
 
 if (!/\.composer\s*\{[\s\S]{0,180}width: 70%;[\s\S]{0,420}transition: width 200ms/.test(styles)) {
   failures.push("The idle mobile composer must animate from 70% width over exactly 200ms.");
+}
+
+if (!/\.composer-editor\s*\{\s*display: block;[\s\S]{0,360}caret-color: var\(--ink\)/.test(styles)) {
+  failures.push("The contentEditable composer must keep an explicit visible caret color.");
+}
+
+if (!/@media \(max-width: 920px\)[\s\S]*\.composer-editor\s*\{[\s\S]{0,140}max-height: min\(40dvh, 320px\)/.test(styles)) {
+  failures.push("The mobile prompt must grow well beyond six lines before it becomes internally scrollable.");
 }
 
 if (!/\.thinking-label\s*\{[\s\S]{0,520}-webkit-text-fill-color: transparent;[\s\S]{0,120}animation: thinking-shine 1\.5s linear infinite;/.test(styles)) {
