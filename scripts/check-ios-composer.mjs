@@ -52,7 +52,7 @@ if (!/onPaste=[\s\S]{0,360}commitComposerEditorState\(event\.currentTarget, sele
   failures.push("Pasted text must be adopted before the next custom-key mutation.");
 }
 
-if (!/preserveComposerForTransientFocus\(\)[\s\S]{0,1700}restoreComposerAfterTransientFocus\(reopenKeyboard\)/.test(source)) {
+if (!/const composerSnapshot = preserveComposerForTransientFocus\(\)[\s\S]{0,1800}restoreComposerAfterTransientFocus\(composerSnapshot, reopenKeyboard\)/.test(source)) {
   failures.push("Attachment picking must preserve and restore the live composer model and caret.");
 }
 
@@ -61,7 +61,31 @@ if (!/addEventListener\("touchstart", handleTouchStart, \{ passive: false \}\)/.
 }
 
 if (!/addEventListener\("touchend", handleTouchEnd, \{ passive: false \}\)/.test(source)) {
-  failures.push("The keyboard must commit tracked contacts in native touch-release order.");
+  failures.push("The keyboard must release tracked contacts from native touch events.");
+}
+
+if (!/handleTouchStart[\s\S]{0,1300}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source)) {
+  failures.push("Touch characters must commit in contact-start order before overlapping fingers release.");
+}
+
+if (/handleTouchEnd[\s\S]{0,500}commitTouchAction\(/.test(source)) {
+  failures.push("Do not commit characters on touchend; release order transposes fast overlapping taps.");
+}
+
+if (!/Character order is the order fingers land, not the order they lift/.test(source)) {
+  failures.push("The touch-order invariant needs an inline regression warning for future keyboard changes.");
+}
+
+if (!/const stale = activeTouches\.get\(touch\.identifier\)[\s\S]{0,500}activeTouches\.delete\(touch\.identifier\)/.test(source)) {
+  failures.push("Reused iOS touch identifiers must replace stale contacts instead of dropping a key.");
+}
+
+if (!/onPointerDown=\{preserveComposerForTransientFocus\}/.test(source)) {
+  failures.push("The attachment control must snapshot text and caret before the picker steals focus.");
+}
+
+if (!/activeCustomModel[\s\S]{0,900}custom keyboard model remains authoritative while focus temporarily/.test(source)) {
+  failures.push("Draft rerenders must not replace the custom keyboard model during attachment focus transfer.");
 }
 
 if (
@@ -193,6 +217,10 @@ if (!/className="custom-key-preview"/.test(source)) {
 
 if (!/\.custom-key-preview\s*\{[\s\S]{0,220}bottom: 56px;[\s\S]{0,120}width: calc\(100% \+ 24px\)/.test(styles)) {
   failures.push("The key preview must preserve the compact iOS balloon geometry.");
+}
+
+if (!/\.custom-key-preview\s*\{[\s\S]{0,520}pointer-events: none/.test(styles)) {
+  failures.push("Key previews must stay transparent to touch hit-testing over neighboring rows.");
 }
 
 if (!/\.custom-key-preview::after\s*\{[\s\S]{0,180}bottom: -16px;[\s\S]{0,100}height: 24px/.test(styles)) {

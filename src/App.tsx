@@ -2446,7 +2446,7 @@ function CustomKeyboard({
       };
     };
 
-    const releaseTouch = (touch: Touch, commit: boolean) => {
+    const releaseTouch = (touch: Touch) => {
       const tracked = activeTouches.get(touch.identifier);
       if (!tracked) {
         return;
@@ -2456,16 +2456,22 @@ function CustomKeyboard({
       tracked.button.classList.remove("is-touch-active");
       if (tracked.action === "backspace") {
         stopBackspaceRepeat();
-      } else if (commit) {
-        commitTouchAction(tracked.action, tracked.value);
       }
     };
 
     const handleTouchStart = (event: TouchEvent) => {
       event.preventDefault();
       for (const touch of Array.from(event.changedTouches)) {
-        if (activeTouches.has(touch.identifier)) {
-          continue;
+        const stale = activeTouches.get(touch.identifier);
+        if (stale) {
+          // WebKit occasionally omits a release while focus is moving. Touch IDs
+          // are then reused, so discard the stale visual instead of dropping the
+          // first key of the next contact.
+          stale.button.classList.remove("is-touch-active");
+          if (stale.action === "backspace") {
+            stopBackspaceRepeat();
+          }
+          activeTouches.delete(touch.identifier);
         }
 
         const tracked = keyAtTouch(touch);
@@ -2477,22 +2483,25 @@ function CustomKeyboard({
         tracked.button.classList.add("is-touch-active");
         if (tracked.action === "backspace") {
           beginBackspaceRepeat();
+        } else {
+          // Character order is the order fingers land, not the order they lift.
+          // Do not move this commit to touchend: overlapping iPhone taps commonly
+          // release in reverse order and touchcancel would silently drop a key.
+          commitTouchAction(tracked.action, tracked.value);
         }
       }
     };
 
     const handleTouchEnd = (event: TouchEvent) => {
       event.preventDefault();
-      // Native touchend preserves release order when fingers overlap. Committing
-      // here avoids the out-of-order rolls produced by per-button touchstart.
       for (const touch of Array.from(event.changedTouches)) {
-        releaseTouch(touch, true);
+        releaseTouch(touch);
       }
     };
 
     const handleTouchCancel = (event: TouchEvent) => {
       for (const touch of Array.from(event.changedTouches)) {
-        releaseTouch(touch, false);
+        releaseTouch(touch);
       }
     };
 
@@ -3376,28 +3385,44 @@ export function App() {
     const editor = composerEditorRef.current;
     const chatId = editor?.dataset.chatId;
     if (!editor || !chatId) {
-      return;
+      return null;
     }
 
-    rememberComposerSelection(editor);
-    const model = customKeyboardEditRef.current;
-    pendingCustomKeyboardDraftRef.current = {
+    const liveText = rawTextFromComposerEditor(editor);
+    const currentModel = customKeyboardEditRef.current?.chatId === chatId ? customKeyboardEditRef.current : null;
+    const selection =
+      document.activeElement === editor
+        ? selectionInsideComposer(editor, currentModel?.selection ?? composerSelectionRef.current)
+        : normalizeTextSelection(liveText, currentModel?.selection ?? composerSelectionRef.current);
+    const snapshot = {
       chatId,
-      text: model?.chatId === chatId ? model.text : rawTextFromComposerEditor(editor)
+      text: liveText,
+      selection
     };
-    flushCustomKeyboardDraftSync();
-  }, [flushCustomKeyboardDraftSync, rememberComposerSelection]);
-  const restoreComposerAfterTransientFocus = useCallback((reopenKeyboard: boolean) => {
+    window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
+    customKeyboardDraftSyncTimerRef.current = undefined;
+    pendingCustomKeyboardDraftRef.current = null;
+    composerSelectionRef.current = selection;
+    customKeyboardEditRef.current = snapshot;
+    customKeyboardDraftPresenceRef.current = Boolean(liveText.trim());
+    setDraftForChat(chatId, liveText);
+    return snapshot;
+  }, [setDraftForChat]);
+  const restoreComposerAfterTransientFocus = useCallback((snapshot: { chatId: string; text: string; selection: TextSelection } | null, reopenKeyboard: boolean) => {
     const editor = composerEditorRef.current;
     const chatId = editor?.dataset.chatId;
-    const model = customKeyboardEditRef.current;
-    if (!editor || !chatId || model?.chatId !== chatId) {
+    if (!editor || !chatId || snapshot?.chatId !== chatId) {
       return;
     }
 
-    composerSelectionRef.current = applyComposerMutation(editor, model.text, model.selection);
+    customKeyboardEditRef.current = snapshot;
+    customKeyboardDraftPresenceRef.current = Boolean(snapshot.text.trim());
     if (reopenKeyboard) {
+      composerSelectionRef.current = applyComposerMutation(editor, snapshot.text, snapshot.selection);
       setCustomKeyboardOpen(true);
+    } else {
+      syncComposerEditorText(editor, snapshot.text);
+      composerSelectionRef.current = snapshot.selection;
     }
   }, []);
   const attachComposerEditor = useCallback((editor: HTMLDivElement | null) => {
@@ -5896,11 +5921,22 @@ export function App() {
     const editor = composerEditorRef.current;
 
     if (editor) {
-      if (document.activeElement !== editor || !draft) {
+      const chatId = editor.dataset.chatId;
+      const activeCustomModel =
+        customKeyboardOpen && chatId && customKeyboardEditRef.current?.chatId === chatId
+          ? customKeyboardEditRef.current
+          : null;
+
+      if (activeCustomModel) {
+        // The custom keyboard model remains authoritative while focus temporarily
+        // moves to the attachment picker. A draft render must never reset its caret
+        // to the end or replace text that was pasted immediately before the picker.
+        syncComposerEditorText(editor, activeCustomModel.text);
+        composerSelectionRef.current = activeCustomModel.selection;
+      } else if (document.activeElement !== editor || !draft) {
         syncComposerEditorText(editor, draft);
         const end = rawTextFromComposerEditor(editor).length;
         composerSelectionRef.current = { start: end, end };
-        const chatId = editor.dataset.chatId;
         if (chatId) {
           customKeyboardEditRef.current = {
             chatId,
@@ -6272,7 +6308,7 @@ export function App() {
 
   function openAttachmentPicker() {
     const reopenKeyboard = customKeyboardOpen;
-    preserveComposerForTransientFocus();
+    const composerSnapshot = preserveComposerForTransientFocus();
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
@@ -6291,7 +6327,7 @@ export function App() {
       }
 
       restored = true;
-      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(reopenKeyboard));
+      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot, reopenKeyboard));
     };
     const removeInput = () => {
       if (removed) {
@@ -7677,6 +7713,7 @@ export function App() {
             <button
               className="attach-button"
               type="button"
+              onPointerDown={preserveComposerForTransientFocus}
               onClick={openAttachmentPicker}
               disabled={!selectedChatId || sending || dictationRecording || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
               aria-label="Attach files"
@@ -7743,7 +7780,7 @@ export function App() {
                   const selection = insertIntoComposer(
                     event.currentTarget,
                     event.clipboardData.getData("text/plain"),
-                    composerSelectionRef.current
+                    selectionInsideComposer(event.currentTarget, composerSelectionRef.current)
                   );
                   commitComposerEditorState(event.currentTarget, selection);
                 }}
