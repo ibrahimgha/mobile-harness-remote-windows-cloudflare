@@ -60,6 +60,7 @@ const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const bridge = new CodexBridge({ enabled: controlEnabled, targetTitle });
 const runner = new CodexRunner({
+  getRunSettings,
   onJobChange(job, event) {
     clearSessionCache();
     pushEvent(event === "failed" ? "error" : "action", job.message ?? `Codex run ${event}`, {
@@ -2010,8 +2011,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       text: text.trimEnd(),
       promptPreview: String(promptSummary.promptPreview ?? ""),
       promptHash: String(promptSummary.promptHash ?? ""),
-      textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
-      settings: getRunSettings()
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
     });
 
     pushEvent("action", "Prompt queued for exact Codex session on target laptop", {

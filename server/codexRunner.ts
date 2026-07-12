@@ -7,6 +7,7 @@ import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus } from "./typ
 
 type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
+  getRunSettings?: () => CodexRunSettings;
 };
 
 type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed" | "stopped";
@@ -18,13 +19,13 @@ type EnqueueOptions = {
   promptPreview: string;
   promptHash: string;
   textLength: number;
-  settings: CodexRunSettings;
 };
 
 type CreateJobOptions = EnqueueOptions & {
   kind: NonNullable<CodexRunJob["kind"]>;
   status: CodexRunJob["status"];
   message: string;
+  settings?: CodexRunSettings;
 };
 
 type RunLogCandidate = {
@@ -277,6 +278,7 @@ async function readFileTail(filePath: string, maxBytes: number): Promise<string>
 
 export class CodexRunner {
   private readonly onJobChange?: CodexRunnerOptions["onJobChange"];
+  private readonly getRunSettings?: CodexRunnerOptions["getRunSettings"];
   private readonly queue: Array<{ job: CodexRunJob; text: string }> = [];
   private readonly jobs = new Map<string, CodexRunJob>();
   private readonly jobTexts = new Map<string, string>();
@@ -294,6 +296,7 @@ export class CodexRunner {
 
   constructor(options: CodexRunnerOptions = {}) {
     this.onJobChange = options.onJobChange;
+    this.getRunSettings = options.getRunSettings;
   }
 
   get mode() {
@@ -511,6 +514,8 @@ export class CodexRunner {
 
       const [next] = this.queue.splice(nextIndex, 1);
       next.job.queuePosition = undefined;
+      const runSettings = this.getRunSettings?.();
+      next.job.settings = runSettings ? { ...runSettings } : next.job.settings;
       this.refreshQueuePositions(true);
       this.runningChatIds.add(next.job.chatId);
 

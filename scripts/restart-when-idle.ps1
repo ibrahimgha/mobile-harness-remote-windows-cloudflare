@@ -65,9 +65,10 @@ try {
     try {
       $state = Get-RemoteState -Token $token
       $activeJobs = [int]$state.runner.activeJobs
-      Write-RestartLog "activeJobs=$activeJobs"
+      $queuedJobs = [int]$state.runner.queuedJobs
+      Write-RestartLog "activeJobs=$activeJobs queuedJobs=$queuedJobs"
 
-      if ($activeJobs -eq 0) {
+      if ($activeJobs -eq 0 -and $queuedJobs -eq 0) {
         $ready = $true
         break
       }
@@ -79,7 +80,7 @@ try {
   }
 
   if (-not $ready) {
-    throw "Timed out waiting for active workers; backend was not restarted"
+    throw "Timed out waiting for active and queued workers; backend was not restarted"
   }
 
   Start-Sleep -Seconds 5
