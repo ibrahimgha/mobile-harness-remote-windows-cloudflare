@@ -2892,7 +2892,7 @@ p {
   display: none;
   position: absolute;
   left: 50%;
-  bottom: 72px;
+  bottom: 56px;
   z-index: 8;
   width: calc(100% + 24px);
   height: 60px;
@@ -2913,9 +2913,9 @@ p {
   content: "";
   position: absolute;
   right: 12px;
-  bottom: -72px;
+  bottom: -16px;
   left: 12px;
-  height: 80px;
+  height: 24px;
   border-radius: 0 0 6px 6px;
   background: #ffffff;
   pointer-events: none;

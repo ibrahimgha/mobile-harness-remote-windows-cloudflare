@@ -2183,7 +2183,7 @@ function DictationWaveform({ processing, barsRef }: { processing: boolean; barsR
 type CustomKeyboardMode = "letters" | "numbers" | "symbols";
 const customKeyboardExitDurationMs = 240;
 const customKeyboardTapSlopPx = 10;
-const customKeyboardDraftSyncDelayMs = 80;
+const customKeyboardDraftSyncDelayMs = 240;
 
 function shouldUseCustomKeyboard() {
   const override = new URLSearchParams(window.location.search).get("customKeyboard");
@@ -2256,7 +2256,14 @@ function restoreComposerSelection(editor: HTMLDivElement, text: string, selectio
 }
 
 function applyComposerMutation(editor: HTMLDivElement, text: string, selection: TextSelection) {
-  editor.textContent = text;
+  const onlyChild = editor.childNodes.length === 1 ? editor.firstChild : null;
+  if (onlyChild?.nodeType === Node.TEXT_NODE) {
+    if (onlyChild.nodeValue !== text) {
+      onlyChild.nodeValue = text;
+    }
+  } else if (editor.textContent !== text) {
+    editor.textContent = text;
+  }
   return restoreComposerSelection(editor, text, selection);
 }
 
@@ -2322,9 +2329,21 @@ function CustomKeyboard({
     }
   };
 
+  // WebKit may omit secondary Pointer Events when two quick taps overlap. Touch
+  // Events still report every contact, so iOS commits keys on touchstart and uses
+  // Pointer Events only for mouse/pen input.
+  const pressOnTouchStart = (event: ReactTouchEvent<HTMLButtonElement>, action: () => void) => {
+    event.preventDefault();
+    action();
+  };
+
   // iOS can defer or drop synthesized click events during rapid multi-key tapping.
   // Mutate the composer on pointerdown; reserve detail=0 clicks for assistive activation.
   const pressOnPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, action: () => void) => {
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      return;
+    }
     if (event.pointerType === "mouse" && event.button !== 0) {
       return;
     }
@@ -2342,13 +2361,24 @@ function CustomKeyboard({
     action();
   };
 
-  const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
+  const beginBackspaceRepeat = () => {
     onBackspace();
     stopBackspaceRepeat();
     backspaceDelayRef.current = window.setTimeout(() => {
       backspaceRepeatRef.current = window.setInterval(onBackspace, 70);
     }, 360);
+  };
+
+  const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (event.pointerType !== "touch") {
+      beginBackspaceRepeat();
+    }
+  };
+
+  const startBackspaceRepeatFromTouch = (event: ReactTouchEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    beginBackspaceRepeat();
   };
 
   const rows = customKeyboardRows[mode];
@@ -2372,6 +2402,7 @@ function CustomKeyboard({
               className={`custom-key is-modifier ${shifted ? "is-active" : ""}`}
               type="button"
               tabIndex={-1}
+              onTouchStart={(event) => pressOnTouchStart(event, () => setShifted((current) => !current))}
               onPointerDown={(event) => pressOnPointerDown(event, () => setShifted((current) => !current))}
               onClick={(event) => pressOnAccessibleClick(event, () => setShifted((current) => !current))}
               aria-label={shifted ? "Turn off shift" : "Shift"}
@@ -2384,6 +2415,9 @@ function CustomKeyboard({
               className="custom-key is-modifier"
               type="button"
               tabIndex={-1}
+              onTouchStart={(event) =>
+                pressOnTouchStart(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
+              }
               onPointerDown={(event) =>
                 pressOnPointerDown(event, () => setMode(mode === "numbers" ? "symbols" : "numbers"))
               }
@@ -2399,6 +2433,7 @@ function CustomKeyboard({
               className="custom-key"
               type="button"
               tabIndex={-1}
+              onTouchStart={(event) => pressOnTouchStart(event, () => pressText(key))}
               onPointerDown={(event) => pressOnPointerDown(event, () => pressText(key))}
               onClick={(event) => pressOnAccessibleClick(event, () => pressText(key))}
               key={key}
@@ -2416,6 +2451,9 @@ function CustomKeyboard({
               className="custom-key is-modifier"
               type="button"
               tabIndex={-1}
+              onTouchStart={startBackspaceRepeatFromTouch}
+              onTouchEnd={stopBackspaceRepeat}
+              onTouchCancel={stopBackspaceRepeat}
               onPointerDown={startBackspaceRepeat}
               onPointerUp={stopBackspaceRepeat}
               onPointerCancel={stopBackspaceRepeat}
@@ -2433,6 +2471,12 @@ function CustomKeyboard({
           className="custom-key is-modifier is-mode-key"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) =>
+            pressOnTouchStart(event, () => {
+              setMode(mode === "letters" ? "numbers" : "letters");
+              setShifted(false);
+            })
+          }
           onPointerDown={(event) =>
             pressOnPointerDown(event, () => {
               setMode(mode === "letters" ? "numbers" : "letters");
@@ -2452,6 +2496,7 @@ function CustomKeyboard({
           className="custom-key"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) => pressOnTouchStart(event, () => pressText(","))}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText(","))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText(","))}
           aria-label="Comma"
@@ -2462,6 +2507,7 @@ function CustomKeyboard({
           className="custom-key is-space-key"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) => pressOnTouchStart(event, () => pressText(" "))}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText(" "))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText(" "))}
         >
@@ -2471,6 +2517,7 @@ function CustomKeyboard({
           className="custom-key"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) => pressOnTouchStart(event, () => pressText("."))}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText("."))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText("."))}
           aria-label="Period"
@@ -2481,6 +2528,7 @@ function CustomKeyboard({
           className="custom-key is-modifier is-return-key"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) => pressOnTouchStart(event, () => pressText("\n"))}
           onPointerDown={(event) => pressOnPointerDown(event, () => pressText("\n"))}
           onClick={(event) => pressOnAccessibleClick(event, () => pressText("\n"))}
           aria-label="Return"
@@ -2493,6 +2541,7 @@ function CustomKeyboard({
           className="custom-keyboard-dismiss"
           type="button"
           tabIndex={-1}
+          onTouchStart={(event) => pressOnTouchStart(event, onClose)}
           onPointerDown={(event) => pressOnPointerDown(event, onClose)}
           onClick={(event) => pressOnAccessibleClick(event, onClose)}
           aria-label="Hide keyboard"
@@ -3077,6 +3126,7 @@ export function App() {
   const customKeyboardExitTimerRef = useRef<number | undefined>(undefined);
   const customKeyboardDraftSyncTimerRef = useRef<number | undefined>(undefined);
   const pendingCustomKeyboardDraftRef = useRef<{ chatId: string; text: string } | null>(null);
+  const customKeyboardEditRef = useRef<{ chatId: string; text: string; selection: TextSelection } | null>(null);
   const scrollButtonLastActivationRef = useRef(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
   const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -3103,6 +3153,7 @@ export function App() {
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
   const draft = selectedChatId ? (draftsByChat[selectedChatId] ?? readChatDraft(localStorage, selectedChatId)) : "";
   const latestDraftRef = useRef(draft);
+  const customKeyboardDraftPresenceRef = useRef(Boolean(draft.trim()));
   latestDraftRef.current = draft;
   const setDraftForChat = useCallback((chatId: string, text: string) => {
     if (!writeChatDraft(localStorage, chatId, text)) {
@@ -3147,22 +3198,41 @@ export function App() {
       setComposerExpanded(composerShouldExpand(editor));
     }
   }, [setDraftForChat]);
-  const scheduleCustomKeyboardDraftSync = useCallback(() => {
+  const scheduleCustomKeyboardDraftSync = useCallback((textOverride?: string) => {
     const editor = composerEditorRef.current;
     const chatId = editor?.dataset.chatId;
     if (!editor || !chatId) {
       return;
     }
 
-    pendingCustomKeyboardDraftRef.current = { chatId, text: rawTextFromComposerEditor(editor) };
+    const text = textOverride ?? rawTextFromComposerEditor(editor);
+    pendingCustomKeyboardDraftRef.current = { chatId, text };
     window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
+
+    // React renders the complete transcript, so do not schedule one for every key.
+    // Empty/non-empty transitions stay immediate for Send-button state; full draft
+    // persistence happens once the rapid touch stream has been idle briefly.
+    const hasContent = Boolean(text.trim());
+    if (hasContent !== customKeyboardDraftPresenceRef.current) {
+      customKeyboardDraftPresenceRef.current = hasContent;
+      flushCustomKeyboardDraftSync();
+      return;
+    }
+
     customKeyboardDraftSyncTimerRef.current = window.setTimeout(
       flushCustomKeyboardDraftSync,
       customKeyboardDraftSyncDelayMs
     );
   }, [flushCustomKeyboardDraftSync]);
   const rememberComposerSelection = useCallback((editor: HTMLDivElement) => {
-    composerSelectionRef.current = selectionInsideComposer(editor, composerSelectionRef.current);
+    const text = rawTextFromComposerEditor(editor);
+    const selection = selectionInsideComposer(editor, composerSelectionRef.current);
+    composerSelectionRef.current = selection;
+    customKeyboardDraftPresenceRef.current = Boolean(text.trim());
+    const chatId = editor.dataset.chatId;
+    if (chatId) {
+      customKeyboardEditRef.current = { chatId, text, selection };
+    }
   }, []);
   const attachComposerEditor = useCallback((editor: HTMLDivElement | null) => {
     composerEditorRef.current = editor;
@@ -3175,28 +3245,51 @@ export function App() {
     syncComposerEditorText(editor, latestDraftRef.current);
     const end = rawTextFromComposerEditor(editor).length;
     composerSelectionRef.current = { start: end, end };
+    customKeyboardDraftPresenceRef.current = Boolean(latestDraftRef.current.trim());
+    const chatId = editor.dataset.chatId;
+    if (chatId) {
+      customKeyboardEditRef.current = {
+        chatId,
+        text: rawTextFromComposerEditor(editor),
+        selection: composerSelectionRef.current
+      };
+    }
     setComposerExpanded(composerShouldExpand(editor));
   }, []);
   const insertCustomKeyboardText = useCallback(
     (text: string) => {
       const editor = composerEditorRef.current;
-      if (!editor) {
+      const chatId = editor?.dataset.chatId;
+      if (!editor || !chatId) {
         return;
       }
 
-      composerSelectionRef.current = insertIntoComposer(editor, text, composerSelectionRef.current);
-      scheduleCustomKeyboardDraftSync();
+      const current =
+        customKeyboardEditRef.current?.chatId === chatId
+          ? customKeyboardEditRef.current
+          : { chatId, text: rawTextFromComposerEditor(editor), selection: composerSelectionRef.current };
+      const mutation = insertTextAtSelection(current.text, current.selection, text);
+      customKeyboardEditRef.current = { chatId, ...mutation };
+      composerSelectionRef.current = applyComposerMutation(editor, mutation.text, mutation.selection);
+      scheduleCustomKeyboardDraftSync(mutation.text);
     },
     [scheduleCustomKeyboardDraftSync]
   );
   const backspaceCustomKeyboardText = useCallback(() => {
     const editor = composerEditorRef.current;
-    if (!editor) {
+    const chatId = editor?.dataset.chatId;
+    if (!editor || !chatId) {
       return;
     }
 
-    composerSelectionRef.current = deleteFromComposer(editor, composerSelectionRef.current);
-    scheduleCustomKeyboardDraftSync();
+    const current =
+      customKeyboardEditRef.current?.chatId === chatId
+        ? customKeyboardEditRef.current
+        : { chatId, text: rawTextFromComposerEditor(editor), selection: composerSelectionRef.current };
+    const mutation = deleteTextBackward(current.text, current.selection);
+    customKeyboardEditRef.current = { chatId, ...mutation };
+    composerSelectionRef.current = applyComposerMutation(editor, mutation.text, mutation.selection);
+    scheduleCustomKeyboardDraftSync(mutation.text);
   }, [scheduleCustomKeyboardDraftSync]);
   const closeCustomKeyboard = useCallback(() => {
     flushCustomKeyboardDraftSync();
@@ -3246,6 +3339,8 @@ export function App() {
   useEffect(() => {
     flushCustomKeyboardDraftSync();
     composerSelectionRef.current = { start: 0, end: 0 };
+    customKeyboardEditRef.current = null;
+    customKeyboardDraftPresenceRef.current = Boolean(draft.trim());
   }, [flushCustomKeyboardDraftSync, selectedChatId]);
 
   useEffect(() => {
@@ -5624,6 +5719,14 @@ export function App() {
         syncComposerEditorText(editor, draft);
         const end = rawTextFromComposerEditor(editor).length;
         composerSelectionRef.current = { start: end, end };
+        const chatId = editor.dataset.chatId;
+        if (chatId) {
+          customKeyboardEditRef.current = {
+            chatId,
+            text: rawTextFromComposerEditor(editor),
+            selection: composerSelectionRef.current
+          };
+        }
       } else if (!customKeyboardOpen) {
         rememberComposerSelection(editor);
       }
@@ -6550,6 +6653,12 @@ export function App() {
         if (selectedChatIdRef.current === targetChatId && composerEditorRef.current) {
           syncComposerEditorText(composerEditorRef.current, "");
           composerSelectionRef.current = { start: 0, end: 0 };
+          customKeyboardEditRef.current = {
+            chatId: targetChatId,
+            text: "",
+            selection: composerSelectionRef.current
+          };
+          customKeyboardDraftPresenceRef.current = false;
         }
       }
       if (!options.voiceNote) {

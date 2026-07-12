@@ -28,12 +28,24 @@ if (!/navigatorWithStandalone\.standalone === true/.test(source)) {
   failures.push("The custom keyboard must remain scoped to installed iOS PWA mode by default.");
 }
 
-if (!/pendingCustomKeyboardDraftRef\.current = \{ chatId, text: rawTextFromComposerEditor\(editor\) \}/.test(source)) {
+if (!/const text = textOverride \?\? rawTextFromComposerEditor\(editor\);[\s\S]{0,100}pendingCustomKeyboardDraftRef\.current = \{ chatId, text \}/.test(source)) {
   failures.push("Custom-key mutations must stage their exact plain text for per-chat draft persistence.");
 }
 
-if (!/customKeyboardDraftSyncDelayMs = 80/.test(source)) {
-  failures.push("Custom keyboard draft persistence must batch rapid taps into an 80ms idle window.");
+if (!/customKeyboardDraftSyncDelayMs = 240/.test(source)) {
+  failures.push("Custom keyboard draft persistence must batch rapid taps into a 240ms idle window.");
+}
+
+if (!/customKeyboardEditRef[\s\S]*insertTextAtSelection\(current\.text, current\.selection, text\)/.test(source)) {
+  failures.push("Rapid custom-key input must mutate one authoritative text-and-selection model.");
+}
+
+if (!/onTouchStart=\{\(event\) => pressOnTouchStart\(event, \(\) => pressText\(key\)\)\}/.test(source)) {
+  failures.push("Character keys must commit from touchstart so overlapping iOS taps are not dropped.");
+}
+
+if (!/event\.pointerType === "touch"[\s\S]{0,100}return;/.test(source)) {
+  failures.push("Touch Pointer Events must not duplicate characters already committed from touchstart.");
 }
 
 if (!/insertTextAtSelection[\s\S]*deleteTextBackward[\s\S]*composerSelectionRef/.test(source)) {
@@ -148,8 +160,12 @@ if (!/className="custom-key-preview"/.test(source)) {
   failures.push("Letter keys must render the iOS-style press preview without React state.");
 }
 
-if (!/\.custom-key-preview\s*\{[\s\S]{0,220}bottom: 72px;[\s\S]{0,120}width: calc\(100% \+ 24px\)/.test(styles)) {
-  failures.push("The key preview must preserve the measured two-row iOS balloon geometry.");
+if (!/\.custom-key-preview\s*\{[\s\S]{0,220}bottom: 56px;[\s\S]{0,120}width: calc\(100% \+ 24px\)/.test(styles)) {
+  failures.push("The key preview must preserve the compact iOS balloon geometry.");
+}
+
+if (!/\.custom-key-preview::after\s*\{[\s\S]{0,180}bottom: -16px;[\s\S]{0,100}height: 24px/.test(styles)) {
+  failures.push("The key preview connector must remain short instead of forming a long neck.");
 }
 
 if (!/\.custom-key:active \.custom-key-preview[\s\S]{0,140}animation: iosKeyPreviewIn 80ms/.test(styles)) {
