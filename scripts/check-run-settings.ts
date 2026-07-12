@@ -6,6 +6,25 @@ import path from "node:path";
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-settings-"));
 const modelsCachePath = path.join(tempDir, "models_cache.json");
 const settingsPath = path.join(tempDir, "run-settings.json");
+const appSource = fs.readFileSync(path.join(process.cwd(), "src", "App.tsx"), "utf8");
+const serverSource = fs.readFileSync(path.join(process.cwd(), "server", "index.ts"), "utf8");
+
+assert.match(
+  appSource,
+  /label === "Weekly"[\s\S]{0,180}weekday: "short"/,
+  "weekly usage reset dates include the weekday"
+);
+assert.match(
+  appSource,
+  /\{advancedVisible \? \([\s\S]{0,2600}<div className="run-settings-grid">[\s\S]{0,2600}\) : null\}\s*<div className="usage-meters"/,
+  "usage meters remain outside the Advanced-only settings content"
+);
+assert.match(serverSource, /const usageRefreshIntervalMs = 60_000;/, "usage refreshes once per minute");
+assert.match(
+  serverSource,
+  /setInterval\(\(\) => void refreshUsageAndPushState\(\), usageRefreshIntervalMs\)/,
+  "each usage refresh pushes the new limits to connected clients"
+);
 
 fs.writeFileSync(
   modelsCachePath,

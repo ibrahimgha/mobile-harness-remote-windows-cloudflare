@@ -2950,7 +2950,7 @@ function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | u
   const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
   const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
     ? label === "Weekly"
-      ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
       : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
     : "Waiting for Codex usage data";
 
@@ -3159,8 +3159,7 @@ function RunSettingsPanel({
       {!advancedVisible ? compactPowerControl : null}
 
       {advancedVisible ? (
-        <>
-          <div className="run-settings-grid">
+        <div className="run-settings-grid">
             <label>
             <span>Model</span>
             <select
@@ -3206,13 +3205,13 @@ function RunSettingsPanel({
               ))}
             </select>
             </label>
-          </div>
-          <div className="usage-meters" aria-label="Codex usage limits">
-            <UsageBar label="5 hours" usage={usage?.fiveHour} />
-            <UsageBar label="Weekly" usage={usage?.weekly} />
-          </div>
-        </>
+        </div>
       ) : null}
+
+      <div className="usage-meters" aria-label="Codex usage limits">
+        <UsageBar label="5 hours" usage={usage?.fiveHour} />
+        <UsageBar label="Weekly" usage={usage?.weekly} />
+      </div>
     </section>
   );
 }

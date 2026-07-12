@@ -48,6 +48,7 @@ const maxUploadBytes = Number(process.env.REMOTE_UPLOAD_MAX_BYTES ?? 512 * 1024 
 const maxUploadTotalBytes = Number(process.env.REMOTE_UPLOAD_MAX_TOTAL_BYTES ?? 1024 * 1024 * 1024);
 const maxUploadChunkBytes = Number(process.env.REMOTE_UPLOAD_CHUNK_BYTES ?? 16 * 1024 * 1024);
 const socketHeartbeatMs = Math.max(5000, Number(process.env.SOCKET_HEARTBEAT_MS ?? 25000) || 25000);
+const usageRefreshIntervalMs = 60_000;
 const shortcutInstructionsRoot = path.resolve(
   process.env.SHORTCUT_INSTRUCTIONS_DIR ?? path.join(os.homedir(), "shortcut-instructions")
 );
@@ -2205,8 +2206,12 @@ wss.on("connection", (socket: WebSocket) => {
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
 server.on("close", () => clearInterval(socketHeartbeat));
-void refreshCodexUsage();
-const usageRefreshTimer = setInterval(() => void refreshCodexUsage(), 30000);
+const refreshUsageAndPushState = async () => {
+  await refreshCodexUsage();
+  pushState();
+};
+void refreshUsageAndPushState();
+const usageRefreshTimer = setInterval(() => void refreshUsageAndPushState(), usageRefreshIntervalMs);
 usageRefreshTimer.unref();
 server.on("close", () => clearInterval(usageRefreshTimer));
 
