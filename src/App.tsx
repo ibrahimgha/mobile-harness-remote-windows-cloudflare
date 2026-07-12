@@ -3678,7 +3678,9 @@ export function App() {
         selection: composerSelectionRef.current
       };
     }
-    setComposerExpanded(composerShouldExpand(editor));
+    setComposerExpanded(
+      editor.dataset.customKeyboard === "true" ? false : composerShouldExpand(editor)
+    );
   }, []);
   const insertCustomKeyboardText = useCallback(
     (text: string) => {
@@ -3743,7 +3745,16 @@ export function App() {
     flushCustomKeyboardDraftSync();
     customKeyboardFocusOpenSuppressedRef.current = true;
     setCustomKeyboardOpen(false);
-    composerEditorRef.current?.blur();
+    // Keyboard dismissal is also a composer dismissal. Keep the draft, but
+    // return the prompt bar and power slider to their compact idle state.
+    setComposerExpanded(false);
+    const editor = composerEditorRef.current;
+    editor?.blur();
+    window.requestAnimationFrame(() => {
+      if (customKeyboardFocusOpenSuppressedRef.current && document.activeElement === editor) {
+        editor?.blur();
+      }
+    });
   }, [flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
   const openMobileMenu = useCallback(() => {
     closeCustomKeyboard();
@@ -6276,9 +6287,11 @@ export function App() {
         rememberComposerSelection(editor);
       }
 
-      setComposerExpanded(composerShouldExpand(editor));
+      setComposerExpanded(
+        customKeyboardEnabled && !customKeyboardOpen ? false : composerShouldExpand(editor)
+      );
     }
-  }, [customKeyboardOpen, draft, rememberComposerSelection, selectedChatId]);
+  }, [customKeyboardEnabled, customKeyboardOpen, draft, rememberComposerSelection, selectedChatId]);
 
   useEffect(() => {
     if (!state?.runner.recentJobs.length) {
@@ -8066,7 +8079,10 @@ export function App() {
           </div>
         ) : null}
 
-        <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
+        <div
+          className={`composer ${composerExpanded ? "is-expanded" : ""} ${customKeyboardEnabled ? "uses-custom-keyboard" : ""} ${customKeyboardOpen ? "is-custom-keyboard-open" : ""}`}
+          data-composer="chat"
+        >
           <RunSettingsPanel
             compactOnly
             settings={state?.runner.settings}
@@ -8121,9 +8137,10 @@ export function App() {
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                onPointerDown={() => {
+                onPointerDown={(event) => {
                   if (customKeyboardEnabled && selectedChatId && !sending) {
                     customKeyboardFocusOpenSuppressedRef.current = false;
+                    setComposerExpanded(composerShouldExpand(event.currentTarget));
                     setCustomKeyboardOpen(true);
                   }
                 }}

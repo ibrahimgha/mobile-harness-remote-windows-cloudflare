@@ -200,7 +200,7 @@ if (!/onFocusCapture[\s\S]{0,220}dataset\.keyboardAction !== "close"[\s\S]{0,120
   failures.push("Keyboard focus recovery must not refocus the composer after the dismiss control is pressed.");
 }
 
-if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}setCustomKeyboardOpen\(true\)/.test(source)) {
+if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,260}setCustomKeyboardOpen\(true\)/.test(source)) {
   failures.push("Tapping an already-focused composer must reopen the custom keyboard after an explicit dismissal.");
 }
 
@@ -208,8 +208,24 @@ if (!/closeCustomKeyboard[\s\S]{0,260}customKeyboardFocusOpenSuppressedRef\.curr
   failures.push("Explicit keyboard dismissal must suppress late composer focus events from reopening it.");
 }
 
-if (!/onPointerDown=\{\(\) => \{[\s\S]{0,180}customKeyboardFocusOpenSuppressedRef\.current = false;[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
+if (!/const closeCustomKeyboard[\s\S]{0,360}setCustomKeyboardOpen\(false\);[\s\S]{0,180}setComposerExpanded\(false\);[\s\S]{0,160}editor\?\.blur\(\)/.test(source)) {
+  failures.push("Keyboard dismissal must collapse the prompt bar and hide its compact power slider.");
+}
+
+if (!/customKeyboardEnabled && !customKeyboardOpen \? false : composerShouldExpand\(editor\)/.test(source)) {
+  failures.push("Draft synchronization must not re-expand a dismissed custom-keyboard composer.");
+}
+
+if (!/editor\.dataset\.customKeyboard === "true" \? false : composerShouldExpand\(editor\)/.test(source)) {
+  failures.push("A restored custom-keyboard draft must initially mount in the compact idle composer state.");
+}
+
+if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,180}customKeyboardFocusOpenSuppressedRef\.current = false;[\s\S]{0,180}setCustomKeyboardOpen\(true\)/.test(source)) {
   failures.push("A fresh composer tap must clear explicit keyboard-dismissal suppression.");
+}
+
+if (!/onPointerDown=\{\(event\) => \{[\s\S]{0,220}setComposerExpanded\(composerShouldExpand\(event\.currentTarget\)\);[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
+  failures.push("Reopening the custom keyboard must restore the prompt bar's content-driven expanded state.");
 }
 
 if (!/onFocus=\{\(event\) => \{[\s\S]{0,260}!customKeyboardFocusOpenSuppressedRef\.current[\s\S]{0,100}setCustomKeyboardOpen\(true\)/.test(source)) {
@@ -337,8 +353,16 @@ if (/transform:\s*scale\(/.test(activeKeyBlock)) {
   failures.push("Never transform the custom key element itself; transforms alter rapid-touch hit testing.");
 }
 
-if (!/\.chat-workspace\.has-custom-keyboard \.composer\s*\{[\s\S]{0,100}width: 100%/.test(styles)) {
-  failures.push("The mobile composer geometry must remain expanded while the custom keyboard is open, even if WebKit moves DOM focus.");
+if (!/\.composer\.is-custom-keyboard-open\s*\{[\s\S]{0,100}width: 100%/.test(styles)) {
+  failures.push("The mobile composer geometry must follow the keyboard's open state instead of stale WebKit focus.");
+}
+
+if (/\.chat-workspace\.has-custom-keyboard \.composer(?: \.composer-power-control)?\s*\{/.test(styles)) {
+  failures.push("The composer and slider must not remain expanded merely because the closing keyboard is still mounted for animation.");
+}
+
+if (!/\.composer:not\(\.uses-custom-keyboard\)\.is-expanded \.composer-power-control,[\s\S]{0,100}\.composer\.is-custom-keyboard-open \.composer-power-control/.test(styles)) {
+  failures.push("Multiline draft state must not keep the custom keyboard power slider visible after dismissal.");
 }
 
 if (!/\.composer\s*\{[\s\S]{0,180}width: 70%;[\s\S]{0,420}transition: width 200ms/.test(styles)) {
