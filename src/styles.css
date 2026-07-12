@@ -3494,7 +3494,23 @@ p {
   }
 
   .composer-power-control .run-settings-power-row {
+    grid-template-columns: minmax(0, 1fr) 70px;
     min-height: 32px;
+  }
+
+  .composer-power-model {
+    display: inline-flex;
+    min-width: 0;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 0.72rem;
+    font-weight: 760;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .composer::before {

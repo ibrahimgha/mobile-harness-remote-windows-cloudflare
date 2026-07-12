@@ -3092,17 +3092,23 @@ function RunSettingsPanel({
           }}
         />
       </div>
-      <button
-        className="run-settings-fast-toggle"
-        type="button"
-        aria-label={fastModeEnabled ? "Enable standard speed" : "Enable fast mode"}
-        aria-pressed={fastModeEnabled}
-        disabled={busy || !fastModeSupported}
-        title="1.5x speed, more usage"
-        onClick={() => onChange({ speed: fastModeEnabled ? "default" : "priority" })}
-      >
-        <Zap size={17} fill={fastModeEnabled ? "currentColor" : "none"} aria-hidden="true" />
-      </button>
+      {compactOnly ? (
+        <span className="composer-power-model" title={previewPowerSetting.modelLabel}>
+          {previewPowerSetting.modelLabel}
+        </span>
+      ) : (
+        <button
+          className="run-settings-fast-toggle"
+          type="button"
+          aria-label={fastModeEnabled ? "Enable standard speed" : "Enable fast mode"}
+          aria-pressed={fastModeEnabled}
+          disabled={busy || !fastModeSupported}
+          title="1.5x speed, more usage"
+          onClick={() => onChange({ speed: fastModeEnabled ? "default" : "priority" })}
+        >
+          <Zap size={17} fill={fastModeEnabled ? "currentColor" : "none"} aria-hidden="true" />
+        </button>
+      )}
     </div>
   ) : null;
 
