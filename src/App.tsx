@@ -2920,9 +2920,9 @@ const codexPowerSettings: Array<{
 }> = [
   { model: "gpt-5.6-terra", reasoningEffort: "low", modelLabel: "5.6 Terra", effortLabel: "Low" },
   { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "5.6 Sol", effortLabel: "Low" },
-  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "5.6 Sol", effortLabel: "Standard" },
-  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "5.6 Sol", effortLabel: "Extended" },
-  { model: "gpt-5.6-sol", reasoningEffort: "xhigh", modelLabel: "5.6 Sol", effortLabel: "High" },
+  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "5.6 Sol", effortLabel: "Medium" },
+  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "5.6 Sol", effortLabel: "High" },
+  { model: "gpt-5.6-sol", reasoningEffort: "xhigh", modelLabel: "5.6 Sol", effortLabel: "X High" },
   { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "5.6 Sol", effortLabel: "Ultra" }
 ];
 
