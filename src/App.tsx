@@ -56,7 +56,7 @@ import {
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { mergeTranscriptWindow } from "./chatRefresh";
+import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
 import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
 import {
   deleteTextBackward,
@@ -885,7 +885,8 @@ function createOptimisticPromptMessages(
   text: string,
   createdAt: string,
   messageId = optimisticPromptId(createdAt),
-  voiceNote?: DictationVoiceNote
+  voiceNote?: DictationVoiceNote,
+  runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort">
 ) {
   const messages: ChatTranscriptMessage[] = [];
 
@@ -908,7 +909,9 @@ function createOptimisticPromptMessages(
     kind: "user_prompt",
     label: voiceNote ? "Transcribed prompt" : "You",
     text,
-    createdAt
+    createdAt,
+    model: runSettings?.model,
+    reasoningEffort: runSettings?.reasoningEffort
   });
 
   return messages;
@@ -972,7 +975,7 @@ function mergeChatDetailPreservingOptimistic(
       // Replacing it with a fresh transcript node during polling makes iOS PWAs jump
       // upward a few seconds after send, especially while the keyboard/composer is active.
       incomingMessages[matchingPromptIndex] = {
-        ...serverMessage,
+        ...preserveOptimisticRunSettings(serverMessage, message),
         id: message.id,
         createdAt: message.createdAt,
         label: message.label ?? serverMessage.label
@@ -5541,14 +5544,15 @@ export function App() {
     text: string,
     createdAt: string,
     messageId = optimisticPromptId(createdAt),
-    voiceNote?: DictationVoiceNote
+    voiceNote?: DictationVoiceNote,
+    runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort">
   ) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
         return current;
       }
 
-      const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote);
+      const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote, runSettings);
       const messages = [...(current.messages ?? [])];
 
       for (const message of newMessages) {
@@ -5558,7 +5562,7 @@ export function App() {
           if (matchingPromptIndex >= 0) {
             const serverMessage = messages[matchingPromptIndex];
             messages[matchingPromptIndex] = {
-              ...serverMessage,
+              ...preserveOptimisticRunSettings(serverMessage, message),
               id: message.id,
               createdAt: message.createdAt,
               label: message.label ?? serverMessage.label
@@ -7186,7 +7190,14 @@ export function App() {
       }
 
       if (disposition === "started") {
-        applyOptimisticPrompt(targetChatId, promptText, optimisticAt, optimisticMessageId, options.voiceNote);
+        applyOptimisticPrompt(
+          targetChatId,
+          promptText,
+          optimisticAt,
+          optimisticMessageId,
+          options.voiceNote,
+          result.job?.settings ?? state?.runner.settings
+        );
         chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
         window.requestAnimationFrame(() => scrollChatToBottom("auto"));

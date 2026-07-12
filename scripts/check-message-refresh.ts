@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mergeTranscriptWindow } from "../src/chatRefresh.js";
+import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
 
 type TestMessage = {
   id: string;
@@ -38,4 +38,21 @@ assert.deepEqual(
   mergeTranscriptWindow(current, reidentifiedIncoming, sameItem).map((message) => message.id),
   ["turn-1", "server-turn-2"],
   "the same transcript item with a new backend ID must not render twice"
+);
+
+assert.deepEqual(
+  preserveOptimisticRunSettings(
+    { id: "server-prompt", model: undefined, reasoningEffort: undefined },
+    { model: "gpt-5.6-sol", reasoningEffort: "ultra" }
+  ),
+  { id: "server-prompt", model: "gpt-5.6-sol", reasoningEffort: "ultra" },
+  "the first server echo must not erase optimistic model metadata"
+);
+assert.deepEqual(
+  preserveOptimisticRunSettings(
+    { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low" },
+    { model: "gpt-5.6-sol", reasoningEffort: "ultra" }
+  ),
+  { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low" },
+  "authoritative server metadata must replace optimistic settings when present"
 );
