@@ -40,6 +40,22 @@ if (!/customKeyboardEditRef[\s\S]*insertTextAtSelection\(current\.text, current\
   failures.push("Rapid custom-key input must mutate one authoritative text-and-selection model.");
 }
 
+if (
+  !/const commitComposerEditorState[\s\S]{0,900}pendingCustomKeyboardDraftRef\.current = null;[\s\S]{0,260}customKeyboardEditRef\.current = \{ chatId, text, selection \}/.test(
+    source
+  )
+) {
+  failures.push("Paste and native input must cancel stale draft timers and replace the authoritative editor model.");
+}
+
+if (!/onPaste=[\s\S]{0,360}commitComposerEditorState\(event\.currentTarget, selection\)/.test(source)) {
+  failures.push("Pasted text must be adopted before the next custom-key mutation.");
+}
+
+if (!/preserveComposerForTransientFocus\(\)[\s\S]{0,1700}restoreComposerAfterTransientFocus\(reopenKeyboard\)/.test(source)) {
+  failures.push("Attachment picking must preserve and restore the live composer model and caret.");
+}
+
 if (!/addEventListener\("touchstart", handleTouchStart, \{ passive: false \}\)/.test(source)) {
   failures.push("The keyboard must track iOS contacts from one non-passive native touch listener.");
 }

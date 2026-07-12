@@ -3352,6 +3352,54 @@ export function App() {
       customKeyboardEditRef.current = { chatId, text, selection };
     }
   }, []);
+  const commitComposerEditorState = useCallback(
+    (editor: HTMLDivElement, selectionOverride?: TextSelection) => {
+      const chatId = editor.dataset.chatId;
+      if (!chatId) {
+        return;
+      }
+
+      const text = rawTextFromComposerEditor(editor);
+      const selection = selectionOverride ?? selectionInsideComposer(editor, composerSelectionRef.current);
+      window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
+      customKeyboardDraftSyncTimerRef.current = undefined;
+      pendingCustomKeyboardDraftRef.current = null;
+      composerSelectionRef.current = selection;
+      customKeyboardEditRef.current = { chatId, text, selection };
+      customKeyboardDraftPresenceRef.current = Boolean(text.trim());
+      setDraftForChat(chatId, text);
+      setComposerExpanded(composerShouldExpand(editor));
+    },
+    [setDraftForChat]
+  );
+  const preserveComposerForTransientFocus = useCallback(() => {
+    const editor = composerEditorRef.current;
+    const chatId = editor?.dataset.chatId;
+    if (!editor || !chatId) {
+      return;
+    }
+
+    rememberComposerSelection(editor);
+    const model = customKeyboardEditRef.current;
+    pendingCustomKeyboardDraftRef.current = {
+      chatId,
+      text: model?.chatId === chatId ? model.text : rawTextFromComposerEditor(editor)
+    };
+    flushCustomKeyboardDraftSync();
+  }, [flushCustomKeyboardDraftSync, rememberComposerSelection]);
+  const restoreComposerAfterTransientFocus = useCallback((reopenKeyboard: boolean) => {
+    const editor = composerEditorRef.current;
+    const chatId = editor?.dataset.chatId;
+    const model = customKeyboardEditRef.current;
+    if (!editor || !chatId || model?.chatId !== chatId) {
+      return;
+    }
+
+    composerSelectionRef.current = applyComposerMutation(editor, model.text, model.selection);
+    if (reopenKeyboard) {
+      setCustomKeyboardOpen(true);
+    }
+  }, []);
   const attachComposerEditor = useCallback((editor: HTMLDivElement | null) => {
     composerEditorRef.current = editor;
     if (!editor) {
@@ -6223,6 +6271,8 @@ export function App() {
   }
 
   function openAttachmentPicker() {
+    const reopenKeyboard = customKeyboardOpen;
+    preserveComposerForTransientFocus();
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
@@ -6234,12 +6284,22 @@ export function App() {
     input.setAttribute("aria-hidden", "true");
 
     let removed = false;
+    let restored = false;
+    const restoreComposer = () => {
+      if (restored) {
+        return;
+      }
+
+      restored = true;
+      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(reopenKeyboard));
+    };
     const removeInput = () => {
       if (removed) {
         return;
       }
 
       removed = true;
+      window.removeEventListener("focus", restoreComposer);
       input.remove();
     };
 
@@ -6247,12 +6307,23 @@ export function App() {
       "change",
       () => {
         addAttachments(input.files);
+        restoreComposer();
+        removeInput();
+      },
+      { once: true }
+    );
+
+    input.addEventListener(
+      "cancel",
+      () => {
+        restoreComposer();
         removeInput();
       },
       { once: true }
     );
 
     document.body.append(input);
+    window.addEventListener("focus", restoreComposer, { once: true });
     input.click();
     window.setTimeout(removeInput, 60000);
   }
@@ -7665,25 +7736,16 @@ export function App() {
                   window.requestAnimationFrame(() => rememberComposerSelection(editor));
                 }}
                 onInput={(event) => {
-                  const inputChatId = event.currentTarget.dataset.chatId;
-                  if (inputChatId) {
-                    setDraftForChat(inputChatId, rawTextFromComposerEditor(event.currentTarget));
-                  }
-                  rememberComposerSelection(event.currentTarget);
-                  setComposerExpanded(composerShouldExpand(event.currentTarget));
+                  commitComposerEditorState(event.currentTarget);
                 }}
                 onPaste={(event) => {
                   event.preventDefault();
-                  composerSelectionRef.current = insertIntoComposer(
+                  const selection = insertIntoComposer(
                     event.currentTarget,
                     event.clipboardData.getData("text/plain"),
                     composerSelectionRef.current
                   );
-                  const inputChatId = event.currentTarget.dataset.chatId;
-                  if (inputChatId) {
-                    setDraftForChat(inputChatId, rawTextFromComposerEditor(event.currentTarget));
-                  }
-                  setComposerExpanded(composerShouldExpand(event.currentTarget));
+                  commitComposerEditorState(event.currentTarget, selection);
                 }}
                 onKeyDown={sendPromptFromKeyboard}
               />
