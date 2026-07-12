@@ -281,6 +281,10 @@ export class CodexRunner {
   private readonly jobs = new Map<string, CodexRunJob>();
   private readonly jobTexts = new Map<string, string>();
   private readonly runningChildren = new Map<string, ChildProcessWithoutNullStreams>();
+  private readonly stoppedJobFinalizers = new Map<
+    string,
+    (code?: number | null, signal?: NodeJS.Signals | null) => void
+  >();
   private readonly stopRequestedJobIds = new Set<string>();
   private readonly runningChatIds = new Set<string>();
 
@@ -387,6 +391,13 @@ export class CodexRunner {
     this.stopRequestedJobIds.add(job.id);
     job.message = "Stop requested for this chat's Codex worker";
     this.emit(job, "heartbeat");
+
+    const finalizeStoppedJob = this.stoppedJobFinalizers.get(job.id);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finalizeStoppedJob?.(child.exitCode, child.signalCode);
+      return job;
+    }
+
     this.terminateChild(child);
 
     return job;
@@ -639,6 +650,27 @@ export class CodexRunner {
         }
       };
 
+      const finishStoppedJob = (code = child.exitCode, signal = child.signalCode) => {
+        if (completed || !this.stopRequestedJobIds.has(job.id)) {
+          return;
+        }
+
+        childClosed = true;
+        clearPostCompletionKillTimer();
+        completionPromise ??= completeJob("stopped", code, signal, "close");
+
+        void completionPromise.finally(() => {
+          child.stdout.removeAllListeners("data");
+          child.stderr.unpipe(stderr);
+          child.stdout.destroy();
+          child.stderr.destroy();
+          stdout.end();
+          stderr.end();
+        });
+      };
+
+      this.stoppedJobFinalizers.set(job.id, finishStoppedJob);
+
       child.stdout.on("data", (chunk: Buffer) => {
         stdout.write(chunk);
         stdoutBuffer += chunk.toString("utf8");
@@ -667,6 +699,12 @@ export class CodexRunner {
 
       child.on("error", (error) => {
         stderr.write(`${error.name}: ${error.message}\n`);
+      });
+
+      // A descendant can keep stdio handles open on Windows after Codex exits.
+      // Finalize an explicit stop on process exit instead of waiting for close.
+      child.on("exit", (code, signal) => {
+        finishStoppedJob(code, signal);
       });
 
       child.on("close", (code, signal) => {
@@ -699,6 +737,7 @@ export class CodexRunner {
       });
     }).finally(() => {
       this.runningChildren.delete(job.id);
+      this.stoppedJobFinalizers.delete(job.id);
       this.stopRequestedJobIds.delete(job.id);
     });
   }
@@ -711,10 +750,24 @@ export class CodexRunner {
       });
 
       taskkill.on("error", () => {
-        if (!child.killed) {
+        if (child.exitCode === null && child.signalCode === null) {
           child.kill();
         }
       });
+
+      taskkill.on("close", (code) => {
+        if (code !== 0 && child.exitCode === null && child.signalCode === null) {
+          child.kill();
+        }
+      });
+
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill();
+        }
+      }, 5000);
+      killTimer.unref?.();
+      child.once("exit", () => clearTimeout(killTimer));
 
       return;
     }
