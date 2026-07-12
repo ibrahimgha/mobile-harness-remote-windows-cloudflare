@@ -413,6 +413,27 @@ if (/window\.find\s*\(/.test(source)) {
   failures.push("window.find() must not be used; it can summon Safari find/navigation UI.");
 }
 
+if (!/aria-label="Cancel voice recording"/.test(source)) {
+  failures.push("Voice recording must expose a clear cancel action in the composer.");
+}
+
+const cancelDictationBlock = source.match(/function cancelDictation\(\) \{[\s\S]*?\n  \}\n\n  async function startDictation/)?.[0] ?? "";
+if (
+  !/dictationSessionRef\.current \+= 1;[\s\S]*dictationRecognitionRef\.current\?\.abort\(\)[\s\S]*recorder\.stop\(\)/.test(
+    cancelDictationBlock
+  )
+) {
+  failures.push("Cancelling dictation must invalidate late callbacks before stopping browser media APIs.");
+}
+
+if (!/setDraftForChat\(composerSnapshot\.chatId, composerSnapshot\.text\)/.test(cancelDictationBlock)) {
+  failures.push("Cancelling dictation must restore the exact per-chat draft snapshot.");
+}
+
+if (!/if \(dictationSessionRef\.current !== dictationSessionId\) \{\s*return;\s*\}[\s\S]*new Blob/.test(source)) {
+  failures.push("The recorder stop handler must ignore cancelled dictation sessions before creating or sending audio.");
+}
+
 if (failures.length) {
   console.error(failures.map((failure) => `- ${failure}`).join("\n"));
   process.exit(1);

@@ -2025,7 +2025,8 @@ p {
 }
 
 .composer .attach-button,
-.composer .dictation-button {
+.composer .dictation-button,
+.composer .dictation-cancel-button {
   width: 42px;
   min-height: 42px;
   height: 42px;
@@ -2041,7 +2042,10 @@ p {
 .composer .attach-button:focus-visible,
 .composer .dictation-button:hover:not(:disabled),
 .composer .dictation-button:active,
-.composer .dictation-button:focus-visible {
+.composer .dictation-button:focus-visible,
+.composer .dictation-cancel-button:hover,
+.composer .dictation-cancel-button:active,
+.composer .dictation-cancel-button:focus-visible {
   color: var(--teal-strong);
   border-color: transparent;
   background: transparent;
@@ -2049,6 +2053,13 @@ p {
 }
 
 .composer .dictation-button.is-recording {
+  color: var(--red);
+}
+
+.composer .dictation-cancel-button,
+.composer .dictation-cancel-button:hover,
+.composer .dictation-cancel-button:active,
+.composer .dictation-cancel-button:focus-visible {
   color: var(--red);
 }
 
@@ -3654,7 +3665,8 @@ p {
   }
 
   .composer .attach-button,
-  .composer .dictation-button {
+  .composer .dictation-button,
+  .composer .dictation-cancel-button {
     width: 34px;
     min-width: 34px;
     min-height: 36px;

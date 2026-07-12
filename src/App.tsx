@@ -3429,6 +3429,8 @@ export function App() {
   const dictationTranscriptRef = useRef("");
   const dictationChatIdRef = useRef<string | null>(null);
   const dictationDraftSnapshotRef = useRef("");
+  const dictationDraftSelectionRef = useRef<TextSelection>({ start: 0, end: 0 });
+  const dictationSessionRef = useRef(0);
   const dictationBarsRef = useRef<HTMLDivElement | null>(null);
   const dictationAudioContextRef = useRef<AudioContext | null>(null);
   const dictationAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -5848,6 +5850,7 @@ export function App() {
         window.clearTimeout(promptReceiptClearTimerRef.current);
       }
 
+      dictationSessionRef.current += 1;
       dictationRecognitionRef.current?.abort();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
@@ -7045,6 +7048,48 @@ export function App() {
     setDictationProcessing(false);
   }
 
+  function cancelDictation() {
+    if (!dictationRecording) {
+      return;
+    }
+
+    const chatId = dictationChatIdRef.current;
+    const draftSnapshot = dictationDraftSnapshotRef.current;
+    const selectionSnapshot = normalizeTextSelection(draftSnapshot, dictationDraftSelectionRef.current);
+    const composerSnapshot = chatId
+      ? { chatId, text: draftSnapshot, selection: selectionSnapshot }
+      : null;
+
+    // Invalidate speech and recorder callbacks before stopping either API. Some browsers
+    // dispatch their final events asynchronously, and a cancelled recording must never send.
+    dictationSessionRef.current += 1;
+    dictationRecognitionRef.current?.abort();
+    dictationRecognitionRef.current = null;
+
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+
+    stopDictationTracks();
+    dictationChunksRef.current = [];
+    dictationFinalTranscriptRef.current = "";
+    dictationTranscriptRef.current = "";
+    dictationChatIdRef.current = null;
+    dictationDraftSnapshotRef.current = "";
+    dictationDraftSelectionRef.current = { start: 0, end: 0 };
+    setDictationRecording(false);
+    setDictationProcessing(false);
+
+    if (composerSnapshot) {
+      setDraftForChat(composerSnapshot.chatId, composerSnapshot.text);
+      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot, false));
+    }
+
+    setNotice("Voice recording cancelled.");
+  }
+
   async function startDictation() {
     if (!selectedChatId || sending || dictationRecording || dictationProcessing) {
       return;
@@ -7062,12 +7107,26 @@ export function App() {
       return;
     }
 
+    const composerSnapshot = preserveComposerForTransientFocus();
+    const dictationSessionId = dictationSessionRef.current + 1;
+    dictationSessionRef.current = dictationSessionId;
+
     try {
       const dictationChatId = selectedChatId;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (dictationSessionRef.current !== dictationSessionId) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       const mimeType = supportedAudioMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       const recognition = new SpeechRecognition();
+      const draftSnapshot = composerSnapshot?.chatId === dictationChatId ? composerSnapshot.text : draft;
+      const selectionSnapshot =
+        composerSnapshot?.chatId === dictationChatId
+          ? composerSnapshot.selection
+          : normalizeTextSelection(draftSnapshot, composerSelectionRef.current);
 
       dictationStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
@@ -7076,7 +7135,8 @@ export function App() {
       dictationFinalTranscriptRef.current = "";
       dictationTranscriptRef.current = "";
       dictationChatIdRef.current = dictationChatId;
-      dictationDraftSnapshotRef.current = draft;
+      dictationDraftSnapshotRef.current = draftSnapshot;
+      dictationDraftSelectionRef.current = selectionSnapshot;
       startDictationWaveform(stream);
 
       recognition.continuous = true;
@@ -7084,6 +7144,10 @@ export function App() {
       recognition.maxAlternatives = 5;
       recognition.lang = navigator.language || "en-US";
       recognition.onresult = (event) => {
+        if (dictationSessionRef.current !== dictationSessionId) {
+          return;
+        }
+
         let interim = "";
 
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -7101,14 +7165,20 @@ export function App() {
         dictationTranscriptRef.current = cleaned;
       };
       recognition.onerror = (event) => {
+        if (dictationSessionRef.current !== dictationSessionId) {
+          return;
+        }
+
         setNotice(event.error ? `Dictation error: ${event.error}` : "Dictation error");
       };
       recognition.onend = () => {
-        dictationRecognitionRef.current = null;
+        if (dictationSessionRef.current === dictationSessionId && dictationRecognitionRef.current === recognition) {
+          dictationRecognitionRef.current = null;
+        }
       };
 
       recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) {
+        if (dictationSessionRef.current === dictationSessionId && event.data.size > 0) {
           dictationChunksRef.current.push(event.data);
         }
       });
@@ -7116,6 +7186,10 @@ export function App() {
       recorder.addEventListener(
         "stop",
         async () => {
+          if (dictationSessionRef.current !== dictationSessionId) {
+            return;
+          }
+
           const blob = new Blob(dictationChunksRef.current, { type: recorder.mimeType || "audio/webm" });
 
           mediaRecorderRef.current = null;
@@ -7129,6 +7203,7 @@ export function App() {
             setNotice("No speech was transcribed. Try recording again.");
             dictationChatIdRef.current = null;
             dictationDraftSnapshotRef.current = "";
+            dictationDraftSelectionRef.current = { start: 0, end: 0 };
             setDictationProcessing(false);
             return;
           }
@@ -7146,6 +7221,7 @@ export function App() {
           } finally {
             dictationChatIdRef.current = null;
             dictationDraftSnapshotRef.current = "";
+            dictationDraftSelectionRef.current = { start: 0, end: 0 };
             setDictationProcessing(false);
           }
         },
@@ -7157,11 +7233,16 @@ export function App() {
       setDictationRecording(true);
       setNotice("Recording dictation...");
     } catch (error) {
+      if (dictationSessionRef.current !== dictationSessionId) {
+        return;
+      }
+
       stopDictationTracks();
       mediaRecorderRef.current = null;
       dictationRecognitionRef.current = null;
       dictationChatIdRef.current = null;
       dictationDraftSnapshotRef.current = "";
+      dictationDraftSelectionRef.current = { start: 0, end: 0 };
       setDictationRecording(false);
       setDictationProcessing(false);
       setNotice(error instanceof Error ? error.message : "Could not start dictation");
@@ -8091,17 +8172,29 @@ export function App() {
             onChange={updateRunSettings}
           />
           <div className="composer-field">
-            <button
-              className="attach-button"
-              type="button"
-              onPointerDown={preserveComposerForTransientFocus}
-              onClick={openAttachmentPicker}
-              disabled={!selectedChatId || sending || dictationRecording || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
-              aria-label="Attach files"
-              title="Attach files"
-            >
-              <Paperclip size={18} />
-            </button>
+            {dictationRecording ? (
+              <button
+                className="dictation-cancel-button"
+                type="button"
+                onClick={cancelDictation}
+                aria-label="Cancel voice recording"
+                title="Cancel voice recording"
+              >
+                <X size={18} />
+              </button>
+            ) : (
+              <button
+                className="attach-button"
+                type="button"
+                onPointerDown={preserveComposerForTransientFocus}
+                onClick={openAttachmentPicker}
+                disabled={!selectedChatId || sending || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
+                aria-label="Attach files"
+                title="Attach files"
+              >
+                <Paperclip size={18} />
+              </button>
+            )}
             <button
               className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
               type="button"
