@@ -2220,6 +2220,17 @@ type KeyboardTraceEvent = KeyboardTraceData & {
   capturedAt: number;
   chatId: string | null;
 };
+const keyboardTraceStorageKey = "ios-keyboard-trace-pending-v1";
+
+function readPendingKeyboardTrace() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(keyboardTraceStorageKey) ?? "[]");
+    return Array.isArray(parsed) ? (parsed.slice(-1000) as KeyboardTraceEvent[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 const customKeyboardExitDurationMs = 240;
 const customKeyboardTapSlopPx = 10;
 const customKeyboardDraftSyncDelayMs = 750;
@@ -3378,7 +3389,7 @@ export function App() {
   const customKeyboardDraftSyncTimerRef = useRef<number | undefined>(undefined);
   const pendingCustomKeyboardDraftRef = useRef<{ chatId: string; text: string } | null>(null);
   const customKeyboardEditRef = useRef<{ chatId: string; text: string; selection: TextSelection } | null>(null);
-  const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>([]);
+  const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>(readPendingKeyboardTrace());
   const keyboardTraceSequenceRef = useRef(0);
   const keyboardTraceSessionRef = useRef(
     globalThis.crypto?.randomUUID?.() ?? "keyboard-" + Date.now() + "-" + Math.random().toString(16).slice(2)
@@ -4179,10 +4190,19 @@ export function App() {
             events
           })
         });
+        localStorage.removeItem(keyboardTraceStorageKey);
       } catch {
         keyboardTraceBufferRef.current.unshift(...events);
         if (keyboardTraceBufferRef.current.length > 3000) {
           keyboardTraceBufferRef.current.length = 3000;
+        }
+        try {
+          localStorage.setItem(
+            keyboardTraceStorageKey,
+            JSON.stringify(keyboardTraceBufferRef.current.slice(-1000))
+          );
+        } catch {
+          // A trace must never interfere with prompt delivery.
         }
       }
     },
