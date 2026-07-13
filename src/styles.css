@@ -2893,7 +2893,7 @@ p {
 
 .custom-keyboard {
   display: grid;
-  gap: 6px;
+  gap: 11px;
   width: 100%;
   padding: 7px 4px calc(7px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid rgba(29, 35, 39, 0.14);
@@ -2913,7 +2913,7 @@ p {
 }
 
 .custom-keyboard-row.row-2 {
-  padding-inline: 4.5%;
+  padding-inline: 4.9%;
 }
 
 .custom-key {
@@ -2923,8 +2923,8 @@ p {
   isolation: isolate;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 44px;
-  height: 44px;
+  min-height: 43px;
+  height: 43px;
   align-items: center;
   justify-content: center;
   padding: 0 3px;
@@ -3016,8 +3016,16 @@ p {
 
 .custom-key.is-modifier {
   --custom-keycap-background: #aeb4ba;
-  flex-grow: 1.2;
+  flex-grow: 1.356;
   color: #1f2529;
+}
+
+.custom-keyboard-row.row-3 > .custom-key.is-modifier:first-child {
+  margin-right: 7.67px;
+}
+
+.custom-keyboard-row.row-3 > .custom-key.is-modifier:last-child {
+  margin-left: 7.67px;
 }
 
 .custom-key.is-modifier.is-active {
@@ -3302,12 +3310,12 @@ p {
   }
 
   .chat-workspace.has-custom-keyboard .chat-thread::after {
-    flex-basis: calc(328px + env(safe-area-inset-bottom, 0px));
-    block-size: calc(328px + env(safe-area-inset-bottom, 0px));
+    flex-basis: calc(339px + env(safe-area-inset-bottom, 0px));
+    block-size: calc(339px + env(safe-area-inset-bottom, 0px));
   }
 
   .remote-shell.has-custom-keyboard .scroll-bottom-control {
-    bottom: calc(323px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(334px + env(safe-area-inset-bottom, 0px));
   }
 
   .chat-workspace > * {

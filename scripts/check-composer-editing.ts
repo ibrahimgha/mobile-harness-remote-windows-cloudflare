@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { deleteTextBackward, insertTextAtSelection } from "../src/composerEditing";
+import {
+  deleteTextBackward,
+  insertTextAtSelection,
+  sentenceCapitalizedInsertion,
+  shouldCapitalizeAtSelection
+} from "../src/composerEditing";
 
 assert.deepEqual(insertTextAtSelection("abcdef", { start: 3, end: 3 }, " "), {
   text: "abc def",
@@ -41,6 +46,15 @@ assert.deepEqual(insertTextAtSelection(withNewline.text, withNewline.selection, 
   text: "first\nsecond",
   selection: { start: 12, end: 12 }
 });
+
+assert.equal(sentenceCapitalizedInsertion("", { start: 0, end: 0 }, "a"), "A");
+assert.equal(sentenceCapitalizedInsertion("Done.", { start: 5, end: 5 }, "a"), "A");
+assert.equal(sentenceCapitalizedInsertion("Done.   ", { start: 8, end: 8 }, "a"), "A");
+assert.equal(sentenceCapitalizedInsertion("Really? ", { start: 8, end: 8 }, "w"), "W");
+assert.equal(sentenceCapitalizedInsertion("first\n", { start: 6, end: 6 }, "s"), "S");
+assert.equal(sentenceCapitalizedInsertion("alpha", { start: 5, end: 5 }, "b"), "b");
+assert.equal(sentenceCapitalizedInsertion("Done. ", { start: 6, end: 6 }, "."), ".");
+assert.equal(shouldCapitalizeAtSelection("Done.  next", { start: 7, end: 11 }), true);
 
 const longMultilinePrompt = Array.from({ length: 16 }, (_, index) => `line ${index + 1}`).join("\n");
 assert.equal(longMultilinePrompt.split("\n").length, 16);

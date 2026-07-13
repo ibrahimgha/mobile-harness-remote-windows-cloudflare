@@ -26,6 +26,20 @@ export function insertTextAtSelection(text: string, selection: TextSelection, in
   };
 }
 
+export function shouldCapitalizeAtSelection(text: string, selection: TextSelection) {
+  const normalized = normalizeTextSelection(text, selection);
+  const textBeforeCaret = text.slice(0, normalized.start);
+  return /(?:^|[.!?]\s*|\n[ \t]*)$/.test(textBeforeCaret);
+}
+
+export function sentenceCapitalizedInsertion(text: string, selection: TextSelection, insertedText: string) {
+  if (!/^[a-z]$/.test(insertedText) || !shouldCapitalizeAtSelection(text, selection)) {
+    return insertedText;
+  }
+
+  return insertedText.toUpperCase();
+}
+
 function previousCodePointStart(text: string, offset: number) {
   const prefix = text.slice(0, offset);
   const previousCodePoint = Array.from(prefix).at(-1) ?? "";

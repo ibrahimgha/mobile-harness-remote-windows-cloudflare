@@ -37,7 +37,7 @@ if (!/customKeyboardDraftSyncDelayMs = 750/.test(source)) {
   failures.push("Custom keyboard draft persistence must leave a 750ms quiet window around rapid typing.");
 }
 
-if (!/customKeyboardEditRef[\s\S]*insertTextAtSelection\(current\.text, current\.selection, text\)/.test(source)) {
+if (!/customKeyboardEditRef[\s\S]*insertTextAtSelection\(current\.text, current\.selection, insertedText\)/.test(source)) {
   failures.push("Rapid custom-key input must mutate one authoritative text-and-selection model.");
 }
 
@@ -81,7 +81,7 @@ if (!/const CustomKeyboard = memo\(function CustomKeyboard/.test(source)) {
   failures.push("App timers and polling must not rerender the custom keyboard.");
 }
 
-if (!/Touch\.target is fixed at contact start[\s\S]{0,300}touch\.target instanceof Element/.test(source)) {
+if (!/const targetMatch = trackedFromButton\(buttonFromTarget\(target\), "target"\);[\s\S]{0,120}if \(targetMatch\)/.test(source)) {
   failures.push("Touch resolution must prefer the contact's stable target over a synchronous animated hit-test.");
 }
 
@@ -99,7 +99,7 @@ if (/applyComposerMutation|restoreComposerSelection|setDraftForChat/.test(insert
 }
 
 if (
-  !/patchComposerInsertion\(editor, current\.text, current\.selection, text, mutation\.text\)/.test(insertHotPath) ||
+  !/patchComposerInsertion\(editor, current\.text, current\.selection, insertedText, mutation\.text\)/.test(insertHotPath) ||
   !/patchComposerDeletion\(editor, current\.text, current\.selection, mutation\)/.test(backspaceHotPath)
 ) {
   failures.push("Visible text must patch only the exact inserted or deleted range during each key contact.");
@@ -138,10 +138,36 @@ if (!/activeCustomModel[\s\S]{0,900}custom keyboard model remains authoritative 
 }
 
 if (
-  !/document\.elementFromPoint\(touch\.clientX, touch\.clientY\)/.test(source) ||
+  !/document\.elementFromPoint\(x, y\)/.test(source) ||
   !/activeTouches\.set\(touch\.identifier, tracked\)/.test(source)
 ) {
   failures.push("Touch tracking must resolve physical coordinates and retain each independent touch identifier.");
+}
+
+if (
+  !/const nearestKey = \(x: number, y: number\)[\s\S]{0,1200}best\.distance <= 18/.test(source) ||
+  !/pointMatch \?\? trackedFromButton\(nearestKey\(x, y\), "nearest"\)/.test(source)
+) {
+  failures.push("The iOS keyboard must recover near-edge contacts instead of leaving dead strips around A and row gaps.");
+}
+
+if (
+  !/const handlePointerDown = \(event: PointerEvent\)[\s\S]{0,2200}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source) ||
+  !/consumeMatchingPointerCommit\(tracked, touch\.clientX, touch\.clientY\)/.test(source) ||
+  !/"touch-start-deduped"/.test(source)
+) {
+  failures.push("Touch keys must use a deduplicated pointerdown fallback when WebKit omits touchstart during a rapid burst.");
+}
+
+if (
+  !/sentenceCapitalizedInsertion\(current\.text, current\.selection, text\)/.test(source) ||
+  !/shouldCapitalizeAtSelection\(mutation\.text, mutation\.selection\)/.test(source)
+) {
+  failures.push("Sentence capitalization must be derived synchronously from the authoritative custom-keyboard model.");
+}
+
+if (/useEffect\(\(\) => \{\s*setKeyboardAutomaticShifted\(autoShifted\)/.test(source)) {
+  failures.push("A delayed auto-shift prop effect can capitalize the second letter during fast typing.");
 }
 
 if (/onTouchStart=\{\(event\) => pressOnTouchStart/.test(source)) {
@@ -176,7 +202,7 @@ if (!/const adoptPendingBrowserComposerSelection[\s\S]{0,420}customKeyboardSelec
 }
 
 if (
-  !/const insertCustomKeyboardText[\s\S]{0,500}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,300}insertTextAtSelection/.test(source) ||
+  !/const insertCustomKeyboardText[\s\S]{0,700}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,500}insertTextAtSelection/.test(source) ||
   !/const backspaceCustomKeyboardText[\s\S]{0,500}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,300}deleteTextBackward/.test(source)
 ) {
   failures.push("Insertion and Backspace must adopt a newly tapped caret or selected range before mutating text.");
@@ -294,11 +320,11 @@ if (!/\.custom-key::before\s*\{[\s\S]{0,360}inset: 0 3px/.test(styles)) {
   failures.push("Visible key spacing must be painted inside contiguous touch targets.");
 }
 
-if (!/\.custom-keyboard-row\.row-2\s*\{[\s\S]{0,80}padding-inline: 4\.5%/.test(styles)) {
+if (!/\.custom-keyboard-row\.row-2\s*\{[\s\S]{0,80}padding-inline: 4\.9%/.test(styles)) {
   failures.push("The home row must retain the measured iOS horizontal offset.");
 }
 
-if (!/\.custom-key\.is-modifier\s*\{[\s\S]{0,160}flex-grow: 1\.2/.test(styles)) {
+if (!/\.custom-key\.is-modifier\s*\{[\s\S]{0,160}flex-grow: 1\.356/.test(styles)) {
   failures.push("Shift and Backspace must retain the measured iOS width relative to letter keys.");
 }
 
@@ -344,6 +370,25 @@ if (!/className="composer-power-model" title=\{`\$\{previewPowerSetting\.effortL
 
 if (!/className="custom-key-preview"/.test(source)) {
   failures.push("Letter keys must render the iOS-style press preview without React state.");
+}
+
+if (!/\.custom-keyboard\s*\{[\s\S]{0,100}gap: 11px/.test(styles)) {
+  failures.push("Letter-row spacing must retain the measured 11px iPhone keyboard cadence.");
+}
+
+if (!/\.custom-keyboard-row\.row-2\s*\{[\s\S]{0,80}padding-inline: 4\.9%/.test(styles)) {
+  failures.push("The A-row inset must retain the measured iPhone 17 Pro alignment.");
+}
+
+if (!/\.custom-key\.is-modifier\s*\{[\s\S]{0,120}flex-grow: 1\.356/.test(styles)) {
+  failures.push("Shift and Backspace must retain the measured width that aligns the third letter row with iOS.");
+}
+
+if (
+  !/\.custom-keyboard-row\.row-3 > \.custom-key\.is-modifier:first-child\s*\{[\s\S]{0,80}margin-right: 7\.67px/.test(styles) ||
+  !/\.custom-keyboard-row\.row-3 > \.custom-key\.is-modifier:last-child\s*\{[\s\S]{0,80}margin-left: 7\.67px/.test(styles)
+) {
+  failures.push("The third row must preserve the measured native gap beside Shift and Backspace.");
 }
 
 if (!/\.custom-key-preview\s*\{[\s\S]{0,220}bottom: 56px;[\s\S]{0,120}width: calc\(100% \+ 24px\)/.test(styles)) {

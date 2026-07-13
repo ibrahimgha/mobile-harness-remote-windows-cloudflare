@@ -62,6 +62,8 @@ import {
   deleteTextBackward,
   insertTextAtSelection,
   normalizeTextSelection,
+  sentenceCapitalizedInsertion,
+  shouldCapitalizeAtSelection,
   type TextSelection
 } from "./composerEditing";
 import {
@@ -2425,14 +2427,16 @@ const customKeyboardRows: Record<CustomKeyboardMode, string[][]> = {
 };
 
 const CustomKeyboard = memo(function CustomKeyboard({
+  autoShifted,
   onText,
   onBackspace,
   onRequestComposerFocus,
   onTrace,
   onClose
 }: {
-  onText: (text: string) => void;
-  onBackspace: () => void;
+  autoShifted: boolean;
+  onText: (text: string) => boolean | undefined;
+  onBackspace: () => boolean | undefined;
   onRequestComposerFocus: () => void;
   onTrace: (event: KeyboardTraceData) => void;
   onClose: () => void;
@@ -2440,13 +2444,16 @@ const CustomKeyboard = memo(function CustomKeyboard({
   const keyboardRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<CustomKeyboardMode>("letters");
   const [shifted, setShifted] = useState(false);
+  const [automaticShifted, setAutomaticShifted] = useState(autoShifted);
   const modeRef = useRef<CustomKeyboardMode>(mode);
   const shiftedRef = useRef(shifted);
+  const automaticShiftedRef = useRef(automaticShifted);
   const backspaceDelayRef = useRef<number | undefined>(undefined);
   const backspaceRepeatRef = useRef<number | undefined>(undefined);
 
   modeRef.current = mode;
   shiftedRef.current = shifted;
+  automaticShiftedRef.current = automaticShifted;
 
   const stopBackspaceRepeat = useCallback(() => {
     window.clearTimeout(backspaceDelayRef.current);
@@ -2465,18 +2472,31 @@ const CustomKeyboard = memo(function CustomKeyboard({
     setShifted(nextShifted);
   }, []);
 
+  const setKeyboardAutomaticShifted = useCallback((nextShifted: boolean) => {
+    automaticShiftedRef.current = nextShifted;
+    setAutomaticShifted(nextShifted);
+  }, []);
+
   const pressText = useCallback((text: string) => {
-    const shouldShift = modeRef.current === "letters" && shiftedRef.current;
-    onText(shouldShift ? text.toUpperCase() : text);
-    if (shouldShift) {
+    const manualShift = modeRef.current === "letters" && shiftedRef.current;
+    const shouldShift = modeRef.current === "letters" && (manualShift || automaticShiftedRef.current);
+    const nextAutomaticShift = onText(shouldShift ? text.toUpperCase() : text);
+    if (typeof nextAutomaticShift === "boolean") {
+      setKeyboardAutomaticShifted(nextAutomaticShift);
+    }
+    if (manualShift) {
       shiftedRef.current = false;
       setShifted(false);
     }
-  }, [onText]);
+  }, [onText, setKeyboardAutomaticShifted]);
 
   const toggleShift = useCallback(() => {
+    if (automaticShiftedRef.current && !shiftedRef.current) {
+      setKeyboardAutomaticShifted(false);
+      return;
+    }
     setKeyboardShifted(!shiftedRef.current);
-  }, [setKeyboardShifted]);
+  }, [setKeyboardAutomaticShifted, setKeyboardShifted]);
 
   const toggleAlternateMode = useCallback(() => {
     setKeyboardMode(modeRef.current === "numbers" ? "symbols" : "numbers");
@@ -2510,13 +2530,20 @@ const CustomKeyboard = memo(function CustomKeyboard({
     action();
   };
 
+  const commitBackspace = useCallback(() => {
+    const nextAutomaticShift = onBackspace();
+    if (typeof nextAutomaticShift === "boolean") {
+      setKeyboardAutomaticShifted(nextAutomaticShift);
+    }
+  }, [onBackspace, setKeyboardAutomaticShifted]);
+
   const beginBackspaceRepeat = useCallback(() => {
-    onBackspace();
+    commitBackspace();
     stopBackspaceRepeat();
     backspaceDelayRef.current = window.setTimeout(() => {
-      backspaceRepeatRef.current = window.setInterval(onBackspace, 70);
+      backspaceRepeatRef.current = window.setInterval(commitBackspace, 70);
     }, 360);
-  }, [onBackspace, stopBackspaceRepeat]);
+  }, [commitBackspace, stopBackspaceRepeat]);
 
   const startBackspaceRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -2557,17 +2584,23 @@ const CustomKeyboard = memo(function CustomKeyboard({
     type TrackedTouch = {
       action: string;
       button: HTMLButtonElement;
-      source: "target" | "point";
+      source: "target" | "point" | "nearest";
       value: string;
+    };
+    type PointerCommit = TrackedTouch & {
+      committedAt: number;
+      pointerId: number;
+      touchMatched: boolean;
+      x: number;
+      y: number;
     };
 
     const activeTouches = new Map<number, TrackedTouch>();
-    const keyAtTouch = (touch: Touch): TrackedTouch | null => {
-      // Touch.target is fixed at contact start and avoids a second synchronous
-      // hit-test while animated previews and another finger may be on screen.
-      const targetHit = touch.target instanceof Element ? touch.target : null;
-      const pointHit = targetHit ? null : document.elementFromPoint(touch.clientX, touch.clientY);
-      const button = (targetHit ?? pointHit)?.closest("button[data-keyboard-action]") ?? null;
+    const activePointers = new Map<number, PointerCommit>();
+    const trackedFromButton = (
+      button: Element | null | undefined,
+      source: TrackedTouch["source"]
+    ): TrackedTouch | null => {
       if (!(button instanceof HTMLButtonElement) || !keyboard.contains(button)) {
         return null;
       }
@@ -2575,9 +2608,133 @@ const CustomKeyboard = memo(function CustomKeyboard({
       return {
         action: button.dataset.keyboardAction ?? "",
         button,
-        source: targetHit ? "target" : "point",
+        source,
         value: button.dataset.keyboardValue ?? ""
       };
+    };
+    const buttonFromTarget = (target: EventTarget | null) =>
+      target instanceof Element ? target.closest("button[data-keyboard-action]") : null;
+    const nearestKey = (x: number, y: number) => {
+      const keyboardRect = keyboard.getBoundingClientRect();
+      if (
+        x < keyboardRect.left - 12 ||
+        x > keyboardRect.right + 12 ||
+        y < keyboardRect.top - 12 ||
+        y > keyboardRect.bottom + 12
+      ) {
+        return null;
+      }
+
+      let best: { button: HTMLButtonElement; distance: number } | null = null;
+      for (const button of Array.from(keyboard.querySelectorAll<HTMLButtonElement>(".custom-keyboard-row .custom-key"))) {
+        const rect = button.getBoundingClientRect();
+        const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+        const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+        const distance = Math.hypot(dx, dy);
+        if (!best || distance < best.distance) {
+          best = { button, distance };
+        }
+      }
+
+      // Apple keyboards accept near-edge contacts, especially around A/Shift.
+      // Keep that forgiveness bounded so a footer tap cannot type a character.
+      return best && best.distance <= 18 ? best.button : null;
+    };
+    const keyAtPoint = (target: EventTarget | null, x: number, y: number): TrackedTouch | null => {
+      const targetMatch = trackedFromButton(buttonFromTarget(target), "target");
+      if (targetMatch) {
+        return targetMatch;
+      }
+
+      const pointMatch = trackedFromButton(buttonFromTarget(document.elementFromPoint(x, y)), "point");
+      return pointMatch ?? trackedFromButton(nearestKey(x, y), "nearest");
+    };
+    const keyAtTouch = (touch: Touch) => keyAtPoint(touch.target, touch.clientX, touch.clientY);
+    const consumeMatchingPointerCommit = (tracked: TrackedTouch, x: number, y: number) => {
+      const now = performance.now();
+      const match = Array.from(activePointers.values())
+        .filter(
+          (commit) =>
+            !commit.touchMatched &&
+            now - commit.committedAt <= 80 &&
+            commit.action === tracked.action &&
+            commit.value === tracked.value &&
+            Math.hypot(commit.x - x, commit.y - y) <= 20
+        )
+        .sort((a, b) => b.committedAt - a.committedAt)[0];
+
+      if (match) {
+        match.touchMatched = true;
+      }
+      return match ?? null;
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.button !== 0) {
+        return;
+      }
+
+      const tracked = keyAtPoint(event.target, event.clientX, event.clientY);
+      if (!tracked || tracked.action === "close") {
+        if (!tracked) {
+          onTrace({
+            phase: "pointer-unresolved",
+            pointerId: event.pointerId,
+            x: Math.round(event.clientX),
+            y: Math.round(event.clientY)
+          });
+        }
+        return;
+      }
+
+      const stalePointer = activePointers.get(event.pointerId);
+      if (stalePointer) {
+        stalePointer.button.classList.remove("is-touch-active");
+        if (stalePointer.action === "backspace") {
+          stopBackspaceRepeat();
+        }
+        activePointers.delete(event.pointerId);
+      }
+
+      const pointerCommit: PointerCommit = {
+        ...tracked,
+        committedAt: performance.now(),
+        pointerId: event.pointerId,
+        touchMatched: false,
+        x: event.clientX,
+        y: event.clientY
+      };
+      activePointers.set(event.pointerId, pointerCommit);
+      tracked.button.classList.add("is-touch-active");
+      if (tracked.action === "backspace") {
+        beginBackspaceRepeat();
+      } else {
+        commitTouchAction(tracked.action, tracked.value);
+      }
+      onTrace({
+        phase: "pointer-start",
+        pointerId: event.pointerId,
+        action: tracked.action,
+        value: tracked.value,
+        source: tracked.source,
+        x: Math.round(event.clientX),
+        y: Math.round(event.clientY)
+      });
+    };
+
+    const releasePointer = (event: PointerEvent) => {
+      if (event.pointerType !== "touch") {
+        return;
+      }
+      const tracked = activePointers.get(event.pointerId);
+      if (!tracked) {
+        return;
+      }
+      activePointers.delete(event.pointerId);
+      tracked.button.classList.remove("is-touch-active");
+      if (tracked.action === "backspace") {
+        stopBackspaceRepeat();
+      }
     };
 
     const releaseTouch = (touch: Touch, phase: "touch-end" | "touch-cancel") => {
@@ -2635,8 +2792,10 @@ const CustomKeyboard = memo(function CustomKeyboard({
           continue;
         }
 
+        const pointerCommit = consumeMatchingPointerCommit(tracked, touch.clientX, touch.clientY);
+
         onTrace({
-          phase: "touch-start",
+          phase: pointerCommit ? "touch-start-deduped" : "touch-start",
           identifier: touch.identifier,
           action: tracked.action,
           value: tracked.value,
@@ -2650,6 +2809,9 @@ const CustomKeyboard = memo(function CustomKeyboard({
         });
         activeTouches.set(touch.identifier, tracked);
         tracked.button.classList.add("is-touch-active");
+        if (pointerCommit) {
+          continue;
+        }
         if (tracked.action === "backspace") {
           beginBackspaceRepeat();
         } else if (tracked.action !== "close") {
@@ -2674,14 +2836,23 @@ const CustomKeyboard = memo(function CustomKeyboard({
       }
     };
 
+    keyboard.addEventListener("pointerdown", handlePointerDown);
+    keyboard.addEventListener("pointerup", releasePointer);
+    keyboard.addEventListener("pointercancel", releasePointer);
     keyboard.addEventListener("touchstart", handleTouchStart, { passive: false });
     keyboard.addEventListener("touchend", handleTouchEnd, { passive: false });
     keyboard.addEventListener("touchcancel", handleTouchCancel, { passive: false });
     return () => {
+      keyboard.removeEventListener("pointerdown", handlePointerDown);
+      keyboard.removeEventListener("pointerup", releasePointer);
+      keyboard.removeEventListener("pointercancel", releasePointer);
       keyboard.removeEventListener("touchstart", handleTouchStart);
       keyboard.removeEventListener("touchend", handleTouchEnd);
       keyboard.removeEventListener("touchcancel", handleTouchCancel);
       for (const tracked of activeTouches.values()) {
+        tracked.button.classList.remove("is-touch-active");
+      }
+      for (const tracked of activePointers.values()) {
         tracked.button.classList.remove("is-touch-active");
       }
       stopBackspaceRepeat();
@@ -2691,6 +2862,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
   useEffect(() => stopBackspaceRepeat, [stopBackspaceRepeat]);
 
   const rows = customKeyboardRows[mode];
+  const effectiveShifted = shifted || automaticShifted;
 
   return (
     <div
@@ -2716,14 +2888,14 @@ const CustomKeyboard = memo(function CustomKeyboard({
         <div className={`custom-keyboard-row row-${rowIndex + 1}`} key={`${mode}-${rowIndex}`}>
           {rowIndex === 2 && mode === "letters" ? (
             <button
-              className={`custom-key is-modifier ${shifted ? "is-active" : ""}`}
+              className={`custom-key is-modifier ${effectiveShifted ? "is-active" : ""}`}
               type="button"
               tabIndex={-1}
               data-keyboard-action="shift"
               onPointerDown={(event) => pressOnPointerDown(event, toggleShift)}
               onClick={(event) => pressOnAccessibleClick(event, toggleShift)}
-              aria-label={shifted ? "Turn off shift" : "Shift"}
-              aria-pressed={shifted}
+              aria-label={effectiveShifted ? "Turn off shift" : "Shift"}
+              aria-pressed={effectiveShifted}
             >
               <ArrowUp size={20} strokeWidth={2.2} />
             </button>
@@ -2750,10 +2922,10 @@ const CustomKeyboard = memo(function CustomKeyboard({
               onClick={(event) => pressOnAccessibleClick(event, () => pressText(key))}
               key={key}
             >
-              <span className="custom-key-label">{mode === "letters" && shifted ? key.toUpperCase() : key}</span>
+              <span className="custom-key-label">{mode === "letters" && effectiveShifted ? key.toUpperCase() : key}</span>
               {mode === "letters" ? (
                 <span className="custom-key-preview" aria-hidden="true">
-                  {shifted ? key.toUpperCase() : key}
+                  {effectiveShifted ? key.toUpperCase() : key}
                 </span>
               ) : null}
             </button>
@@ -3854,13 +4026,14 @@ export function App() {
         customKeyboardEditRef.current?.chatId === chatId
           ? customKeyboardEditRef.current
           : { chatId, text: rawTextFromComposerEditor(editor), selection: composerSelectionRef.current };
-      const mutation = insertTextAtSelection(current.text, current.selection, text);
-      const domPatched = patchComposerInsertion(editor, current.text, current.selection, text, mutation.text);
+      const insertedText = sentenceCapitalizedInsertion(current.text, current.selection, text);
+      const mutation = insertTextAtSelection(current.text, current.selection, insertedText);
+      const domPatched = patchComposerInsertion(editor, current.text, current.selection, insertedText, mutation.text);
       customKeyboardEditRef.current = { chatId, ...mutation };
       composerSelectionRef.current = mutation.selection;
       recordKeyboardTrace({
         phase: "model-insert",
-        value: text,
+        value: insertedText,
         beforeLength: current.text.length,
         afterLength: mutation.text.length,
         beforeCaret: current.selection.end,
@@ -3870,6 +4043,7 @@ export function App() {
       });
       scheduleCustomKeyboardDomSync();
       scheduleCustomKeyboardDraftSync(mutation.text);
+      return shouldCapitalizeAtSelection(mutation.text, mutation.selection);
     },
     [adoptPendingBrowserComposerSelection, recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]
   );
@@ -3900,6 +4074,7 @@ export function App() {
     });
     scheduleCustomKeyboardDomSync();
     scheduleCustomKeyboardDraftSync(mutation.text);
+    return shouldCapitalizeAtSelection(mutation.text, mutation.selection);
   }, [adoptPendingBrowserComposerSelection, recordKeyboardTrace, scheduleCustomKeyboardDomSync, scheduleCustomKeyboardDraftSync]);
   const closeCustomKeyboard = useCallback(() => {
     flushCustomKeyboardDomSync();
@@ -7708,6 +7883,15 @@ export function App() {
     });
   }
 
+  const activeCustomKeyboardModel =
+    customKeyboardEditRef.current?.chatId === selectedChatId
+      ? customKeyboardEditRef.current
+      : { text: draft, selection: composerSelectionRef.current };
+  const customKeyboardAutoShifted = shouldCapitalizeAtSelection(
+    activeCustomKeyboardModel.text,
+    activeCustomKeyboardModel.selection
+  );
+
   if (checkingAuth) {
     return (
       <main className="auth-shell">
@@ -8606,6 +8790,7 @@ export function App() {
             aria-hidden={!customKeyboardOpen}
           >
             <CustomKeyboard
+              autoShifted={customKeyboardAutoShifted}
               onText={insertCustomKeyboardText}
               onBackspace={backspaceCustomKeyboardText}
               onRequestComposerFocus={restoreCustomKeyboardComposerFocus}
