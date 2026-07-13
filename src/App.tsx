@@ -4564,8 +4564,12 @@ export function App() {
     setUsageRefreshing(true);
 
     try {
-      const [result] = await Promise.all([
-        apiFetch<UsageRefreshResult>("/api/usage/refresh", { method: "POST" }),
+      const [usage] = await Promise.all([
+        apiFetch<UsageRefreshResult>("/api/usage/refresh", { method: "POST" })
+          .then((result) => result.usage)
+          // Older running backends do not expose the on-demand refresh route.
+          // Keep tap-to-reload useful until their idle restart activates it.
+          .catch(() => apiFetch<BridgeState>("/api/state").then((result) => result.runner.usage)),
         new Promise((resolve) => window.setTimeout(resolve, 800))
       ]);
 
@@ -4575,7 +4579,7 @@ export function App() {
               ...current,
               runner: {
                 ...current.runner,
-                usage: result.usage
+                usage
               }
             }
           : current

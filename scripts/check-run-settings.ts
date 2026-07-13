@@ -24,6 +24,7 @@ assert.match(appSource, /aria-label=\{refreshing \? `Refreshing \$\{label\} usag
 assert.match(appSource, /data-testid="usage-refresh-button"/, "usage refresh keeps a stable control identity while loading");
 assert.match(appSource, /<span>Refreshing\.\.\.<\/span>/, "usage refresh exposes visible loading text");
 assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve, 800\)\)/, "usage loading feedback remains visible long enough to perceive");
+assert.match(appSource, /catch\(\(\) => apiFetch<BridgeState>\("\/api\/state"\)/, "tap refresh falls back while an older backend waits to restart");
 assert.match(
   appSource,
   /\{advancedVisible \? \([\s\S]{0,2600}<div className="run-settings-grid">[\s\S]{0,2600}\) : null\}\s*<div className="usage-meters"/,
