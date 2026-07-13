@@ -2985,17 +2985,20 @@ function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
 }
 
 function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | undefined }) {
-  const usedPercent = Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
-  const remainingPercent = 100 - usedPercent;
   const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
-  const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
-    ? label === "Weekly"
-      ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-      : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
-    : "Waiting for Codex usage data";
+  const resetExpired = Boolean(resetDate && !Number.isNaN(resetDate.getTime()) && resetDate.getTime() <= Date.now());
+  const usedPercent = resetExpired ? 0 : Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
+  const remainingPercent = 100 - usedPercent;
+  const resetLabel = resetExpired
+    ? "Ready"
+    : resetDate && !Number.isNaN(resetDate.getTime())
+      ? label === "Weekly"
+        ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+        : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
+      : "Waiting for Codex usage data";
 
   return (
-    <div className="usage-meter" title={`Resets ${resetLabel}`}>
+    <div className="usage-meter" title={resetExpired ? `${label} limit ready` : `Resets ${resetLabel}`}>
       <div className="usage-meter-label">
         <span>{label}</span>
         <strong>{usage ? `${Math.round(remainingPercent)}% left` : "--"}</strong>
@@ -3003,7 +3006,7 @@ function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | u
       <div className="usage-meter-track" role="progressbar" aria-label={`${label} remaining`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(remainingPercent)}>
         <span style={{ width: `${remainingPercent}%` }} />
       </div>
-      <small>{usage ? `Resets ${resetLabel}` : resetLabel}</small>
+      <small>{usage ? (resetExpired ? resetLabel : `Resets ${resetLabel}`) : resetLabel}</small>
     </div>
   );
 }

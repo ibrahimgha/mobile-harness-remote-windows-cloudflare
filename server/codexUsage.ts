@@ -35,6 +35,14 @@ function normalizeUsageWindow(window: RateLimitWindow | undefined) {
   };
 }
 
+function expireUsageWindow(window: CodexUsage["fiveHour"]) {
+  if (window?.resetsAt && window.resetsAt <= Math.floor(Date.now() / 1000)) {
+    return { ...window, usedPercent: 0 };
+  }
+
+  return window;
+}
+
 async function sessionFiles(root: string): Promise<Array<{ path: string; mtimeMs: number }>> {
   const entries = await fs.readdir(root, { withFileTypes: true });
   const nested = await Promise.all(
@@ -117,8 +125,8 @@ export async function refreshCodexUsage() {
     if (nextFiveHour || nextWeekly) {
       cachedUsage = {
         updatedAt: newestUsageTimestamp ?? cachedUsage?.updatedAt ?? new Date(newest.mtimeMs).toISOString(),
-        fiveHour: nextFiveHour,
-        weekly: nextWeekly
+        fiveHour: expireUsageWindow(nextFiveHour),
+        weekly: expireUsageWindow(nextWeekly)
       };
       return cachedUsage;
     }

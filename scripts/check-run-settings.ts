@@ -16,6 +16,12 @@ assert.match(
 );
 assert.match(
   appSource,
+  /const resetExpired = Boolean\([\s\S]{0,180}resetDate\.getTime\(\) <= Date\.now\(\)[\s\S]{0,180}resetExpired \? 0/,
+  "expired usage meters render as fully available"
+);
+assert.match(appSource, /resetExpired\s*\? "Ready"/, "expired usage meters show Ready instead of a stale reset time");
+assert.match(
+  appSource,
   /\{advancedVisible \? \([\s\S]{0,2600}<div className="run-settings-grid">[\s\S]{0,2600}\) : null\}\s*<div className="usage-meters"/,
   "usage meters remain outside the Advanced-only settings content"
 );
