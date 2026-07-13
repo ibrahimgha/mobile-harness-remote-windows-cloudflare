@@ -731,6 +731,12 @@ function pushState() {
   }
 }
 
+async function refreshUsageAndPushState() {
+  const usage = await refreshCodexUsage();
+  pushState();
+  return usage;
+}
+
 function maintainSockets() {
   for (const client of wss.clients) {
     const socket = client as LiveWebSocket;
@@ -916,6 +922,11 @@ app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState());
+});
+
+app.post("/api/usage/refresh", requireControlAuth, async (_req, res) => {
+  const usage = await refreshUsageAndPushState();
+  res.json({ ok: true, usage });
 });
 
 app.patch("/api/run-settings", requireControlAuth, (req, res) => {
@@ -2206,10 +2217,6 @@ wss.on("connection", (socket: WebSocket) => {
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
 server.on("close", () => clearInterval(socketHeartbeat));
-const refreshUsageAndPushState = async () => {
-  await refreshCodexUsage();
-  pushState();
-};
 void refreshUsageAndPushState();
 const usageRefreshTimer = setInterval(() => void refreshUsageAndPushState(), usageRefreshIntervalMs);
 usageRefreshTimer.unref();

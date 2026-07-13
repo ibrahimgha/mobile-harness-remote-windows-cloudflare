@@ -20,12 +20,17 @@ assert.match(
   "expired usage meters render as fully available"
 );
 assert.match(appSource, /resetExpired\s*\? "Ready"/, "expired usage meters show Ready instead of a stale reset time");
+assert.match(appSource, /aria-label=\{refreshing \? `Refreshing \$\{label\} usage` : `Refresh \$\{label\} usage`\}/, "five-hour usage is an explicit refresh control");
+assert.match(appSource, /data-testid="usage-refresh-button"/, "usage refresh keeps a stable control identity while loading");
+assert.match(appSource, /<span>Refreshing\.\.\.<\/span>/, "usage refresh exposes visible loading text");
+assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve, 800\)\)/, "usage loading feedback remains visible long enough to perceive");
 assert.match(
   appSource,
   /\{advancedVisible \? \([\s\S]{0,2600}<div className="run-settings-grid">[\s\S]{0,2600}\) : null\}\s*<div className="usage-meters"/,
   "usage meters remain outside the Advanced-only settings content"
 );
 assert.match(serverSource, /const usageRefreshIntervalMs = 60_000;/, "usage refreshes once per minute");
+assert.match(serverSource, /app\.post\("\/api\/usage\/refresh", requireControlAuth/, "tap refresh uses an authenticated server endpoint");
 assert.match(
   serverSource,
   /setInterval\(\(\) => void refreshUsageAndPushState\(\), usageRefreshIntervalMs\)/,

@@ -637,6 +637,29 @@ p {
   min-width: 0;
 }
 
+.usage-meter-button {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.usage-meter-button:hover:not(:disabled),
+.usage-meter-button:focus-visible {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.usage-meter-button:disabled {
+  cursor: wait;
+  opacity: 1;
+}
+
 .usage-meter-label {
   display: flex;
   align-items: center;
@@ -650,6 +673,20 @@ p {
 .usage-meter-label strong {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+.usage-meter-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.usage-meter-refresh-icon {
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 
 .usage-meter-track {

@@ -106,6 +106,11 @@ type CodexUsage = {
   weekly?: CodexUsageWindow;
 };
 
+type UsageRefreshResult = {
+  ok: boolean;
+  usage: CodexUsage | null;
+};
+
 type CodexRunSettings = {
   model: string;
   reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -2984,7 +2989,17 @@ function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
   return `${setting.modelLabel} ${setting.effortLabel}`;
 }
 
-function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | undefined }) {
+function UsageBar({
+  label,
+  usage,
+  refreshing = false,
+  onRefresh
+}: {
+  label: string;
+  usage: CodexUsageWindow | undefined;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+}) {
   const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
   const resetExpired = Boolean(resetDate && !Number.isNaN(resetDate.getTime()) && resetDate.getTime() <= Date.now());
   const usedPercent = resetExpired ? 0 : Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
@@ -2996,17 +3011,55 @@ function UsageBar({ label, usage }: { label: string; usage: CodexUsageWindow | u
         ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
         : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
       : "Waiting for Codex usage data";
-
-  return (
-    <div className="usage-meter" title={resetExpired ? `${label} limit ready` : `Resets ${resetLabel}`}>
+  const title = resetExpired ? `${label} limit ready` : `Resets ${resetLabel}`;
+  const contents = (
+    <>
       <div className="usage-meter-label">
         <span>{label}</span>
-        <strong>{usage ? `${Math.round(remainingPercent)}% left` : "--"}</strong>
+        <strong className="usage-meter-status" aria-live="polite">
+          {refreshing ? (
+            <>
+              <Loader2 className="spin" size={12} aria-hidden="true" />
+              <span>Refreshing...</span>
+            </>
+          ) : (
+            <>
+              <span>{usage ? `${Math.round(remainingPercent)}% left` : "--"}</span>
+              {onRefresh ? <RefreshCw className="usage-meter-refresh-icon" size={12} aria-hidden="true" /> : null}
+            </>
+          )}
+        </strong>
       </div>
-      <div className="usage-meter-track" role="progressbar" aria-label={`${label} remaining`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(remainingPercent)}>
+      <div
+        className="usage-meter-track"
+        role="progressbar"
+        aria-label={`${label} remaining`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(remainingPercent)}
+      >
         <span style={{ width: `${remainingPercent}%` }} />
       </div>
-      <small>{usage ? (resetExpired ? resetLabel : `Resets ${resetLabel}`) : resetLabel}</small>
+      <small>{refreshing ? "Reading latest limits..." : usage ? (resetExpired ? resetLabel : `Resets ${resetLabel}`) : resetLabel}</small>
+    </>
+  );
+
+  return onRefresh ? (
+    <button
+      className="usage-meter usage-meter-button"
+      type="button"
+      data-testid="usage-refresh-button"
+      disabled={refreshing}
+      aria-busy={refreshing}
+      aria-label={refreshing ? `Refreshing ${label} usage` : `Refresh ${label} usage`}
+      title={`${title}. Tap to refresh.`}
+      onClick={onRefresh}
+    >
+      {contents}
+    </button>
+  ) : (
+    <div className="usage-meter" title={title}>
+      {contents}
     </div>
   );
 }
@@ -3015,15 +3068,19 @@ function RunSettingsPanel({
   settings,
   options,
   usage,
+  usageRefreshing = false,
   busy,
   onChange,
+  onRefreshUsage,
   compactOnly = false
 }: {
   settings?: CodexRunSettings;
   options?: CodexRunSettingsOptions;
   usage?: CodexUsage | null;
+  usageRefreshing?: boolean;
   busy: boolean;
   onChange: (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => void;
+  onRefreshUsage?: () => void;
   compactOnly?: boolean;
 }) {
   const current = settings ?? {
@@ -3252,7 +3309,7 @@ function RunSettingsPanel({
       ) : null}
 
       <div className="usage-meters" aria-label="Codex usage limits">
-        <UsageBar label="5 hours" usage={usage?.fiveHour} />
+        <UsageBar label="5 hours" usage={usage?.fiveHour} refreshing={usageRefreshing} onRefresh={onRefreshUsage} />
         <UsageBar label="Weekly" usage={usage?.weekly} />
       </div>
     </section>
@@ -3403,6 +3460,7 @@ export function App() {
   const [notificationStatus, setNotificationStatus] = useState<RemoteNotificationState>("default");
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [chatTurnLimits, setChatTurnLimits] = useState<Record<string, number>>({});
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarOrderSnapshot, setSidebarOrderSnapshot] = useState<SidebarOrderSnapshot | null>(null);
@@ -4497,6 +4555,37 @@ export function App() {
     },
     [apiFetch]
   );
+
+  const refreshUsage = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    setUsageRefreshing(true);
+
+    try {
+      const [result] = await Promise.all([
+        apiFetch<UsageRefreshResult>("/api/usage/refresh", { method: "POST" }),
+        new Promise((resolve) => window.setTimeout(resolve, 800))
+      ]);
+
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              runner: {
+                ...current.runner,
+                usage: result.usage
+              }
+            }
+          : current
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not refresh usage limits");
+    } finally {
+      setUsageRefreshing(false);
+    }
+  }, [apiFetch, authenticated]);
 
   const sendTestNotification = useCallback(async () => {
     const result = await apiFetch<PushTestResult>("/api/notifications/test", {
@@ -7671,8 +7760,10 @@ export function App() {
           settings={state?.runner.settings}
           options={state?.runner.settingsOptions}
           usage={state?.runner.usage}
+          usageRefreshing={usageRefreshing}
           busy={settingsSaving}
           onChange={updateRunSettings}
+          onRefreshUsage={() => void refreshUsage()}
         />
 
         <label className="sidebar-search" aria-label="Search projects and chats">
