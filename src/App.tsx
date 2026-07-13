@@ -3002,16 +3002,20 @@ function UsageBar({
 }) {
   const resetDate = usage?.resetsAt ? new Date(usage.resetsAt * 1000) : null;
   const resetExpired = Boolean(resetDate && !Number.isNaN(resetDate.getTime()) && resetDate.getTime() <= Date.now());
-  const usedPercent = resetExpired ? 0 : Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
+  const usedPercent = Math.min(100, Math.max(0, usage?.usedPercent ?? 0));
   const remainingPercent = 100 - usedPercent;
   const resetLabel = resetExpired
-    ? "Ready"
+    ? "Last reported"
     : resetDate && !Number.isNaN(resetDate.getTime())
       ? label === "Weekly"
         ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
         : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
       : "Waiting for Codex usage data";
-  const title = resetExpired ? `${label} limit ready` : `Resets ${resetLabel}`;
+  const title = !usage
+    ? `${label} usage unavailable`
+    : resetExpired
+      ? `${label}: ${Math.round(remainingPercent)}% left (last reported)`
+      : `Resets ${resetLabel}`;
   const contents = (
     <>
       <div className="usage-meter-label">
@@ -3024,7 +3028,7 @@ function UsageBar({
             </>
           ) : (
             <>
-              <span>{usage ? `${Math.round(remainingPercent)}% left` : "--"}</span>
+              <span>{usage ? `${Math.round(remainingPercent)}% left` : "Unavailable"}</span>
               {onRefresh ? <RefreshCw className="usage-meter-refresh-icon" size={12} aria-hidden="true" /> : null}
             </>
           )}
@@ -3040,7 +3044,17 @@ function UsageBar({
       >
         <span style={{ width: `${remainingPercent}%` }} />
       </div>
-      <small>{refreshing ? "Reading latest limits..." : usage ? (resetExpired ? resetLabel : `Resets ${resetLabel}`) : resetLabel}</small>
+      <small>
+        {refreshing
+          ? "Measuring with Codex..."
+          : usage
+            ? resetExpired
+              ? resetLabel
+              : `Resets ${resetLabel}`
+            : label === "5 hours"
+              ? "Not provided by Codex"
+              : resetLabel}
+      </small>
     </>
   );
 

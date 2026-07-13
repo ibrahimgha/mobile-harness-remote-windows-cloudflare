@@ -32,9 +32,28 @@ fs.writeFileSync(
   "utf8"
 );
 process.env.CODEX_SESSIONS_DIR = tempDir;
+process.env.CODEX_USAGE_SOURCE = "sessions";
 
 try {
-  const { refreshCodexUsage } = await import("../server/codexUsage.js");
+  const { refreshCodexUsage, usageFromAccountRateLimits } = await import("../server/codexUsage.js");
+  const liveMeasurement = usageFromAccountRateLimits({
+    rateLimits: {
+      primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: futureFiveHourReset },
+      secondary: { usedPercent: 44, windowDurationMins: 10080, resetsAt: futureWeeklyReset }
+    }
+  });
+  assert.deepEqual(liveMeasurement?.fiveHour, { usedPercent: 37, resetsAt: futureFiveHourReset });
+  assert.deepEqual(liveMeasurement?.weekly, { usedPercent: 44, resetsAt: futureWeeklyReset });
+
+  const noFiveHourMeasurement = usageFromAccountRateLimits({
+    rateLimits: {
+      primary: { usedPercent: 38, windowDurationMins: 10080, resetsAt: futureWeeklyReset },
+      secondary: null
+    }
+  });
+  assert.equal(noFiveHourMeasurement?.fiveHour, undefined, "a live refresh clears an omitted five-hour bucket");
+  assert.deepEqual(noFiveHourMeasurement?.weekly, { usedPercent: 38, resetsAt: futureWeeklyReset });
+
   const usage = await refreshCodexUsage();
 
   assert.deepEqual(usage?.fiveHour, { usedPercent: 19, resetsAt: futureFiveHourReset });
@@ -66,8 +85,8 @@ try {
   const expiredRefresh = await refreshCodexUsage();
   assert.deepEqual(
     expiredRefresh?.fiveHour,
-    { usedPercent: 0, resetsAt: expiredReset },
-    "an expired five-hour window is ready rather than showing stale usage"
+    { usedPercent: 81, resetsAt: expiredReset },
+    "an expired reset timestamp does not invent a fully available five-hour allowance"
   );
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });

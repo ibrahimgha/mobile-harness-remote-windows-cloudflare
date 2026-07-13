@@ -925,7 +925,8 @@ app.get("/api/state", requireControlAuth, (_req, res) => {
 });
 
 app.post("/api/usage/refresh", requireControlAuth, async (_req, res) => {
-  const usage = await refreshUsageAndPushState();
+  const usage = await refreshCodexUsage({ force: true });
+  pushState();
   res.json({ ok: true, usage });
 });
 

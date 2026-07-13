@@ -16,13 +16,15 @@ assert.match(
 );
 assert.match(
   appSource,
-  /const resetExpired = Boolean\([\s\S]{0,180}resetDate\.getTime\(\) <= Date\.now\(\)[\s\S]{0,180}resetExpired \? 0/,
-  "expired usage meters render as fully available"
+  /const usedPercent = Math\.min\(100, Math\.max\(0, usage\?\.usedPercent \?\? 0\)\)/,
+  "usage meters always render Codex's measured percentage"
 );
-assert.match(appSource, /resetExpired\s*\? "Ready"/, "expired usage meters show Ready instead of a stale reset time");
+assert.match(appSource, /resetExpired\s*\? "Last reported"/, "expired reset timestamps are labeled without inventing usage");
 assert.match(appSource, /aria-label=\{refreshing \? `Refreshing \$\{label\} usage` : `Refresh \$\{label\} usage`\}/, "five-hour usage is an explicit refresh control");
 assert.match(appSource, /data-testid="usage-refresh-button"/, "usage refresh keeps a stable control identity while loading");
 assert.match(appSource, /<span>Refreshing\.\.\.<\/span>/, "usage refresh exposes visible loading text");
+assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes the live account measurement");
+assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve, 800\)\)/, "usage loading feedback remains visible long enough to perceive");
 assert.match(appSource, /catch\(\(\) => apiFetch<BridgeState>\("\/api\/state"\)/, "tap refresh falls back while an older backend waits to restart");
 assert.match(
@@ -31,6 +33,7 @@ assert.match(
   "usage meters remain outside the Advanced-only settings content"
 );
 assert.match(serverSource, /const usageRefreshIntervalMs = 60_000;/, "usage refreshes once per minute");
+assert.match(serverSource, /refreshCodexUsage\(\{ force: true \}\)/, "tap refresh forces a fresh Codex account measurement");
 assert.match(serverSource, /app\.post\("\/api\/usage\/refresh", requireControlAuth/, "tap refresh uses an authenticated server endpoint");
 assert.match(
   serverSource,

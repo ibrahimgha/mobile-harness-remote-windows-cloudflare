@@ -1,7 +1,9 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { resolveCodexCliPath } from "./codexCli.js";
 import type { CodexUsage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
@@ -24,6 +26,22 @@ type RateLimitRecord = {
   };
 };
 
+type AppServerRateLimitWindow = {
+  usedPercent?: number;
+  windowDurationMins?: number | null;
+  resetsAt?: number | null;
+};
+
+type AppServerRateLimitSnapshot = {
+  primary?: AppServerRateLimitWindow | null;
+  secondary?: AppServerRateLimitWindow | null;
+};
+
+export type AccountRateLimitsResponse = {
+  rateLimits?: AppServerRateLimitSnapshot | null;
+  rateLimitsByLimitId?: Record<string, AppServerRateLimitSnapshot | undefined> | null;
+};
+
 function normalizeUsageWindow(window: RateLimitWindow | undefined) {
   if (!window || typeof window.used_percent !== "number") {
     return undefined;
@@ -35,12 +53,116 @@ function normalizeUsageWindow(window: RateLimitWindow | undefined) {
   };
 }
 
-function expireUsageWindow(window: CodexUsage["fiveHour"]) {
-  if (window?.resetsAt && window.resetsAt <= Math.floor(Date.now() / 1000)) {
-    return { ...window, usedPercent: 0 };
+function normalizeAppServerWindow(window: AppServerRateLimitWindow | undefined) {
+  if (!window || typeof window.usedPercent !== "number") {
+    return undefined;
   }
 
-  return window;
+  return {
+    usedPercent: window.usedPercent,
+    resetsAt: typeof window.resetsAt === "number" ? window.resetsAt : undefined
+  };
+}
+
+export function usageFromAccountRateLimits(response: AccountRateLimitsResponse): CodexUsage | null {
+  const snapshot = response.rateLimitsByLimitId?.codex ?? response.rateLimits;
+  if (!snapshot) {
+    return null;
+  }
+
+  const windows = [snapshot.primary, snapshot.secondary].filter(
+    (window): window is AppServerRateLimitWindow => Boolean(window)
+  );
+  const fiveHour = normalizeAppServerWindow(windows.find((window) => window.windowDurationMins === 300));
+  const weekly = normalizeAppServerWindow(windows.find((window) => window.windowDurationMins === 10080));
+  if (!fiveHour && !weekly) {
+    return null;
+  }
+
+  return {
+    updatedAt: new Date().toISOString(),
+    fiveHour,
+    weekly
+  };
+}
+
+function readAccountRateLimits(): Promise<AccountRateLimitsResponse> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolveCodexCliPath(), ["app-server", "--listen", "stdio://"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (error?: Error, response?: AccountRateLimitsResponse) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      child.kill();
+      if (error) {
+        reject(error);
+      } else {
+        resolve(response ?? {});
+      }
+    };
+    const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    const timeout = setTimeout(() => finish(new Error("Codex rate limit request timed out")), 15_000);
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-2000);
+    });
+    child.on("error", (error) => finish(error));
+    child.on("exit", (code) => {
+      if (!settled) {
+        finish(new Error(`Codex app-server exited before returning rate limits (${code ?? "unknown"}): ${stderr}`));
+      }
+    });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      let newline = stdout.indexOf("\n");
+      while (newline >= 0) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        newline = stdout.indexOf("\n");
+        if (!line) {
+          continue;
+        }
+
+        try {
+          const message = JSON.parse(line) as {
+            id?: number;
+            result?: AccountRateLimitsResponse;
+            error?: { message?: string };
+          };
+          if (message.id === 1) {
+            send({ method: "initialized" });
+            send({ method: "account/rateLimits/read", id: 2 });
+          } else if (message.id === 2) {
+            if (message.error) {
+              finish(new Error(message.error.message ?? "Codex rate limit request failed"));
+            } else {
+              finish(undefined, message.result);
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    });
+
+    send({
+      method: "initialize",
+      id: 1,
+      params: {
+        clientInfo: { name: "codex-remote", title: "Codex Remote", version: "0.1.0" },
+        capabilities: null
+      }
+    });
+  });
 }
 
 async function sessionFiles(root: string): Promise<Array<{ path: string; mtimeMs: number }>> {
@@ -74,7 +196,19 @@ async function readTail(filePath: string) {
   }
 }
 
-export async function refreshCodexUsage() {
+export async function refreshCodexUsage(_options: { force?: boolean } = {}) {
+  if (process.env.CODEX_USAGE_SOURCE !== "sessions") {
+    try {
+      const measuredUsage = usageFromAccountRateLimits(await readAccountRateLimits());
+      if (measuredUsage) {
+        cachedUsage = measuredUsage;
+        return cachedUsage;
+      }
+    } catch {
+      // Older Codex builds may not expose account/rateLimits/read; retain the session-log fallback.
+    }
+  }
+
   try {
     const files = await sessionFiles(sessionsRoot);
     const newest = files.sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
@@ -125,8 +259,8 @@ export async function refreshCodexUsage() {
     if (nextFiveHour || nextWeekly) {
       cachedUsage = {
         updatedAt: newestUsageTimestamp ?? cachedUsage?.updatedAt ?? new Date(newest.mtimeMs).toISOString(),
-        fiveHour: expireUsageWindow(nextFiveHour),
-        weekly: expireUsageWindow(nextWeekly)
+        fiveHour: nextFiveHour,
+        weekly: nextWeekly
       };
       return cachedUsage;
     }

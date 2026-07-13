@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createWriteStream, existsSync, readdirSync, statSync, type Stats } from "node:fs";
+import { createWriteStream, existsSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveCodexCliPath } from "./codexCli.js";
 import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus } from "./types.js";
 
 type CodexRunnerOptions = {
@@ -48,60 +49,6 @@ const stdoutLineBufferLimit = Math.max(
 );
 const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
 const recoveredLogJobsLimit = Number(process.env.CODEX_RECOVERED_LOG_JOBS_LIMIT ?? 20);
-
-function resolveCliPath(): string {
-  const configured = process.env.CODEX_CLI_PATH?.trim();
-  if (configured) {
-    return configured;
-  }
-
-  const executableName = process.platform === "win32" ? "codex.exe" : "codex";
-  const localAppDataCandidates =
-    process.platform === "win32"
-      ? [
-          process.env.LOCALAPPDATA,
-          process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "AppData", "Local") : undefined,
-          path.join(os.homedir(), "AppData", "Local")
-        ]
-      : [process.env.LOCALAPPDATA];
-
-  for (const localAppData of localAppDataCandidates) {
-    if (!localAppData) {
-      continue;
-    }
-
-    const binDir = path.join(localAppData, "OpenAI", "Codex", "bin");
-    const directCli = path.join(binDir, executableName);
-
-    if (existsSync(directCli)) {
-      return directCli;
-    }
-
-    const nestedCli = newestNestedCodexCli(binDir, executableName);
-    if (nestedCli) {
-      return nestedCli;
-    }
-  }
-
-  return "codex";
-}
-
-function newestNestedCodexCli(binDir: string, executableName: string): string | null {
-  let candidates: Array<{ filePath: string; mtimeMs: number }> = [];
-
-  try {
-    candidates = readdirSync(binDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(binDir, entry.name, executableName))
-      .filter((filePath) => existsSync(filePath))
-      .map((filePath) => ({ filePath, mtimeMs: statSync(filePath).mtimeMs }))
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  } catch {
-    return null;
-  }
-
-  return candidates[0]?.filePath ?? null;
-}
 
 function safeSegment(value: string): string {
   return value.replace(/[^a-z0-9_.-]/gi, "-").slice(0, 120);
@@ -304,7 +251,7 @@ export class CodexRunner {
   }
 
   get cliPath() {
-    return resolveCliPath();
+    return resolveCodexCliPath();
   }
 
   get activeJobs() {
