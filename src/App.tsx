@@ -7476,7 +7476,11 @@ export function App() {
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
     if (!options.preserveDraft) {
-      setDraftForChat(targetChatId, "");
+      // Hide the submitted text immediately, but keep its persisted draft until
+      // the server acknowledges it so a PWA close during upload remains recoverable.
+      setDraftsByChat((current) =>
+        current[targetChatId] === "" ? current : { ...current, [targetChatId]: "" }
+      );
       if (selectedChatIdRef.current === targetChatId) {
         latestDraftRef.current = "";
         setComposerExpanded(false);
@@ -7537,6 +7541,9 @@ export function App() {
         setNotice(result.message ?? "Queued on server for this chat");
       }
 
+      if (!options.preserveDraft) {
+        setDraftForChat(targetChatId, "");
+      }
       if (!options.voiceNote) {
         setPendingAttachments([]);
         setAttachmentUploadStatuses({});

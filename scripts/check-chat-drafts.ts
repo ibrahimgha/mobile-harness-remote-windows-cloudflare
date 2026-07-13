@@ -56,9 +56,11 @@ const sendPromptSource = appSource.slice(
   appSource.indexOf("async function sendPrompt("),
   appSource.indexOf("function sendPromptFromPointer")
 );
-const immediateClearIndex = sendPromptSource.indexOf('setDraftForChat(targetChatId, "")');
+const immediateClearIndex = sendPromptSource.indexOf("setDraftsByChat((current)");
 const submitRequestIndex = sendPromptSource.indexOf("apiFetch<PromptSubmitResult>");
 assert.ok(immediateClearIndex >= 0 && immediateClearIndex < submitRequestIndex, "typed prompts clear from the composer before waiting for server acknowledgement");
+const persistedClearIndex = sendPromptSource.indexOf('setDraftForChat(targetChatId, "")');
+assert.ok(persistedClearIndex > submitRequestIndex, "persisted drafts remain recoverable until the server acknowledges the prompt");
 assert.match(
   sendPromptSource,
   /catch \(error\) \{[\s\S]{0,500}setDraftForChat\(targetChatId, outgoingDraft\)/,
