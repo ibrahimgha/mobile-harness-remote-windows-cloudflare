@@ -52,3 +52,15 @@ assert.match(appSource, /const attachComposerEditor = useCallback[\s\S]*syncComp
 assert.match(appSource, /ref=\{attachComposerEditor\}/);
 assert.match(appSource, /preserveDraft:\s*true/);
 assert.doesNotMatch(appSource, /setDraft\(cleaned\)/);
+const sendPromptSource = appSource.slice(
+  appSource.indexOf("async function sendPrompt("),
+  appSource.indexOf("function sendPromptFromPointer")
+);
+const immediateClearIndex = sendPromptSource.indexOf('setDraftForChat(targetChatId, "")');
+const submitRequestIndex = sendPromptSource.indexOf("apiFetch<PromptSubmitResult>");
+assert.ok(immediateClearIndex >= 0 && immediateClearIndex < submitRequestIndex, "typed prompts clear from the composer before waiting for server acknowledgement");
+assert.match(
+  sendPromptSource,
+  /catch \(error\) \{[\s\S]{0,500}setDraftForChat\(targetChatId, outgoingDraft\)/,
+  "failed prompt submissions restore the exact outgoing draft"
+);

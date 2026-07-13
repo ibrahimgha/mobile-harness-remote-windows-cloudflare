@@ -7475,6 +7475,25 @@ export function App() {
     setSending(true);
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
+    if (!options.preserveDraft) {
+      setDraftForChat(targetChatId, "");
+      if (selectedChatIdRef.current === targetChatId) {
+        latestDraftRef.current = "";
+        setComposerExpanded(false);
+
+        if (composerEditorRef.current) {
+          syncComposerEditorText(composerEditorRef.current, "");
+          composerSelectionRef.current = { start: 0, end: 0 };
+          customKeyboardEditRef.current = {
+            chatId: targetChatId,
+            text: "",
+            selection: composerSelectionRef.current
+          };
+          customKeyboardDraftPresenceRef.current = false;
+        }
+      }
+    }
+
     try {
       const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(targetChatId) : [];
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
@@ -7518,19 +7537,6 @@ export function App() {
         setNotice(result.message ?? "Queued on server for this chat");
       }
 
-      if (!options.preserveDraft) {
-        setDraftForChat(targetChatId, "");
-        if (selectedChatIdRef.current === targetChatId && composerEditorRef.current) {
-          syncComposerEditorText(composerEditorRef.current, "");
-          composerSelectionRef.current = { start: 0, end: 0 };
-          customKeyboardEditRef.current = {
-            chatId: targetChatId,
-            text: "",
-            selection: composerSelectionRef.current
-          };
-          customKeyboardDraftPresenceRef.current = false;
-        }
-      }
       if (!options.voiceNote) {
         setPendingAttachments([]);
         setAttachmentUploadStatuses({});
@@ -7538,6 +7544,25 @@ export function App() {
       void loadState();
       void loadChatJobs(targetChatId);
     } catch (error) {
+      if (!options.preserveDraft) {
+        setDraftForChat(targetChatId, outgoingDraft);
+        if (selectedChatIdRef.current === targetChatId) {
+          latestDraftRef.current = outgoingDraft;
+
+          if (composerEditorRef.current) {
+            syncComposerEditorText(composerEditorRef.current, outgoingDraft);
+            const end = outgoingDraft.length;
+            composerSelectionRef.current = { start: end, end };
+            customKeyboardEditRef.current = {
+              chatId: targetChatId,
+              text: outgoingDraft,
+              selection: composerSelectionRef.current
+            };
+            customKeyboardDraftPresenceRef.current = Boolean(outgoingDraft.trim());
+            setComposerExpanded(composerShouldExpand(composerEditorRef.current));
+          }
+        }
+      }
       if (!options.voiceNote) {
         setPendingAttachments(previousAttachments);
       }
