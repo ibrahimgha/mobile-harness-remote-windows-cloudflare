@@ -153,10 +153,15 @@ if (
 
 if (
   !/const handlePointerDown = \(event: PointerEvent\)[\s\S]{0,2200}commitTouchAction\(tracked\.action, tracked\.value\)/.test(source) ||
-  !/consumeMatchingPointerCommit\(tracked, touch\.clientX, touch\.clientY\)/.test(source) ||
+  !/matchingPointerCommit\(tracked, touch\.identifier\)/.test(source) ||
+  !/activePointers\.get\(identifier\)/.test(source) ||
   !/"touch-start-deduped"/.test(source)
 ) {
-  failures.push("Touch keys must use a deduplicated pointerdown fallback when WebKit omits touchstart during a rapid burst.");
+  failures.push("Touch keys must deduplicate pointerdown by WebKit's exact contact ID.");
+}
+
+if (/committedAt <= 80|Math\.hypot\(commit\.x - x, commit\.y - y\)/.test(source)) {
+  failures.push("Repeated A and Space contacts must not be deduplicated by fuzzy time-and-position matching.");
 }
 
 if (

@@ -2588,11 +2588,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
       value: string;
     };
     type PointerCommit = TrackedTouch & {
-      committedAt: number;
       pointerId: number;
-      touchMatched: boolean;
-      x: number;
-      y: number;
     };
 
     const activeTouches = new Map<number, TrackedTouch>();
@@ -2650,23 +2646,20 @@ const CustomKeyboard = memo(function CustomKeyboard({
       return pointMatch ?? trackedFromButton(nearestKey(x, y), "nearest");
     };
     const keyAtTouch = (touch: Touch) => keyAtPoint(touch.target, touch.clientX, touch.clientY);
-    const consumeMatchingPointerCommit = (tracked: TrackedTouch, x: number, y: number) => {
-      const now = performance.now();
-      const match = Array.from(activePointers.values())
-        .filter(
-          (commit) =>
-            !commit.touchMatched &&
-            now - commit.committedAt <= 80 &&
-            commit.action === tracked.action &&
-            commit.value === tracked.value &&
-            Math.hypot(commit.x - x, commit.y - y) <= 20
-        )
-        .sort((a, b) => b.committedAt - a.committedAt)[0];
-
-      if (match) {
-        match.touchMatched = true;
+    const matchingPointerCommit = (tracked: TrackedTouch, identifier: number) => {
+      const pointerCommit = activePointers.get(identifier);
+      if (
+        !pointerCommit ||
+        pointerCommit.action !== tracked.action ||
+        pointerCommit.value !== tracked.value
+      ) {
+        return null;
       }
-      return match ?? null;
+
+      // WebKit gives PointerEvent.pointerId and Touch.identifier the same contact
+      // ID. Never dedupe by time and position: an omitted pointerdown followed by
+      // a fast repeat on A or Space can occupy the same coordinates within 80ms.
+      return pointerCommit;
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -2698,11 +2691,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
 
       const pointerCommit: PointerCommit = {
         ...tracked,
-        committedAt: performance.now(),
-        pointerId: event.pointerId,
-        touchMatched: false,
-        x: event.clientX,
-        y: event.clientY
+        pointerId: event.pointerId
       };
       activePointers.set(event.pointerId, pointerCommit);
       tracked.button.classList.add("is-touch-active");
@@ -2792,7 +2781,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
           continue;
         }
 
-        const pointerCommit = consumeMatchingPointerCommit(tracked, touch.clientX, touch.clientY);
+        const pointerCommit = matchingPointerCommit(tracked, touch.identifier);
 
         onTrace({
           phase: pointerCommit ? "touch-start-deduped" : "touch-start",
