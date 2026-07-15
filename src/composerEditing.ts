@@ -56,8 +56,8 @@ export function correctAlternatingSingleKeyCadence(
     return insertedText;
   }
 
-  // iOS can report the previous A/Space key for a new contact during very fast alternating drills.
-  const match = text.match(/(?:^|[.!?\n]\s*)([a-z])(?: \1){2,}( ?)$/i);
+  // iOS can omit the opposite A/Space contact during very fast alternating drills.
+  const match = text.match(/(?:^|[.!?\n]\s*)([a-z])(?: \1)+( ?)$/i);
   if (!match) {
     return insertedText;
   }
@@ -69,7 +69,13 @@ export function correctAlternatingSingleKeyCadence(
   }
 
   const expectedInsertion = text.endsWith(" ") ? repeatedKey : " ";
-  return normalizedInsertion === expectedInsertion ? insertedText : expectedInsertion;
+  if (normalizedInsertion === expectedInsertion) {
+    return insertedText;
+  }
+
+  // The repeated contact is still real. Restore the omitted opposite contact
+  // before it so the output does not become one character shorter each time.
+  return `${expectedInsertion}${insertedText}`;
 }
 
 function previousCodePointStart(text: string, offset: number) {

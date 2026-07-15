@@ -2611,6 +2611,13 @@ const CustomKeyboard = memo(function CustomKeyboard({
     };
     const buttonFromTarget = (target: EventTarget | null) =>
       target instanceof Element ? target.closest("button[data-keyboard-action]") : null;
+    const canResolveDocumentContact = (target: EventTarget | null, x: number, y: number) => {
+      if (target instanceof Node && keyboard.contains(target)) {
+        return true;
+      }
+      const rect = keyboard.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
     const nearestKey = (x: number, y: number) => {
       const keyboardRect = keyboard.getBoundingClientRect();
       if (
@@ -2623,6 +2630,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
       }
 
       let best: { button: HTMLButtonElement; distance: number } | null = null;
+      let lowerRowEdge: { button: HTMLButtonElement; distance: number } | null = null;
       for (const button of Array.from(keyboard.querySelectorAll<HTMLButtonElement>(".custom-keyboard-row .custom-key"))) {
         const rect = button.getBoundingClientRect();
         const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
@@ -2631,11 +2639,15 @@ const CustomKeyboard = memo(function CustomKeyboard({
         if (!best || distance < best.distance) {
           best = { button, distance };
         }
+        if (dx === 0 && y < rect.top && dy <= 12 && (!lowerRowEdge || dy < lowerRowEdge.distance)) {
+          lowerRowEdge = { button, distance: dy };
+        }
       }
 
       // Apple keyboards accept near-edge contacts, especially around A/Shift.
-      // Keep that forgiveness bounded so a footer tap cannot type a character.
-      return best && best.distance <= 18 ? best.button : null;
+      // A touch center also sits above the intended cap, so row-gap contacts
+      // prefer the lower visible key. Keep both forms of forgiveness bounded.
+      return lowerRowEdge?.button ?? (best && best.distance <= 18 ? best.button : null);
     };
     const keyAtPoint = (target: EventTarget | null, x: number, y: number): TrackedTouch | null => {
       const pointMatch = trackedFromButton(buttonFromTarget(document.elementFromPoint(x, y)), "point");
@@ -2665,6 +2677,9 @@ const CustomKeyboard = memo(function CustomKeyboard({
 
     const handlePointerDown = (event: PointerEvent) => {
       if (event.pointerType !== "touch" || event.button !== 0) {
+        return;
+      }
+      if (!canResolveDocumentContact(event.target, event.clientX, event.clientY)) {
         return;
       }
 
@@ -2749,8 +2764,10 @@ const CustomKeyboard = memo(function CustomKeyboard({
     };
 
     const handleTouchStart = (event: TouchEvent) => {
-      event.preventDefault();
       for (const touch of Array.from(event.changedTouches)) {
+        if (!canResolveDocumentContact(touch.target, touch.clientX, touch.clientY)) {
+          continue;
+        }
         const stale = activeTouches.get(touch.identifier);
         if (stale) {
           // WebKit occasionally omits a release while focus is moving. Touch IDs
@@ -2782,6 +2799,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
           continue;
         }
 
+        event.preventDefault();
         const pointerCommit = matchingPointerCommit(tracked, touch.identifier);
 
         onTrace({
@@ -2814,8 +2832,10 @@ const CustomKeyboard = memo(function CustomKeyboard({
     };
 
     const handleTouchEnd = (event: TouchEvent) => {
-      event.preventDefault();
       for (const touch of Array.from(event.changedTouches)) {
+        if (activeTouches.has(touch.identifier)) {
+          event.preventDefault();
+        }
         releaseTouch(touch, "touch-end");
       }
     };
@@ -2826,19 +2846,19 @@ const CustomKeyboard = memo(function CustomKeyboard({
       }
     };
 
-    keyboard.addEventListener("pointerdown", handlePointerDown);
-    keyboard.addEventListener("pointerup", releasePointer);
-    keyboard.addEventListener("pointercancel", releasePointer);
-    keyboard.addEventListener("touchstart", handleTouchStart, { passive: false });
-    keyboard.addEventListener("touchend", handleTouchEnd, { passive: false });
-    keyboard.addEventListener("touchcancel", handleTouchCancel, { passive: false });
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("pointerup", releasePointer, true);
+    document.addEventListener("pointercancel", releasePointer, true);
+    document.addEventListener("touchstart", handleTouchStart, { passive: false, capture: true });
+    document.addEventListener("touchend", handleTouchEnd, { passive: false, capture: true });
+    document.addEventListener("touchcancel", handleTouchCancel, { passive: false, capture: true });
     return () => {
-      keyboard.removeEventListener("pointerdown", handlePointerDown);
-      keyboard.removeEventListener("pointerup", releasePointer);
-      keyboard.removeEventListener("pointercancel", releasePointer);
-      keyboard.removeEventListener("touchstart", handleTouchStart);
-      keyboard.removeEventListener("touchend", handleTouchEnd);
-      keyboard.removeEventListener("touchcancel", handleTouchCancel);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("pointerup", releasePointer, true);
+      document.removeEventListener("pointercancel", releasePointer, true);
+      document.removeEventListener("touchstart", handleTouchStart, true);
+      document.removeEventListener("touchend", handleTouchEnd, true);
+      document.removeEventListener("touchcancel", handleTouchCancel, true);
       for (const tracked of activeTouches.values()) {
         tracked.button.classList.remove("is-touch-active");
       }
@@ -6586,20 +6606,26 @@ export function App() {
 
     let pendingOutsideTap: { pointerId: number; x: number; y: number } | null = null;
 
-    const isKeyboardDismissalExempt = (target: EventTarget | null) => {
-      if (!(target instanceof Element)) {
-        return false;
-      }
-
-      return Boolean(
-        target.closest('[data-composer="chat"]') ||
-          target.closest('[data-custom-keyboard-root="true"]') ||
-          target.closest(".scroll-bottom-control")
-      );
+    const isKeyboardDismissalExempt = (target: EventTarget | null, x: number, y: number) => {
+      const pointTarget = document.elementFromPoint(x, y);
+      return [target, pointTarget].some((candidate) => {
+        if (!(candidate instanceof Element)) {
+          return false;
+        }
+        return Boolean(
+          candidate.closest('[data-composer="chat"]') ||
+            candidate.closest('[data-custom-keyboard-root="true"]') ||
+            candidate.closest(".scroll-bottom-control")
+        );
+      });
     };
 
     const armOutsideTap = (event: PointerEvent) => {
-      if (!event.isPrimary || event.button !== 0 || isKeyboardDismissalExempt(event.target)) {
+      if (
+        !event.isPrimary ||
+        event.button !== 0 ||
+        isKeyboardDismissalExempt(event.target, event.clientX, event.clientY)
+      ) {
         pendingOutsideTap = null;
         return;
       }
@@ -6631,7 +6657,7 @@ export function App() {
 
       const completedTap = pendingOutsideTap;
       pendingOutsideTap = null;
-      if (isKeyboardDismissalExempt(event.target)) {
+      if (isKeyboardDismissalExempt(event.target, event.clientX, event.clientY)) {
         return;
       }
 

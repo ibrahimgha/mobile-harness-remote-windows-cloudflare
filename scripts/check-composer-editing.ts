@@ -58,11 +58,23 @@ assert.equal(sentenceCapitalizedInsertion("Done. ", { start: 6, end: 6 }, "."), 
 assert.equal(shouldCapitalizeAtSelection("Done.  next", { start: 7, end: 11 }), true);
 
 const cadence = "A a a ";
-assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, " ", 280), "a");
-assert.equal(correctAlternatingSingleKeyCadence("A a a", { start: 5, end: 5 }, "a", 280), " ");
+assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, " ", 280), "a ");
+assert.equal(correctAlternatingSingleKeyCadence("A a a", { start: 5, end: 5 }, "a", 280), " a");
 assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, "b", 280), "b");
 assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, " ", 1200), " ");
 assert.equal(correctAlternatingSingleKeyCadence("type a a ", { start: 9, end: 9 }, " ", 280), " ");
+
+const latestObservedCadence = "A a  a a a a a a a a  a a a  a a a a aaaa a    a  a aa a a a aa aaa a a aa a a aa a a a aa a  ";
+let recoveredCadence = "";
+for (const contact of latestObservedCadence) {
+  const selection = { start: recoveredCadence.length, end: recoveredCadence.length };
+  recoveredCadence = insertTextAtSelection(
+    recoveredCadence,
+    selection,
+    correctAlternatingSingleKeyCadence(recoveredCadence, selection, contact, 280)
+  ).text;
+}
+assert.match(recoveredCadence, /^A(?: a)+ $/);
 
 const longMultilinePrompt = Array.from({ length: 16 }, (_, index) => `line ${index + 1}`).join("\n");
 assert.equal(longMultilinePrompt.split("\n").length, 16);

@@ -57,11 +57,11 @@ if (!/const composerSnapshot = preserveComposerForTransientFocus\(\)[\s\S]{0,180
   failures.push("Attachment picking must preserve and restore the live composer model and caret.");
 }
 
-if (!/addEventListener\("touchstart", handleTouchStart, \{ passive: false \}\)/.test(source)) {
-  failures.push("The keyboard must track iOS contacts from one non-passive native touch listener.");
+if (!/document\.addEventListener\("touchstart", handleTouchStart, \{ passive: false, capture: true \}\)/.test(source)) {
+  failures.push("The keyboard must capture iOS contacts globally before near-edge targets escape its root.");
 }
 
-if (!/addEventListener\("touchend", handleTouchEnd, \{ passive: false \}\)/.test(source)) {
+if (!/document\.addEventListener\("touchend", handleTouchEnd, \{ passive: false, capture: true \}\)/.test(source)) {
   failures.push("The keyboard must release tracked contacts from native touch events.");
 }
 
@@ -145,7 +145,7 @@ if (
 }
 
 if (
-  !/const nearestKey = \(x: number, y: number\)[\s\S]{0,1200}best\.distance <= 18/.test(source) ||
+  !/const nearestKey = \(x: number, y: number\)[\s\S]{0,1600}lowerRowEdge\?\.button[\s\S]{0,120}best\.distance <= 18/.test(source) ||
   !/targetMatch \?\? trackedFromButton\(nearestKey\(x, y\), "nearest"\)/.test(source)
 ) {
   failures.push("The iOS keyboard must recover near-edge contacts instead of leaving dead strips around A and row gaps.");
@@ -300,8 +300,12 @@ if (!/Math\.hypot[\s\S]{0,220}customKeyboardTapSlopPx/.test(source)) {
   failures.push("Outside keyboard dismissal must cancel after meaningful pointer movement.");
 }
 
-if (!/target\.closest\("\.scroll-bottom-control"\)/.test(source)) {
+if (!/candidate\.closest\("\.scroll-bottom-control"\)/.test(source)) {
   failures.push("The scroll-to-bottom control must never dismiss the custom keyboard.");
+}
+
+if (!/const pointTarget = document\.elementFromPoint\(x, y\)[\s\S]{0,500}\[target, pointTarget\]/.test(source)) {
+  failures.push("Outside-tap dismissal must honor the physical keyboard target when WebKit reports a stale DOM target.");
 }
 
 if (/addEventListener\("pointerdown", closeOnOutsidePointer/.test(source)) {
