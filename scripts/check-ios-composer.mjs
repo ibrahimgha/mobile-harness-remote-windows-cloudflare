@@ -81,8 +81,8 @@ if (!/const CustomKeyboard = memo\(function CustomKeyboard/.test(source)) {
   failures.push("App timers and polling must not rerender the custom keyboard.");
 }
 
-if (!/const targetMatch = trackedFromButton\(buttonFromTarget\(target\), "target"\);[\s\S]{0,120}if \(targetMatch\)/.test(source)) {
-  failures.push("Touch resolution must prefer the contact's stable target over a synchronous animated hit-test.");
+if (!/const pointMatch = trackedFromButton\(buttonFromTarget\(document\.elementFromPoint\(x, y\)\), "point"\);[\s\S]{0,120}if \(pointMatch\)/.test(source)) {
+  failures.push("Touch resolution must prefer the physical contact coordinates over a stale event target.");
 }
 
 if (
@@ -146,7 +146,7 @@ if (
 
 if (
   !/const nearestKey = \(x: number, y: number\)[\s\S]{0,1200}best\.distance <= 18/.test(source) ||
-  !/pointMatch \?\? trackedFromButton\(nearestKey\(x, y\), "nearest"\)/.test(source)
+  !/targetMatch \?\? trackedFromButton\(nearestKey\(x, y\), "nearest"\)/.test(source)
 ) {
   failures.push("The iOS keyboard must recover near-edge contacts instead of leaving dead strips around A and row gaps.");
 }
@@ -162,6 +162,13 @@ if (
 
 if (/committedAt <= 80|Math\.hypot\(commit\.x - x, commit\.y - y\)/.test(source)) {
   failures.push("Repeated A and Space contacts must not be deduplicated by fuzzy time-and-position matching.");
+}
+
+if (
+  !/correctAlternatingSingleKeyCadence\([\s\S]{0,260}elapsedSincePreviousContact/.test(source) ||
+  !/cadenceCorrected: insertedText !== capitalizedText/.test(source)
+) {
+  failures.push("Established single-key/Space cadence must correct a misclassified repeated contact.");
 }
 
 if (
@@ -207,7 +214,7 @@ if (!/const adoptPendingBrowserComposerSelection[\s\S]{0,420}customKeyboardSelec
 }
 
 if (
-  !/const insertCustomKeyboardText[\s\S]{0,700}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,500}insertTextAtSelection/.test(source) ||
+  !/const insertCustomKeyboardText[\s\S]{0,1600}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,1200}insertTextAtSelection/.test(source) ||
   !/const backspaceCustomKeyboardText[\s\S]{0,500}adoptPendingBrowserComposerSelection\(editor\)[\s\S]{0,300}deleteTextBackward/.test(source)
 ) {
   failures.push("Insertion and Backspace must adopt a newly tapped caret or selected range before mutating text.");
@@ -339,6 +346,15 @@ if (!/\.custom-key\.is-space-key\s*\{[\s\S]{0,100}flex-grow: 4\.8/.test(styles))
 
 if (!/\.custom-key\.is-return-key\s*\{[\s\S]{0,80}flex-grow: 2\.7/.test(styles)) {
   failures.push("The Return key must retain its measured iOS row proportion.");
+}
+
+if (
+  !/\.custom-keyboard-row\.is-native-letters-row \.custom-key\.is-mode-key\s*\{[\s\S]{0,80}flex-grow: 1/.test(styles) ||
+  !/\.custom-keyboard-row\.is-native-letters-row \.custom-key\.is-space-key\s*\{[\s\S]{0,80}flex-grow: 4\.415/.test(styles) ||
+  !/\.custom-keyboard-row\.is-native-letters-row \.custom-key\.is-return-key\s*\{[\s\S]{0,80}flex-grow: 2\.146/.test(styles) ||
+  !/mode === "letters" \? null : \([\s\S]{0,700}aria-label="Period"/.test(source)
+) {
+  failures.push("The letters command row must preserve native iOS Space and Return geometry.");
 }
 
 if (!/className="custom-keyboard-footer"[\s\S]{0,500}className="custom-keyboard-dismiss"/.test(source)) {

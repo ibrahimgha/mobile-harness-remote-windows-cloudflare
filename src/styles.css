@@ -3048,6 +3048,18 @@ p {
   flex-grow: 2.7;
 }
 
+.custom-keyboard-row.is-native-letters-row .custom-key.is-mode-key {
+  flex-grow: 1;
+}
+
+.custom-keyboard-row.is-native-letters-row .custom-key.is-space-key {
+  flex-grow: 4.415;
+}
+
+.custom-keyboard-row.is-native-letters-row .custom-key.is-return-key {
+  flex-grow: 2.146;
+}
+
 .custom-key:active,
 .custom-key.is-touch-active {
   z-index: 10;

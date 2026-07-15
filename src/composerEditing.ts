@@ -40,6 +40,38 @@ export function sentenceCapitalizedInsertion(text: string, selection: TextSelect
   return insertedText.toUpperCase();
 }
 
+export function correctAlternatingSingleKeyCadence(
+  text: string,
+  selection: TextSelection,
+  insertedText: string,
+  elapsedSincePreviousContactMs: number
+) {
+  const normalized = normalizeTextSelection(text, selection);
+  if (
+    normalized.start !== normalized.end ||
+    normalized.end !== text.length ||
+    insertedText.length !== 1 ||
+    elapsedSincePreviousContactMs > 900
+  ) {
+    return insertedText;
+  }
+
+  // iOS can report the previous A/Space key for a new contact during very fast alternating drills.
+  const match = text.match(/(?:^|[.!?\n]\s*)([a-z])(?: \1){2,}( ?)$/i);
+  if (!match) {
+    return insertedText;
+  }
+
+  const repeatedKey = match[1].toLowerCase();
+  const normalizedInsertion = insertedText.toLowerCase();
+  if (normalizedInsertion !== repeatedKey && insertedText !== " ") {
+    return insertedText;
+  }
+
+  const expectedInsertion = text.endsWith(" ") ? repeatedKey : " ";
+  return normalizedInsertion === expectedInsertion ? insertedText : expectedInsertion;
+}
+
 function previousCodePointStart(text: string, offset: number) {
   const prefix = text.slice(0, offset);
   const previousCodePoint = Array.from(prefix).at(-1) ?? "";

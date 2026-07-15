@@ -59,6 +59,7 @@ import remarkGfm from "remark-gfm";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
 import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
 import {
+  correctAlternatingSingleKeyCadence,
   deleteTextBackward,
   insertTextAtSelection,
   normalizeTextSelection,
@@ -2637,13 +2638,13 @@ const CustomKeyboard = memo(function CustomKeyboard({
       return best && best.distance <= 18 ? best.button : null;
     };
     const keyAtPoint = (target: EventTarget | null, x: number, y: number): TrackedTouch | null => {
-      const targetMatch = trackedFromButton(buttonFromTarget(target), "target");
-      if (targetMatch) {
-        return targetMatch;
+      const pointMatch = trackedFromButton(buttonFromTarget(document.elementFromPoint(x, y)), "point");
+      if (pointMatch) {
+        return pointMatch;
       }
 
-      const pointMatch = trackedFromButton(buttonFromTarget(document.elementFromPoint(x, y)), "point");
-      return pointMatch ?? trackedFromButton(nearestKey(x, y), "nearest");
+      const targetMatch = trackedFromButton(buttonFromTarget(target), "target");
+      return targetMatch ?? trackedFromButton(nearestKey(x, y), "nearest");
     };
     const keyAtTouch = (touch: Touch) => keyAtPoint(touch.target, touch.clientX, touch.clientY);
     const matchingPointerCommit = (tracked: TrackedTouch, identifier: number) => {
@@ -2937,7 +2938,7 @@ const CustomKeyboard = memo(function CustomKeyboard({
           ) : null}
         </div>
       ))}
-      <div className="custom-keyboard-row is-command-row">
+      <div className={`custom-keyboard-row is-command-row ${mode === "letters" ? "is-native-letters-row" : ""}`}>
         <button
           className="custom-key is-modifier is-mode-key"
           type="button"
@@ -2971,18 +2972,20 @@ const CustomKeyboard = memo(function CustomKeyboard({
         >
           space
         </button>
-        <button
-          className="custom-key"
-          type="button"
-          tabIndex={-1}
-          data-keyboard-action="text"
-          data-keyboard-value="."
-          onPointerDown={(event) => pressOnPointerDown(event, () => pressText("."))}
-          onClick={(event) => pressOnAccessibleClick(event, () => pressText("."))}
-          aria-label="Period"
-        >
-          .
-        </button>
+        {mode === "letters" ? null : (
+          <button
+            className="custom-key"
+            type="button"
+            tabIndex={-1}
+            data-keyboard-action="text"
+            data-keyboard-value="."
+            onPointerDown={(event) => pressOnPointerDown(event, () => pressText("."))}
+            onClick={(event) => pressOnAccessibleClick(event, () => pressText("."))}
+            aria-label="Period"
+          >
+            .
+          </button>
+        )}
         <button
           className="custom-key is-modifier is-return-key"
           type="button"
@@ -3689,6 +3692,7 @@ export function App() {
   const customKeyboardEditRef = useRef<{ chatId: string; text: string; selection: TextSelection } | null>(null);
   const customKeyboardFocusOpenSuppressedRef = useRef(false);
   const customKeyboardSelectionAdoptionPendingRef = useRef(false);
+  const customKeyboardLastContactRef = useRef<{ chatId: string; at: number } | null>(null);
   const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>(readPendingKeyboardTrace());
   const keyboardTraceSequenceRef = useRef(0);
   const keyboardTraceSessionRef = useRef(
@@ -4015,7 +4019,19 @@ export function App() {
         customKeyboardEditRef.current?.chatId === chatId
           ? customKeyboardEditRef.current
           : { chatId, text: rawTextFromComposerEditor(editor), selection: composerSelectionRef.current };
-      const insertedText = sentenceCapitalizedInsertion(current.text, current.selection, text);
+      const contactAt = performance.now();
+      const previousContact = customKeyboardLastContactRef.current;
+      const elapsedSincePreviousContact = previousContact?.chatId === chatId
+        ? contactAt - previousContact.at
+        : Number.POSITIVE_INFINITY;
+      customKeyboardLastContactRef.current = { chatId, at: contactAt };
+      const capitalizedText = sentenceCapitalizedInsertion(current.text, current.selection, text);
+      const insertedText = correctAlternatingSingleKeyCadence(
+        current.text,
+        current.selection,
+        capitalizedText,
+        elapsedSincePreviousContact
+      );
       const mutation = insertTextAtSelection(current.text, current.selection, insertedText);
       const domPatched = patchComposerInsertion(editor, current.text, current.selection, insertedText, mutation.text);
       customKeyboardEditRef.current = { chatId, ...mutation };
@@ -4023,6 +4039,11 @@ export function App() {
       recordKeyboardTrace({
         phase: "model-insert",
         value: insertedText,
+        physicalValue: text,
+        cadenceCorrected: insertedText !== capitalizedText,
+        contactIntervalMs: Number.isFinite(elapsedSincePreviousContact)
+          ? Math.round(elapsedSincePreviousContact)
+          : null,
         beforeLength: current.text.length,
         afterLength: mutation.text.length,
         beforeCaret: current.selection.end,
@@ -4043,6 +4064,7 @@ export function App() {
       return;
     }
 
+    customKeyboardLastContactRef.current = null;
     adoptPendingBrowserComposerSelection(editor);
     const current =
       customKeyboardEditRef.current?.chatId === chatId

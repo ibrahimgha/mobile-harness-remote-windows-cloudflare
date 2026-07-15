@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  correctAlternatingSingleKeyCadence,
   deleteTextBackward,
   insertTextAtSelection,
   sentenceCapitalizedInsertion,
@@ -55,6 +56,13 @@ assert.equal(sentenceCapitalizedInsertion("first\n", { start: 6, end: 6 }, "s"),
 assert.equal(sentenceCapitalizedInsertion("alpha", { start: 5, end: 5 }, "b"), "b");
 assert.equal(sentenceCapitalizedInsertion("Done. ", { start: 6, end: 6 }, "."), ".");
 assert.equal(shouldCapitalizeAtSelection("Done.  next", { start: 7, end: 11 }), true);
+
+const cadence = "A a a ";
+assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, " ", 280), "a");
+assert.equal(correctAlternatingSingleKeyCadence("A a a", { start: 5, end: 5 }, "a", 280), " ");
+assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, "b", 280), "b");
+assert.equal(correctAlternatingSingleKeyCadence(cadence, { start: cadence.length, end: cadence.length }, " ", 1200), " ");
+assert.equal(correctAlternatingSingleKeyCadence("type a a ", { start: 9, end: 9 }, " ", 280), " ");
 
 const longMultilinePrompt = Array.from({ length: 16 }, (_, index) => `line ${index + 1}`).join("\n");
 assert.equal(longMultilinePrompt.split("\n").length, 16);
