@@ -47,7 +47,6 @@ assert.match(appSource, /id=\{composerInputId\(selectedChatId\)\}/);
 assert.match(appSource, /const commitComposerEditorState[\s\S]*setDraftForChat\(chatId, text\)/);
 assert.match(appSource, /onInput=[\s\S]{0,180}commitComposerEditorState\(event\.currentTarget\)/);
 assert.match(appSource, /onPaste=[\s\S]{0,900}commitComposerEditorState\(event\.currentTarget, selection\)/);
-assert.match(appSource, /pagehide[\s\S]*flushCustomKeyboardDraftSync/);
 assert.match(appSource, /const attachComposerEditor = useCallback[\s\S]*syncComposerEditorText\(editor, latestDraftRef\.current\)/);
 assert.match(appSource, /ref=\{attachComposerEditor\}/);
 assert.match(appSource, /preserveDraft:\s*true/);
@@ -70,8 +69,4 @@ const reconcileIndex = sendPromptSource.indexOf("job.clientRequestId === clientR
 const restoreIndex = sendPromptSource.indexOf("setDraftForChat(targetChatId, outgoingDraft)");
 assert.ok(reconcileIndex > submitRequestIndex, "failed acknowledgements must be reconciled against server jobs");
 assert.ok(restoreIndex > reconcileIndex, "the outgoing draft must only be restored after acceptance reconciliation fails");
-assert.match(
-  sendPromptSource,
-  /clearTimeout\(customKeyboardDraftSyncTimerRef\.current\)[\s\S]{0,180}pendingCustomKeyboardDraftRef\.current = null/,
-  "submission must invalidate delayed keyboard draft writes"
-);
+assert.doesNotMatch(sendPromptSource, /flushCustomKeyboard|pendingCustomKeyboardDraftRef/);

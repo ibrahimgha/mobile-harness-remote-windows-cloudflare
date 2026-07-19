@@ -2265,24 +2265,6 @@ const customKeyboardExitDurationMs = 240;
 const customKeyboardTapSlopPx = 10;
 const customKeyboardDraftSyncDelayMs = 750;
 
-function shouldUseCustomKeyboard() {
-  const override = new URLSearchParams(window.location.search).get("customKeyboard");
-  if (override === "1") {
-    return true;
-  }
-  if (override === "0") {
-    return false;
-  }
-
-  const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
-  const isIOS =
-    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const isStandalone =
-    navigatorWithStandalone.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
-  return isIOS && isStandalone;
-}
-
 function browserSelectionInsideComposer(editor: HTMLDivElement) {
   const editorText = rawTextFromComposerEditor(editor);
   const selection = window.getSelection();
@@ -3706,7 +3688,9 @@ export function App() {
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [chatActionError, setChatActionError] = useState("");
   const [composerExpanded, setComposerExpanded] = useState(false);
-  const [customKeyboardEnabled] = useState(shouldUseCustomKeyboard);
+  // The custom keyboard experiment is archived on archive/custom-ios-keyboard.
+  // Main always delegates text entry to the device keyboard.
+  const customKeyboardEnabled = false;
   const [customKeyboardOpen, setCustomKeyboardOpen] = useState(false);
   const [customKeyboardMounted, setCustomKeyboardMounted] = useState(false);
   const [dictationRecording, setDictationRecording] = useState(false);
@@ -3893,14 +3877,7 @@ export function App() {
     );
   }, [flushCustomKeyboardDraftSync]);
   const rememberComposerSelection = useCallback((editor: HTMLDivElement) => {
-    const text = rawTextFromComposerEditor(editor);
-    const selection = selectionInsideComposer(editor, composerSelectionRef.current);
-    composerSelectionRef.current = selection;
-    customKeyboardDraftPresenceRef.current = Boolean(text.trim());
-    const chatId = editor.dataset.chatId;
-    if (chatId) {
-      customKeyboardEditRef.current = { chatId, text, selection };
-    }
+    composerSelectionRef.current = selectionInsideComposer(editor, composerSelectionRef.current);
   }, []);
   const adoptBrowserComposerSelection = useCallback((editor: HTMLDivElement) => {
     const selection = browserSelectionInsideComposer(editor);
@@ -3949,22 +3926,13 @@ export function App() {
 
       const text = rawTextFromComposerEditor(editor);
       const selection = selectionOverride ?? selectionInsideComposer(editor, composerSelectionRef.current);
-      window.cancelAnimationFrame(customKeyboardDomSyncFrameRef.current ?? 0);
-      customKeyboardDomSyncFrameRef.current = undefined;
-      window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
-      customKeyboardDraftSyncTimerRef.current = undefined;
-      pendingCustomKeyboardDraftRef.current = null;
-      customKeyboardSelectionAdoptionPendingRef.current = false;
       composerSelectionRef.current = selection;
-      customKeyboardEditRef.current = { chatId, text, selection };
-      customKeyboardDraftPresenceRef.current = Boolean(text.trim());
       setDraftForChat(chatId, text);
       setComposerExpanded(composerShouldExpand(editor));
     },
     [setDraftForChat]
   );
   const preserveComposerForTransientFocus = useCallback(() => {
-    flushCustomKeyboardDomSync();
     const editor = composerEditorRef.current;
     const chatId = editor?.dataset.chatId;
     if (!editor || !chatId) {
@@ -3972,56 +3940,29 @@ export function App() {
     }
 
     const liveText = rawTextFromComposerEditor(editor);
-    const currentModel = customKeyboardEditRef.current?.chatId === chatId ? customKeyboardEditRef.current : null;
     const selection =
       document.activeElement === editor
-        ? selectionInsideComposer(editor, currentModel?.selection ?? composerSelectionRef.current)
-        : normalizeTextSelection(liveText, currentModel?.selection ?? composerSelectionRef.current);
+        ? selectionInsideComposer(editor, composerSelectionRef.current)
+        : normalizeTextSelection(liveText, composerSelectionRef.current);
     const snapshot = {
       chatId,
       text: liveText,
       selection
     };
-    window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
-    customKeyboardDraftSyncTimerRef.current = undefined;
-    pendingCustomKeyboardDraftRef.current = null;
     composerSelectionRef.current = selection;
-    customKeyboardEditRef.current = snapshot;
-    customKeyboardSelectionAdoptionPendingRef.current = false;
-    customKeyboardDraftPresenceRef.current = Boolean(liveText.trim());
-    recordKeyboardTrace({
-      phase: "attachment-snapshot",
-      textLength: liveText.length,
-      caret: selection.end,
-      editorFocused: document.activeElement === editor
-    });
     setDraftForChat(chatId, liveText);
     return snapshot;
-  }, [flushCustomKeyboardDomSync, recordKeyboardTrace, setDraftForChat]);
-  const restoreComposerAfterTransientFocus = useCallback((snapshot: { chatId: string; text: string; selection: TextSelection } | null, reopenKeyboard: boolean) => {
+  }, [setDraftForChat]);
+  const restoreComposerAfterTransientFocus = useCallback((snapshot: { chatId: string; text: string; selection: TextSelection } | null) => {
     const editor = composerEditorRef.current;
     const chatId = editor?.dataset.chatId;
     if (!editor || !chatId || snapshot?.chatId !== chatId) {
       return;
     }
 
-    customKeyboardEditRef.current = snapshot;
-    customKeyboardDraftPresenceRef.current = Boolean(snapshot.text.trim());
-    recordKeyboardTrace({
-      phase: "attachment-restore",
-      textLength: snapshot.text.length,
-      caret: snapshot.selection.end,
-      reopenKeyboard
-    });
-    if (reopenKeyboard) {
-      composerSelectionRef.current = applyComposerMutation(editor, snapshot.text, snapshot.selection);
-      setCustomKeyboardOpen(true);
-    } else {
-      syncComposerEditorText(editor, snapshot.text);
-      composerSelectionRef.current = snapshot.selection;
-    }
-    customKeyboardSelectionAdoptionPendingRef.current = false;
-  }, [recordKeyboardTrace]);
+    syncComposerEditorText(editor, snapshot.text);
+    composerSelectionRef.current = snapshot.selection;
+  }, []);
   const attachComposerEditor = useCallback((editor: HTMLDivElement | null) => {
     composerEditorRef.current = editor;
     if (!editor) {
@@ -4033,19 +3974,7 @@ export function App() {
     syncComposerEditorText(editor, latestDraftRef.current);
     const end = rawTextFromComposerEditor(editor).length;
     composerSelectionRef.current = { start: end, end };
-    customKeyboardDraftPresenceRef.current = Boolean(latestDraftRef.current.trim());
-    customKeyboardSelectionAdoptionPendingRef.current = false;
-    const chatId = editor.dataset.chatId;
-    if (chatId) {
-      customKeyboardEditRef.current = {
-        chatId,
-        text: rawTextFromComposerEditor(editor),
-        selection: composerSelectionRef.current
-      };
-    }
-    setComposerExpanded(
-      editor.dataset.customKeyboard === "true" ? false : composerShouldExpand(editor)
-    );
+    setComposerExpanded(composerShouldExpand(editor));
   }, []);
   const insertCustomKeyboardText = useCallback(
     (text: string) => {
@@ -4146,9 +4075,10 @@ export function App() {
     });
   }, [flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
   const openMobileMenu = useCallback(() => {
-    closeCustomKeyboard();
+    composerEditorRef.current?.blur();
+    setComposerExpanded(false);
     setMenuOpen(true);
-  }, [closeCustomKeyboard]);
+  }, []);
   const restoreCustomKeyboardComposerFocus = useCallback(() => {
     flushCustomKeyboardDomSync();
     const editor = composerEditorRef.current;
@@ -4174,64 +4104,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const flushOnPageHide = () => {
-      flushCustomKeyboardDomSync();
-      flushCustomKeyboardDraftSync();
-    };
-    const flushOnVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        flushCustomKeyboardDomSync();
-        flushCustomKeyboardDraftSync();
-      }
-    };
-
-    window.addEventListener("pagehide", flushOnPageHide);
-    document.addEventListener("visibilitychange", flushOnVisibilityChange);
-    return () => {
-      window.removeEventListener("pagehide", flushOnPageHide);
-      document.removeEventListener("visibilitychange", flushOnVisibilityChange);
-      flushCustomKeyboardDomSync();
-      flushCustomKeyboardDraftSync();
-    };
-  }, [flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
-
-  useEffect(() => {
-    flushCustomKeyboardDomSync();
-    flushCustomKeyboardDraftSync();
-    customKeyboardSelectionAdoptionPendingRef.current = false;
     composerSelectionRef.current = { start: 0, end: 0 };
-    customKeyboardEditRef.current = null;
-    customKeyboardDraftPresenceRef.current = Boolean(draft.trim());
-  }, [flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync, selectedChatId]);
-
-  useEffect(() => {
-    if (!customKeyboardOpen) {
-      customKeyboardSelectionAdoptionPendingRef.current = false;
-      flushCustomKeyboardDomSync();
-      flushCustomKeyboardDraftSync();
-      return;
-    }
-
-    const adoptSelectionFromExplicitGesture = () => {
-      if (!customKeyboardSelectionAdoptionPendingRef.current) {
-        return;
-      }
-
-      const editor = composerEditorRef.current;
-      if (editor && document.activeElement === editor) {
-        adoptBrowserComposerSelection(editor);
-      }
-    };
-
-    // WebKit finalizes a tap, drag, or selection-handle range asynchronously.
-    // Accept selectionchange only after an explicit editor gesture. The first
-    // custom-key mutation clears the gate before changing DOM, so delayed iOS
-    // events cannot corrupt the authoritative caret during rapid typing.
-    document.addEventListener("selectionchange", adoptSelectionFromExplicitGesture);
-    return () => {
-      document.removeEventListener("selectionchange", adoptSelectionFromExplicitGesture);
-    };
-  }, [adoptBrowserComposerSelection, customKeyboardOpen, flushCustomKeyboardDomSync, flushCustomKeyboardDraftSync]);
+  }, [selectedChatId]);
 
   useEffect(() => {
     chatTurnLimitsRef.current = chatTurnLimits;
@@ -6668,155 +6542,20 @@ export function App() {
   }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);
 
   useEffect(() => {
-    closeCustomKeyboard();
-  }, [closeCustomKeyboard, dictationProcessing, dictationRecording, menuOpen, selectedChatId, sending]);
-
-  useEffect(() => {
-    window.clearTimeout(customKeyboardExitTimerRef.current);
-    customKeyboardExitTimerRef.current = undefined;
-
-    if (customKeyboardOpen) {
-      setCustomKeyboardMounted(true);
-      return;
-    }
-
-    if (!customKeyboardMounted) {
-      return;
-    }
-
-    customKeyboardExitTimerRef.current = window.setTimeout(() => {
-      setCustomKeyboardMounted(false);
-      customKeyboardExitTimerRef.current = undefined;
-    }, customKeyboardExitDurationMs);
-
-    return () => {
-      window.clearTimeout(customKeyboardExitTimerRef.current);
-      customKeyboardExitTimerRef.current = undefined;
-    };
-  }, [customKeyboardMounted, customKeyboardOpen]);
-
-  useEffect(() => {
-    if (!customKeyboardOpen) {
-      return;
-    }
-
-    let pendingOutsideTap: { pointerId: number; x: number; y: number } | null = null;
-
-    const isKeyboardDismissalExempt = (target: EventTarget | null, x: number, y: number) => {
-      const pointTarget = document.elementFromPoint(x, y);
-      return [target, pointTarget].some((candidate) => {
-        if (!(candidate instanceof Element)) {
-          return false;
-        }
-        return Boolean(
-          candidate.closest('[data-composer="chat"]') ||
-            candidate.closest('[data-custom-keyboard-root="true"]') ||
-            candidate.closest(".scroll-bottom-control")
-        );
-      });
-    };
-
-    const armOutsideTap = (event: PointerEvent) => {
-      if (
-        !event.isPrimary ||
-        event.button !== 0 ||
-        isKeyboardDismissalExempt(event.target, event.clientX, event.clientY)
-      ) {
-        pendingOutsideTap = null;
-        return;
-      }
-
-      pendingOutsideTap = {
-        pointerId: event.pointerId,
-        x: event.clientX,
-        y: event.clientY
-      };
-    };
-
-    const cancelOutsideTapOnMove = (event: PointerEvent) => {
-      if (!pendingOutsideTap || event.pointerId !== pendingOutsideTap.pointerId) {
-        return;
-      }
-
-      if (
-        Math.hypot(event.clientX - pendingOutsideTap.x, event.clientY - pendingOutsideTap.y) >
-        customKeyboardTapSlopPx
-      ) {
-        pendingOutsideTap = null;
-      }
-    };
-
-    const finishOutsideTap = (event: PointerEvent) => {
-      if (!pendingOutsideTap || event.pointerId !== pendingOutsideTap.pointerId) {
-        return;
-      }
-
-      const completedTap = pendingOutsideTap;
-      pendingOutsideTap = null;
-      if (isKeyboardDismissalExempt(event.target, event.clientX, event.clientY)) {
-        return;
-      }
-
-      const movement = Math.hypot(event.clientX - completedTap.x, event.clientY - completedTap.y);
-      if (movement <= customKeyboardTapSlopPx) {
-        setCustomKeyboardOpen(false);
-      }
-    };
-
-    const cancelOutsideTap = (event: PointerEvent) => {
-      if (pendingOutsideTap?.pointerId === event.pointerId) {
-        pendingOutsideTap = null;
-      }
-    };
-
-    document.addEventListener("pointerdown", armOutsideTap, true);
-    document.addEventListener("pointermove", cancelOutsideTapOnMove, true);
-    document.addEventListener("pointerup", finishOutsideTap, true);
-    document.addEventListener("pointercancel", cancelOutsideTap, true);
-    return () => {
-      document.removeEventListener("pointerdown", armOutsideTap, true);
-      document.removeEventListener("pointermove", cancelOutsideTapOnMove, true);
-      document.removeEventListener("pointerup", finishOutsideTap, true);
-      document.removeEventListener("pointercancel", cancelOutsideTap, true);
-    };
-  }, [customKeyboardOpen]);
-
-  useEffect(() => {
     const editor = composerEditorRef.current;
 
     if (editor) {
-      const chatId = editor.dataset.chatId;
-      const activeCustomModel =
-        customKeyboardOpen && chatId && customKeyboardEditRef.current?.chatId === chatId
-          ? customKeyboardEditRef.current
-          : null;
-
-      if (activeCustomModel) {
-        // The custom keyboard model remains authoritative while focus temporarily
-        // moves to the attachment picker. A draft render must never reset its caret
-        // to the end or replace text that was pasted immediately before the picker.
-        syncComposerEditorText(editor, activeCustomModel.text);
-        composerSelectionRef.current = activeCustomModel.selection;
-      } else if (document.activeElement !== editor || !draft) {
+      if (document.activeElement !== editor || !draft) {
         syncComposerEditorText(editor, draft);
         const end = rawTextFromComposerEditor(editor).length;
         composerSelectionRef.current = { start: end, end };
-        if (chatId) {
-          customKeyboardEditRef.current = {
-            chatId,
-            text: rawTextFromComposerEditor(editor),
-            selection: composerSelectionRef.current
-          };
-        }
-      } else if (!customKeyboardOpen) {
+      } else {
         rememberComposerSelection(editor);
       }
 
-      setComposerExpanded(
-        customKeyboardEnabled && !customKeyboardOpen ? false : composerShouldExpand(editor)
-      );
+      setComposerExpanded(composerShouldExpand(editor));
     }
-  }, [customKeyboardEnabled, customKeyboardOpen, draft, rememberComposerSelection, selectedChatId]);
+  }, [draft, rememberComposerSelection, selectedChatId]);
 
   useEffect(() => {
     if (!state?.runner.recentJobs.length) {
@@ -7173,7 +6912,6 @@ export function App() {
   }
 
   function openAttachmentPicker() {
-    const reopenKeyboard = customKeyboardOpen;
     const composerSnapshot = preserveComposerForTransientFocus();
     const input = document.createElement("input");
     input.type = "file";
@@ -7193,7 +6931,7 @@ export function App() {
       }
 
       restored = true;
-      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot, reopenKeyboard));
+      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot));
     };
     const removeInput = () => {
       if (removed) {
@@ -7606,7 +7344,7 @@ export function App() {
 
     if (composerSnapshot) {
       setDraftForChat(composerSnapshot.chatId, composerSnapshot.text);
-      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot, false));
+      window.requestAnimationFrame(() => restoreComposerAfterTransientFocus(composerSnapshot));
     }
 
     setNotice("Voice recording cancelled.");
@@ -7779,16 +7517,12 @@ export function App() {
       preserveDraft?: boolean;
     } = {}
   ) {
-    flushCustomKeyboardDomSync();
-    void flushKeyboardTrace("prompt-send");
     const targetChatId = options.chatIdOverride ?? selectedChatId;
     const editor = composerEditorRef.current;
     const liveComposerDraft =
       targetChatId && editor?.dataset.chatId === targetChatId ? rawTextFromComposerEditor(editor) : undefined;
     const outgoingDraft = options.textOverride ?? liveComposerDraft ?? draft;
     const outgoingAttachments = options.voiceNote ? [] : pendingAttachments;
-
-    flushCustomKeyboardDraftSync();
 
     if (sending || !targetChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
       return;
@@ -7806,11 +7540,6 @@ export function App() {
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
     if (!options.preserveDraft) {
-      // Submission owns this draft now. In particular, do not let a delayed iOS
-      // keyboard callback write the pre-send editor contents back after it clears.
-      window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
-      customKeyboardDraftSyncTimerRef.current = undefined;
-      pendingCustomKeyboardDraftRef.current = null;
       // Hide the submitted text immediately, but keep its persisted draft until
       // the server acknowledges it so a PWA close during upload remains recoverable.
       setDraftsByChat((current) =>
@@ -7823,12 +7552,6 @@ export function App() {
         if (composerEditorRef.current) {
           syncComposerEditorText(composerEditorRef.current, "");
           composerSelectionRef.current = { start: 0, end: 0 };
-          customKeyboardEditRef.current = {
-            chatId: targetChatId,
-            text: "",
-            selection: composerSelectionRef.current
-          };
-          customKeyboardDraftPresenceRef.current = false;
         }
       }
     }
@@ -7949,12 +7672,6 @@ export function App() {
             syncComposerEditorText(composerEditorRef.current, outgoingDraft);
             const end = outgoingDraft.length;
             composerSelectionRef.current = { start: end, end };
-            customKeyboardEditRef.current = {
-              chatId: targetChatId,
-              text: outgoingDraft,
-              selection: composerSelectionRef.current
-            };
-            customKeyboardDraftPresenceRef.current = Boolean(outgoingDraft.trim());
             setComposerExpanded(composerShouldExpand(composerEditorRef.current));
           }
         }
@@ -8079,15 +7796,6 @@ export function App() {
     });
   }
 
-  const activeCustomKeyboardModel =
-    customKeyboardEditRef.current?.chatId === selectedChatId
-      ? customKeyboardEditRef.current
-      : { text: draft, selection: composerSelectionRef.current };
-  const customKeyboardAutoShifted = shouldCapitalizeAtSelection(
-    activeCustomKeyboardModel.text,
-    activeCustomKeyboardModel.selection
-  );
-
   if (checkingAuth) {
     return (
       <main className="auth-shell">
@@ -8127,7 +7835,7 @@ export function App() {
   }
 
   return (
-    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${customKeyboardMounted ? "has-custom-keyboard" : ""}`}>
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
           <div className="sidebar-heading-row">
@@ -8506,7 +8214,7 @@ export function App() {
         </div>
       ) : null}
 
-      <section className={`chat-workspace ${customKeyboardMounted ? "has-custom-keyboard" : ""}`} aria-label="Selected chat">
+      <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">
           <button
             className="icon-button mobile-menu-button"
@@ -8796,10 +8504,7 @@ export function App() {
           </div>
         ) : null}
 
-        <div
-          className={`composer ${composerExpanded ? "is-expanded" : ""} ${customKeyboardEnabled ? "uses-custom-keyboard" : ""} ${customKeyboardOpen ? "is-custom-keyboard-open" : ""}`}
-          data-composer="chat"
-        >
+        <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
           <RunSettingsPanel
             compactOnly
             settings={state?.runner.settings}
@@ -8857,42 +8562,20 @@ export function App() {
                 data-chat-id={selectedChatId ?? ""}
                 contentEditable={Boolean(selectedChatId && !sending)}
                 suppressContentEditableWarning
-                inputMode={customKeyboardEnabled ? "none" : "text"}
-                data-custom-keyboard={customKeyboardEnabled ? "true" : "false"}
-                aria-controls={customKeyboardEnabled ? "custom-chat-keyboard" : undefined}
+                inputMode="text"
                 autoCapitalize="sentences"
                 autoCorrect="on"
                 spellCheck={false}
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                onPointerDown={(event) => {
-                  if (customKeyboardEnabled && selectedChatId && !sending) {
-                    beginBrowserComposerSelection(event.currentTarget);
-                    customKeyboardFocusOpenSuppressedRef.current = false;
-                    setComposerExpanded(composerShouldExpand(event.currentTarget));
-                    setCustomKeyboardOpen(true);
-                  }
-                }}
                 onPointerUp={(event) => {
                   const editor = event.currentTarget;
                   window.requestAnimationFrame(() => {
-                    if (customKeyboardEnabled && customKeyboardSelectionAdoptionPendingRef.current) {
-                      adoptBrowserComposerSelection(editor);
-                    } else {
-                      rememberComposerSelection(editor);
-                    }
+                    rememberComposerSelection(editor);
                   });
                 }}
                 onFocus={(event) => {
-                  if (
-                    customKeyboardEnabled &&
-                    selectedChatId &&
-                    !sending &&
-                    !customKeyboardFocusOpenSuppressedRef.current
-                  ) {
-                    setCustomKeyboardOpen(true);
-                  }
                   const editor = event.currentTarget;
                   window.requestAnimationFrame(() => rememberComposerSelection(editor));
                 }}
@@ -8901,22 +8584,13 @@ export function App() {
                 }}
                 onPaste={(event) => {
                   event.preventDefault();
-                  flushCustomKeyboardDomSync();
                   const pastedText = event.clipboardData.getData("text/plain");
-                  const beforeLength = rawTextFromComposerEditor(event.currentTarget).length;
                   const selection = insertIntoComposer(
                     event.currentTarget,
                     pastedText,
                     selectionInsideComposer(event.currentTarget, composerSelectionRef.current)
                   );
                   commitComposerEditorState(event.currentTarget, selection);
-                  recordKeyboardTrace({
-                    phase: "paste",
-                    pastedLength: pastedText.length,
-                    beforeLength,
-                    afterLength: rawTextFromComposerEditor(event.currentTarget).length,
-                    caret: selection.end
-                  });
                 }}
                 onKeyDown={sendPromptFromKeyboard}
               />
@@ -8985,24 +8659,6 @@ export function App() {
             ) : null}
           </div>
         </div>
-
-        {customKeyboardEnabled && customKeyboardMounted ? (
-          <div
-            id="custom-chat-keyboard"
-            className={`custom-keyboard-slot ${customKeyboardOpen ? "is-open" : "is-closing"}`}
-            data-custom-keyboard-root="true"
-            aria-hidden={!customKeyboardOpen}
-          >
-            <CustomKeyboard
-              autoShifted={customKeyboardAutoShifted}
-              onText={insertCustomKeyboardText}
-              onBackspace={backspaceCustomKeyboardText}
-              onRequestComposerFocus={restoreCustomKeyboardComposerFocus}
-              onTrace={recordKeyboardTrace}
-              onClose={closeCustomKeyboard}
-            />
-          </div>
-        ) : null}
 
       </section>
       {selectedChat ? (

@@ -3565,9 +3565,8 @@ p {
     will-change: opacity, transform;
   }
 
-  .composer:not(.uses-custom-keyboard):focus-within .composer-power-control,
-  .composer:not(.uses-custom-keyboard).is-expanded .composer-power-control,
-  .composer.is-custom-keyboard-open .composer-power-control {
+  .composer:focus-within .composer-power-control,
+  .composer.is-expanded .composer-power-control {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
@@ -3616,9 +3615,8 @@ p {
     z-index: 1;
   }
 
-  .composer:not(.uses-custom-keyboard):focus-within,
-  .composer:not(.uses-custom-keyboard).is-expanded,
-  .composer.is-custom-keyboard-open {
+  .composer:focus-within,
+  .composer.is-expanded {
     width: 100%;
     padding-bottom: 0;
   }
@@ -3715,8 +3713,7 @@ p {
     outline: 0;
   }
 
-  .composer:not(.uses-custom-keyboard).is-expanded .composer-field,
-  .composer.is-custom-keyboard-open.is-expanded .composer-field {
+  .composer.is-expanded .composer-field {
     border-radius: 16px;
   }
 
