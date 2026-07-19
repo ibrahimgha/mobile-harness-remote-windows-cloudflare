@@ -63,6 +63,15 @@ const persistedClearIndex = sendPromptSource.indexOf('setDraftForChat(targetChat
 assert.ok(persistedClearIndex > submitRequestIndex, "persisted drafts remain recoverable until the server acknowledges the prompt");
 assert.match(
   sendPromptSource,
-  /catch \(error\) \{[\s\S]{0,500}setDraftForChat\(targetChatId, outgoingDraft\)/,
-  "failed prompt submissions restore the exact outgoing draft"
+  /body: JSON\.stringify\(\{ text: promptText, clientRequestId \}\)/,
+  "prompt submissions must carry an idempotent client request ID"
+);
+const reconcileIndex = sendPromptSource.indexOf("job.clientRequestId === clientRequestId");
+const restoreIndex = sendPromptSource.indexOf("setDraftForChat(targetChatId, outgoingDraft)");
+assert.ok(reconcileIndex > submitRequestIndex, "failed acknowledgements must be reconciled against server jobs");
+assert.ok(restoreIndex > reconcileIndex, "the outgoing draft must only be restored after acceptance reconciliation fails");
+assert.match(
+  sendPromptSource,
+  /clearTimeout\(customKeyboardDraftSyncTimerRef\.current\)[\s\S]{0,180}pendingCustomKeyboardDraftRef\.current = null/,
+  "submission must invalidate delayed keyboard draft writes"
 );

@@ -85,6 +85,7 @@ export type CodexRunSettingsOptions = {
 
 export type CodexRunJob = {
   id: string;
+  clientRequestId?: string;
   chatId: string;
   projectPath: string;
   status: CodexRunStatus;

@@ -2006,6 +2006,7 @@ app.post("/api/chats/:id/dictation/clean", requireControlAuth, async (req, res) 
 app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const clientRequestId = typeof req.body?.clientRequestId === "string" ? req.body.clientRequestId.trim() : "";
 
   if (!text.trim()) {
     res.status(400).json({ ok: false, message: "Text is empty" });
@@ -2017,6 +2018,11 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     return;
   }
 
+  if (clientRequestId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(clientRequestId)) {
+    res.status(400).json({ ok: false, message: "Invalid prompt request ID" });
+    return;
+  }
+
   try {
     const chat = await getChat(chatId);
 
@@ -2025,10 +2031,23 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       return;
     }
 
+    const existingJob = clientRequestId ? runner.jobForClientRequest(chatId, clientRequestId) : undefined;
+    if (existingJob) {
+      const disposition = existingJob.status === "queued" ? "queued" : "started";
+      res.status(202).json({
+        ok: true,
+        message: "Prompt was already accepted on the target laptop",
+        disposition,
+        job: existingJob
+      });
+      return;
+    }
+
     const promptSummary = summarizePrompt(text);
 
     const disposition = runner.willQueueBehindExistingJob(chatId) ? "queued" : "started";
     const job = runner.enqueue({
+      clientRequestId: clientRequestId || undefined,
       chatId,
       projectPath: chat.projectPath,
       text: text.trimEnd(),

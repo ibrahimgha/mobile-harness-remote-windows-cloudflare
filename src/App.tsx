@@ -152,6 +152,7 @@ type BridgeEvent = {
 
 type CodexRunJob = {
   id: string;
+  clientRequestId?: string;
   chatId: string;
   projectPath: string;
   status: "queued" | "running" | "completed" | "failed" | "stopped";
@@ -7795,12 +7796,21 @@ export function App() {
 
     const optimisticAt = new Date().toISOString();
     const previousAttachments = pendingAttachments;
+    const clientRequestId =
+      globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let receiptId: string | undefined;
+    let submittedPromptText = outgoingDraft;
+    let promptRequestAttempted = false;
 
     setSending(true);
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
 
     if (!options.preserveDraft) {
+      // Submission owns this draft now. In particular, do not let a delayed iOS
+      // keyboard callback write the pre-send editor contents back after it clears.
+      window.clearTimeout(customKeyboardDraftSyncTimerRef.current);
+      customKeyboardDraftSyncTimerRef.current = undefined;
+      pendingCustomKeyboardDraftRef.current = null;
       // Hide the submitted text immediately, but keep its persisted draft until
       // the server acknowledges it so a PWA close during upload remains recoverable.
       setDraftsByChat((current) =>
@@ -7826,6 +7836,7 @@ export function App() {
     try {
       const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(targetChatId) : [];
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
+      submittedPromptText = promptText;
       const optimisticMessageId = optimisticPromptId(optimisticAt);
 
       const sameChatIsBusy = busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
@@ -7837,9 +7848,10 @@ export function App() {
       );
       setNotice(expectedDisposition === "queued" ? "Queueing prompt on server..." : "Sending to target laptop...");
 
+      promptRequestAttempted = true;
       const result = await apiFetch<PromptSubmitResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
         method: "POST",
-        body: JSON.stringify({ text: promptText })
+        body: JSON.stringify({ text: promptText, clientRequestId })
       });
       const disposition = result.disposition ?? expectedDisposition;
 
@@ -7876,6 +7888,58 @@ export function App() {
       void loadState();
       void loadChatJobs(targetChatId);
     } catch (error) {
+      let acceptedJob: CodexRunJob | undefined;
+
+      // The POST can reach the laptop even if its response is lost by an iOS PWA,
+      // tunnel, or service-worker transition. Reconcile the idempotent request
+      // before treating it as failed; otherwise a successfully sent prompt is
+      // incorrectly restored into the composer.
+      if (promptRequestAttempted) {
+        for (let attempt = 0; attempt < 3 && !acceptedJob; attempt += 1) {
+          if (attempt > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, attempt * 300));
+          }
+
+          try {
+            const jobsResult = await apiFetch<ChatJobsResult>(
+              `/api/chats/${encodeURIComponent(targetChatId)}/jobs`
+            );
+            acceptedJob = jobsResult.jobs.find((job) => job.clientRequestId === clientRequestId);
+          } catch {
+            // Keep trying briefly; the original request may still be settling.
+          }
+        }
+      }
+
+      if (acceptedJob) {
+        rememberJob(acceptedJob);
+        const acceptedDisposition = acceptedJob.status === "queued" ? "queued" : "started";
+        if (acceptedDisposition === "started") {
+          applyOptimisticPrompt(
+            targetChatId,
+            submittedPromptText,
+            optimisticAt,
+            optimisticPromptId(optimisticAt),
+            options.voiceNote,
+            acceptedJob.settings ?? state?.runner.settings
+          );
+        }
+        if (receiptId) {
+          finishPromptReceipt(receiptId, acceptedDisposition === "queued" ? "Queued on server" : "Server received");
+        }
+        if (!options.preserveDraft) {
+          setDraftForChat(targetChatId, "");
+        }
+        if (!options.voiceNote) {
+          setPendingAttachments([]);
+          setAttachmentUploadStatuses({});
+        }
+        setNotice(acceptedDisposition === "queued" ? "Queued on server for this chat" : "Prompt sent to target laptop");
+        void loadState();
+        void loadChatJobs(targetChatId);
+        return;
+      }
+
       if (!options.preserveDraft) {
         setDraftForChat(targetChatId, outgoingDraft);
         if (selectedChatIdRef.current === targetChatId) {

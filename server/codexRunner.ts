@@ -14,6 +14,7 @@ type CodexRunnerOptions = {
 type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed" | "stopped";
 
 type EnqueueOptions = {
+  clientRequestId?: string;
   chatId: string;
   projectPath: string;
   text: string;
@@ -274,6 +275,10 @@ export class CodexRunner {
     return this.sortedJobs.filter((job) => job.chatId === chatId);
   }
 
+  jobForClientRequest(chatId: string, clientRequestId: string): CodexRunJob | undefined {
+    return this.jobsForChat(chatId).find((job) => job.clientRequestId === clientRequestId);
+  }
+
   cancelQueuedJob(jobId: string, chatId?: string): { job: CodexRunJob; text: string } | null {
     const queueIndex = this.queue.findIndex((item) => item.job.id === jobId && (!chatId || item.job.chatId === chatId));
 
@@ -377,6 +382,7 @@ export class CodexRunner {
     const logBase = `${createdAt.replace(/[:.]/g, "-")}-${safeSegment(options.kind)}-${safeSegment(options.chatId)}-${safeSegment(id)}`;
     const job: CodexRunJob = {
       id,
+      clientRequestId: options.clientRequestId,
       chatId: options.chatId,
       projectPath: options.projectPath,
       status: options.status,

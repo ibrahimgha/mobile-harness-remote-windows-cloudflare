@@ -82,6 +82,7 @@ queuedSettingsInternals.runJob = async (queuedJob) => {
 };
 
 const queuedSettingsJob = queuedSettingsRunner.enqueue({
+  clientRequestId: "settings-request-1",
   chatId: "settings-chat",
   projectPath: process.cwd(),
   text: "Use the model selected when this starts",
@@ -92,6 +93,11 @@ const queuedSettingsJob = queuedSettingsRunner.enqueue({
 
 assert.equal(settingsReadCount, 0, "enqueueing behind an active chat must not snapshot run settings");
 assert.equal(queuedSettingsJob.settings, undefined, "queued jobs must not advertise provisional settings");
+assert.equal(
+  queuedSettingsRunner.jobForClientRequest("settings-chat", "settings-request-1"),
+  queuedSettingsJob,
+  "accepted prompts must remain discoverable by their client request ID"
+);
 
 selectedSettings = {
   model: "gpt-5.6-sol",
