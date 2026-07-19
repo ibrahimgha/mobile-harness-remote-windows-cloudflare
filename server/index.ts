@@ -24,6 +24,7 @@ import {
 } from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
+import { listActiveSessionRuns } from "./sessionActivity.js";
 import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
@@ -1285,6 +1286,15 @@ app.get("/api/jobs", requireControlAuth, (_req, res) => {
     queuedJobs: runner.queuedJobs,
     jobs: runner.recentJobs
   });
+});
+
+app.get("/api/chats/activity", requireControlAuth, async (_req, res) => {
+  try {
+    res.json({ ok: true, runs: await listActiveSessionRuns() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not inspect Codex session activity";
+    res.status(500).json({ ok: false, message });
+  }
 });
 
 app.get("/api/chats/:id/jobs", requireControlAuth, async (req, res) => {

@@ -1298,6 +1298,12 @@ p {
   white-space: nowrap;
 }
 
+.chat-link small.chat-running-since {
+  color: var(--teal-strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
 .chat-meta {
   display: inline-flex;
   align-items: center;

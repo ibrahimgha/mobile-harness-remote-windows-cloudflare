@@ -7,7 +7,7 @@
     "dev": "concurrently -k -n bridge,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
-    "build": "npm run check:ios-composer && npm run check:composer-scenarios && npm run check:auth-revocation && npm run check:composer-editing && npm run check:message-refresh && npm run check:run-settings && npm run check:codex-usage && npm run check:run-controls && npm run check:chat-drafts && npm run check:live-thinking && npm run check:notification-copy && npm run check:subagent-filter && npm run check:sidebar-order && tsc -b && vite build && tsc -p tsconfig.server.json",
+    "build": "npm run check:ios-composer && npm run check:composer-scenarios && npm run check:auth-revocation && npm run check:composer-editing && npm run check:message-refresh && npm run check:run-settings && npm run check:codex-usage && npm run check:run-controls && npm run check:chat-drafts && npm run check:live-thinking && npm run check:notification-copy && npm run check:subagent-filter && npm run check:sidebar-order && npm run check:session-activity && tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "service:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 install",
     "service:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 uninstall",
@@ -17,7 +17,7 @@
     "service:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 status",
     "tunnel:dev": "cloudflared tunnel --url http://localhost:5173",
     "tunnel:prod": "cloudflared tunnel --url http://localhost:8787",
-    "check": "npm run check:ios-composer && npm run check:composer-scenarios && npm run check:auth-revocation && npm run check:composer-editing && npm run check:message-refresh && npm run check:run-settings && npm run check:codex-usage && npm run check:run-controls && npm run check:chat-drafts && npm run check:live-thinking && npm run check:notification-copy && npm run check:subagent-filter && npm run check:sidebar-order && tsc -b && tsc -p tsconfig.server.json",
+    "check": "npm run check:ios-composer && npm run check:composer-scenarios && npm run check:auth-revocation && npm run check:composer-editing && npm run check:message-refresh && npm run check:run-settings && npm run check:codex-usage && npm run check:run-controls && npm run check:chat-drafts && npm run check:live-thinking && npm run check:notification-copy && npm run check:subagent-filter && npm run check:sidebar-order && npm run check:session-activity && tsc -b && tsc -p tsconfig.server.json",
     "check:ios-composer": "node scripts/check-ios-composer.mjs",
     "check:composer-scenarios": "tsx scripts/check-composer-scenarios.ts",
     "check:auth-revocation": "node scripts/check-auth-revocation.mjs",
@@ -30,7 +30,8 @@
     "check:live-thinking": "tsx scripts/check-live-thinking.ts",
     "check:notification-copy": "tsx scripts/check-notification-copy.ts",
     "check:subagent-filter": "tsx scripts/check-subagent-filter.ts",
-    "check:sidebar-order": "tsx scripts/check-sidebar-order.ts"
+    "check:sidebar-order": "tsx scripts/check-sidebar-order.ts",
+    "check:session-activity": "tsx scripts/check-session-activity.ts"
   },
   "dependencies": {
     "@types/web-push": "^3.6.4",

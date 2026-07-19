@@ -308,6 +308,16 @@ type ChatJobsResult = {
   jobs: CodexRunJob[];
 };
 
+type ActiveSessionRun = {
+  chatId: string;
+  startedAt: string;
+};
+
+type SessionActivityResult = {
+  ok: boolean;
+  runs: ActiveSessionRun[];
+};
+
 type QueuedPromptMutationResult = ApiResult & {
   chatId: string;
   job: CodexRunJob;
@@ -460,6 +470,7 @@ const attachmentChunkBytes = 8 * 1024 * 1024;
 const shortcutInstructionSyncIntervalMs = 3000;
 const backgroundSyncIntervalMs = 5000;
 const activeJobSyncIntervalMs = 4000;
+const sessionActivitySyncIntervalMs = 4000;
 const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
@@ -1167,6 +1178,13 @@ function formatShortcutInstructions(files: ShortcutInstructionFile[]) {
   return files
     .map((file) => `# ${file.relativePath}\n${file.content.trimEnd()}`)
     .join("\n\n---\n\n");
+}
+
+function sameSessionRunsForRender(a: ActiveSessionRun[], b: ActiveSessionRun[]) {
+  return (
+    a.length === b.length &&
+    a.every((run, index) => run.chatId === b[index]?.chatId && run.startedAt === b[index]?.startedAt)
+  );
 }
 
 function readCachedActiveJobs(): Record<string, CodexRunJob[]> {
@@ -3650,6 +3668,7 @@ export function App() {
   const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
+  const [activeSessionRuns, setActiveSessionRuns] = useState<ActiveSessionRun[]>([]);
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
@@ -3713,6 +3732,7 @@ export function App() {
   const customKeyboardFocusOpenSuppressedRef = useRef(false);
   const customKeyboardSelectionAdoptionPendingRef = useRef(false);
   const customKeyboardLastContactRef = useRef<{ chatId: string; at: number } | null>(null);
+  const sessionRunChatRefreshRef = useRef(new Set<string>());
   const keyboardTraceBufferRef = useRef<KeyboardTraceEvent[]>(readPendingKeyboardTrace());
   const keyboardTraceSequenceRef = useRef(0);
   const keyboardTraceSessionRef = useRef(
@@ -4296,6 +4316,17 @@ export function App() {
     () => (selectedChatId ? queuedServerJobs.filter((job) => job.chatId === selectedChatId) : []),
     [queuedServerJobs, selectedChatId]
   );
+  const chatSummaryById = useMemo(() => {
+    const chats = new Map<string, ChatSummary>();
+
+    for (const project of chatIndex?.projects ?? []) {
+      for (const chat of project.chats) {
+        chats.set(chat.id, chat);
+      }
+    }
+
+    return chats;
+  }, [chatIndex]);
   const activeRunJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
 
@@ -4317,8 +4348,30 @@ export function App() {
       }
     }
 
+    const serverRunningChatIds = new Set(
+      [...jobsById.values()].filter((job) => job.status === "running").map((job) => job.chatId)
+    );
+
+    for (const run of activeSessionRuns) {
+      if (serverRunningChatIds.has(run.chatId) || !chatSummaryById.has(run.chatId)) {
+        continue;
+      }
+
+      addJob({
+        id: `session-run-${run.chatId}-${run.startedAt}`,
+        chatId: run.chatId,
+        projectPath: "",
+        status: "running",
+        createdAt: run.startedAt,
+        startedAt: run.startedAt,
+        promptPreview: "Started outside this remote",
+        textLength: 0,
+        message: "Running in Codex"
+      });
+    }
+
     return sortJobsForChat([...jobsById.values()]);
-  }, [chatJobs, state?.runner.recentJobs]);
+  }, [activeSessionRuns, chatJobs, chatSummaryById, state?.runner.recentJobs]);
   const activeRunJobKey = useMemo(
     () =>
       activeRunJobs
@@ -4327,17 +4380,6 @@ export function App() {
         .join("|"),
     [activeRunJobs]
   );
-  const chatSummaryById = useMemo(() => {
-    const chats = new Map<string, ChatSummary>();
-
-    for (const project of chatIndex?.projects ?? []) {
-      for (const chat of project.chats) {
-        chats.set(chat.id, chat);
-      }
-    }
-
-    return chats;
-  }, [chatIndex]);
   const firstIndexedChatId = useMemo(() => firstChatId(chatIndex), [chatIndex]);
   const selectedChatSummaryId =
     selectedChatId && (isTemporaryChatId(selectedChatId) || chatSummaryById.has(selectedChatId)) ? selectedChatId : firstIndexedChatId;
@@ -4389,7 +4431,7 @@ export function App() {
     return chatIds;
   }, [chatJobs, state?.runner.recentJobs]);
   const activeJobsByChatId = useMemo(() => {
-    const activeJobs = new Map<string, { count: number; running: boolean }>();
+    const activeJobs = new Map<string, { count: number; running: boolean; startedAt?: string }>();
     const seenJobIds = new Set<string>();
 
     const addJob = (job: CodexRunJob) => {
@@ -4398,25 +4440,26 @@ export function App() {
       }
 
       seenJobIds.add(job.id);
-      const current = activeJobs.get(job.chatId) ?? { count: 0, running: false };
+      const current = activeJobs.get(job.chatId) ?? { count: 0, running: false, startedAt: undefined };
+      const jobStartedAt = job.status === "running" ? (job.startedAt ?? job.createdAt) : undefined;
       activeJobs.set(job.chatId, {
         count: current.count + 1,
-        running: current.running || job.status === "running"
+        running: current.running || job.status === "running",
+        startedAt:
+          current.startedAt && jobStartedAt
+            ? Date.parse(current.startedAt) <= Date.parse(jobStartedAt)
+              ? current.startedAt
+              : jobStartedAt
+            : current.startedAt ?? jobStartedAt
       });
     };
 
-    for (const job of state?.runner.recentJobs ?? []) {
+    for (const job of activeRunJobs) {
       addJob(job);
     }
 
-    for (const jobs of Object.values(chatJobs)) {
-      for (const job of jobs) {
-        addJob(job);
-      }
-    }
-
     return activeJobs;
-  }, [chatJobs, state?.runner.recentJobs]);
+  }, [activeRunJobs]);
   const trackServerJob = useCallback((job: CodexRunJob) => {
     const activeJobs = activeServerJobIdsByChatRef.current;
     const current = new Set(activeJobs.get(job.chatId));
@@ -4463,6 +4506,11 @@ export function App() {
     return Boolean(activeServerJobIdsByChatRef.current.get(chatId)?.size);
   }, []);
   const selectedJob = selectedJobs.find(isActiveJob);
+  const selectedSessionJob = activeRunJobs.find(
+    (job) => job.chatId === selectedChatId && job.status === "running" && job.id.startsWith("session-run-")
+  );
+  const selectedDisplayJob = selectedJob?.status === "running" ? selectedJob : (selectedSessionJob ?? selectedJob);
+  const selectedDisplayJobIsExternal = Boolean(selectedDisplayJob?.id.startsWith("session-run-"));
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length;
   const selectedMessagePage = selectedChat?.messagePage;
@@ -4481,8 +4529,8 @@ export function App() {
     [selectedJobs]
   );
   const selectedJobDuration =
-    selectedJob?.status === "running"
-      ? formatElapsedSeconds(selectedJob.startedAt ?? selectedJob.createdAt, selectedJob.finishedAt, durationNow)
+    selectedDisplayJob?.status === "running"
+      ? formatElapsedSeconds(selectedDisplayJob.startedAt ?? selectedDisplayJob.createdAt, selectedDisplayJob.finishedAt, durationNow)
       : "";
   const transcriptMessages = useMemo<ChatTranscriptMessage[]>(() => {
     if (!selectedChat) {
@@ -4541,8 +4589,8 @@ export function App() {
     [runFailureMessages, transcriptMessages]
   );
   const visibleMessages = useMemo(
-    () => messagesForViewMode(timelineMessages, selectedChatMessageViewMode, selectedJob),
-    [durationNow, selectedChatMessageViewMode, selectedJob, timelineMessages]
+    () => messagesForViewMode(timelineMessages, selectedChatMessageViewMode, selectedDisplayJob),
+    [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages]
   );
   const visibleMessageItems = useMemo(() => {
     const occurrences = new Map<string, number>();
@@ -4962,6 +5010,20 @@ export function App() {
       setNotice(error instanceof Error ? error.message : "Could not load chats");
     } finally {
       setLoadingChats(false);
+    }
+  }, [apiFetch, authenticated]);
+
+  const loadSessionActivity = useCallback(async () => {
+    if (!authenticated) {
+      return;
+    }
+
+    try {
+      const result = await apiFetch<SessionActivityResult>("/api/chats/activity");
+      const runs = [...(result.runs ?? [])].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+      setActiveSessionRuns((current) => (sameSessionRunsForRender(current, runs) ? current : runs));
+    } catch {
+      // Session activity is supplemental; normal chat and queue refreshes remain authoritative.
     }
   }, [apiFetch, authenticated]);
 
@@ -6130,6 +6192,39 @@ export function App() {
   useEffect(() => {
     void loadChats();
   }, [loadChats]);
+
+  useEffect(() => {
+    if (!authenticated) {
+      setActiveSessionRuns([]);
+      return;
+    }
+
+    void loadSessionActivity();
+    const interval = window.setInterval(() => void loadSessionActivity(), sessionActivitySyncIntervalMs);
+    return () => window.clearInterval(interval);
+  }, [authenticated, loadSessionActivity]);
+
+  useEffect(() => {
+    const activeIds = new Set(activeSessionRuns.map((run) => run.chatId));
+    for (const chatId of sessionRunChatRefreshRef.current) {
+      if (!activeIds.has(chatId)) {
+        sessionRunChatRefreshRef.current.delete(chatId);
+      }
+    }
+
+    const unknownRunIds = activeSessionRuns
+      .map((run) => run.chatId)
+      .filter((chatId) => !chatSummaryById.has(chatId) && !sessionRunChatRefreshRef.current.has(chatId));
+
+    if (!authenticated || !unknownRunIds.length) {
+      return;
+    }
+
+    for (const chatId of unknownRunIds) {
+      sessionRunChatRefreshRef.current.add(chatId);
+    }
+    void loadChats();
+  }, [activeSessionRuns, authenticated, chatSummaryById, loadChats]);
 
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
@@ -8259,7 +8354,11 @@ export function App() {
                                 {hasUnread ? <span className="chat-unread-dot" aria-label="Unread completed response" /> : null}
                               </span>
                               <span className="chat-meta">
-                                <small>{formatRelative(chat.updatedAt)}</small>
+                                <small className={activeJob?.running ? "chat-running-since" : undefined}>
+                                  {activeJob?.running && activeJob.startedAt
+                                    ? `Running ${formatElapsedSeconds(activeJob.startedAt, undefined, durationNow)}`
+                                    : formatRelative(chat.updatedAt)}
+                                </small>
                                 {activeJob ? (
                                   <span
                                     className={`chat-active-indicator ${activeJob.running ? "is-running" : ""}`}
@@ -8599,31 +8698,35 @@ export function App() {
             </span>
             <small>{selectedPromptReceipt.promptPreview}</small>
           </div>
-        ) : selectedJob && ["queued", "running"].includes(selectedJob.status) ? (
+        ) : selectedDisplayJob && ["queued", "running"].includes(selectedDisplayJob.status) ? (
           <div className="job-strip">
-            <Loader2 className={selectedJob.status === "running" ? "spin" : ""} size={16} />
+            <Loader2 className={selectedDisplayJob.status === "running" ? "spin" : ""} size={16} />
             <span className="job-strip-status">
               <span className="job-strip-label">
-                {selectedJob.status === "running" ? "Running on target laptop" : "Queued on target laptop"}
+                {selectedDisplayJob.status === "running"
+                  ? selectedDisplayJobIsExternal
+                    ? "Running in Codex"
+                    : "Running on target laptop"
+                  : "Queued on target laptop"}
               </span>
-              {selectedJob.status === "running" ? (
+              {selectedDisplayJob.status === "running" ? (
                 <span className="job-duration" aria-label={`Elapsed ${selectedJobDuration}`}>
                   <Clock3 size={13} />
                   {selectedJobDuration}
                 </span>
               ) : null}
             </span>
-            <small>{selectedJob.promptPreview}</small>
-            {selectedJob.status === "running" ? (
+            <small>{selectedDisplayJob.promptPreview}</small>
+            {selectedDisplayJob.status === "running" && !selectedDisplayJobIsExternal ? (
               <button
                 className="job-stop-button"
                 type="button"
-                onClick={() => void stopRunningJob(selectedJob)}
-                disabled={stoppingJobIds.has(selectedJob.id)}
+                onClick={() => void stopRunningJob(selectedDisplayJob)}
+                disabled={stoppingJobIds.has(selectedDisplayJob.id)}
                 aria-label="Stop this chat's running worker"
                 title="Stop this chat's running worker"
               >
-                {stoppingJobIds.has(selectedJob.id) ? <Loader2 className="spin" size={14} /> : <CircleX size={15} />}
+                {stoppingJobIds.has(selectedDisplayJob.id) ? <Loader2 className="spin" size={14} /> : <CircleX size={15} />}
               </button>
             ) : null}
           </div>
