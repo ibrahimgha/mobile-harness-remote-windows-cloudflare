@@ -95,10 +95,16 @@ try {
     -FilePath "powershell.exe" `
     -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$serviceScript`"", "restart") `
     -WindowStyle Hidden `
-    -Wait `
     -PassThru `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath
+
+  # Start-Process -Wait follows the restarted service's descendant process tree on
+  # Windows, so it never returns while the new backend is healthy and running.
+  # Wait only for the short-lived service command itself.
+  if (-not $restartProcess.WaitForExit(120000)) {
+    throw "Service restart command did not exit within 120 seconds"
+  }
 
   Append-ProcessOutput -Path $stdoutPath
   Append-ProcessOutput -Path $stderrPath
