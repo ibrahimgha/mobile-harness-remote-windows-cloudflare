@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
-import { resolveTranscriptTailBytes } from "../server/codexSessions.js";
+import { parseSessionFile, resolveTranscriptTailBytes } from "../server/codexSessions.js";
 
 type TestMessage = {
   id: string;
@@ -74,6 +74,16 @@ try {
         payload: { type: "message", role: "user", content: [{ type: "input_text", text: `prompt ${turn}` }] }
       }),
       JSON.stringify({
+        timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:00.250Z`,
+        type: "response_item",
+        payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: `update one ${turn}` }] }
+      }),
+      JSON.stringify({
+        timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:00.500Z`,
+        type: "response_item",
+        payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: `update two ${turn}` }] }
+      }),
+      JSON.stringify({
         timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:01.000Z`,
         type: "response_item",
         payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `response ${turn}` }] }
@@ -92,6 +102,30 @@ try {
 
   assert.ok(resolvedBytes > 1024, "a tool-heavy transcript must expand beyond its initial byte tail");
   assert.ok(resolvedBytes < stat.size, "history pagination should not require reading the whole session when enough turns are near the tail");
+
+  const parsed = await parseSessionFile(sessionPath, new Map(), {
+    maxTailBytes: stat.size,
+    detailedTailBytes: 70_000,
+    detailTurns: 10,
+    messageMode: "codex"
+  });
+  const messages = parsed?.messages ?? [];
+  const assistantsAfterPrompt = (promptText: string) => {
+    const promptIndex = messages.findIndex((message) => message.role === "user" && message.text === promptText);
+    const nextPromptIndex = messages.findIndex((message, index) => index > promptIndex && message.role === "user");
+    return messages.slice(promptIndex + 1, nextPromptIndex >= 0 ? nextPromptIndex : undefined).filter((message) => message.role === "assistant");
+  };
+
+  assert.deepEqual(
+    assistantsAfterPrompt("prompt 11").map((message) => message.text),
+    ["response 11"],
+    "turns older than the detailed byte window must keep only their last response"
+  );
+  assert.deepEqual(
+    assistantsAfterPrompt("prompt 20").map((message) => message.text),
+    ["update one 20", "update two 20", "response 20"],
+    "turns inside the detailed byte window must retain their Codex updates"
+  );
 } finally {
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
 }

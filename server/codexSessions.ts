@@ -13,7 +13,7 @@ const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024
 const summaryTailBytes = Number(process.env.CODEX_SESSION_SUMMARY_TAIL_BYTES ?? 768 * 1024);
 const detailTailBytes = Math.max(
   summaryTailBytes,
-  Number(process.env.CODEX_CHAT_DETAIL_BYTES ?? tailBytes) || tailBytes
+  Number(process.env.CODEX_CHAT_DETAIL_BYTES ?? 40 * 1024 * 1024) || 40 * 1024 * 1024
 );
 const headBytes = Math.max(16 * 1024, Number(process.env.CODEX_SESSION_HEAD_BYTES ?? 256 * 1024) || 256 * 1024);
 const parseConcurrency = Math.max(1, Number(process.env.CODEX_SESSION_PARSE_CONCURRENCY ?? 8) || 8);
@@ -36,6 +36,7 @@ type ParsedSession = ChatDetail & {
 
 type ParseSessionOptions = {
   maxTailBytes?: number;
+  detailedTailBytes?: number;
   detailTurns?: number;
   messageMode?: ChatMessageViewMode;
 };
@@ -328,6 +329,25 @@ async function readFileSlice(filePath: string, start: number, length: number): P
   }
 }
 
+async function findLineStartAtOrBefore(filePath: string, offset: number): Promise<number> {
+  const blockBytes = 64 * 1024;
+  let cursor = Math.max(0, offset);
+
+  while (cursor > 0) {
+    const start = Math.max(0, cursor - blockBytes);
+    const buffer = await readFileSlice(filePath, start, cursor - start);
+    const newlineIndex = buffer.lastIndexOf(0x0a);
+
+    if (newlineIndex >= 0) {
+      return start + newlineIndex + 1;
+    }
+
+    cursor = start;
+  }
+
+  return 0;
+}
+
 function countPromptRecords(buffer: Buffer): number {
   let count = 0;
 
@@ -555,12 +575,14 @@ function formatToolOutputText(output: unknown): string {
   return clamped.trimStart().startsWith("```") ? clamped : `\`\`\`text\n${clamped}\n\`\`\``;
 }
 
-async function parseSessionFile(
+export async function parseSessionFile(
   filePath: string,
   index: Map<string, IndexedSession>,
   options: ParseSessionOptions | number = {}
 ): Promise<ParsedSession | null> {
   const maxTailBytes = typeof options === "number" ? options : options.maxTailBytes ?? tailBytes;
+  const detailedTailLimit =
+    typeof options === "number" ? maxTailBytes : Math.max(1, options.detailedTailBytes ?? maxTailBytes);
   const detailTurns = typeof options === "number" ? defaultDetailTurns : clampDetailTurns(options.detailTurns);
   const messageMode: ChatMessageViewMode = typeof options === "number" ? "codex" : options.messageMode ?? "codex";
   const stat = await fs.stat(filePath);
@@ -577,6 +599,12 @@ async function parseSessionFile(
   let newestRecordMs = Number.NaN;
   let currentTurnSettings: Pick<ChatTranscriptMessage, "model" | "reasoningEffort"> = {};
   let lastPromptTranscriptIndex = -1;
+  let compactTurn:
+    | {
+        prompt: ChatTranscriptMessage;
+        lastResponse?: ChatTranscriptMessage;
+      }
+    | undefined;
   const transcriptMessages: ChatTranscriptMessage[] = [];
   const appendTranscriptMessage = (message: Omit<ChatTranscriptMessage, "id"> & { id?: string }) => {
     const nextMessage: ChatTranscriptMessage = {
@@ -587,6 +615,17 @@ async function parseSessionFile(
     if (messageIncludedInMode(nextMessage, messageMode)) {
       transcriptMessages.push(nextMessage);
     }
+  };
+  const flushCompactTurn = () => {
+    if (!compactTurn) {
+      return;
+    }
+
+    transcriptMessages.push(compactTurn.prompt);
+    if (compactTurn.lastResponse) {
+      transcriptMessages.push(compactTurn.lastResponse);
+    }
+    compactTurn = undefined;
   };
 
   const headBuffer = await readFileSlice(filePath, 0, Math.min(stat.size, headBytes));
@@ -625,9 +664,16 @@ async function parseSessionFile(
     }
   }
 
-  const consumeTranscriptLine = (line: string) => {
+  const consumeTranscriptLine = (line: string, compactRegion = false) => {
     if (!line.includes('"payload"') && !line.includes('"type":"error"') && !line.includes('"type":"turn.failed"')) {
       return;
+    }
+
+    if (compactRegion) {
+      const recordTypePrefix = line.slice(0, 180);
+      if (!recordTypePrefix.includes('"type":"response_item"') && !recordTypePrefix.includes('"type":"turn_context"')) {
+        return;
+      }
     }
 
     try {
@@ -693,6 +739,9 @@ async function parseSessionFile(
 
         if (lastPromptTranscriptIndex >= 0) {
           Object.assign(transcriptMessages[lastPromptTranscriptIndex], currentTurnSettings);
+        }
+        if (compactTurn) {
+          Object.assign(compactTurn.prompt, currentTurnSettings);
         }
         return;
       }
@@ -834,15 +883,25 @@ async function parseSessionFile(
         lastPrompt = { text, createdAt: timestamp };
         lastAssistantAfterPrompt = null;
         lastFinalAssistantAfterPrompt = null;
-        appendTranscriptMessage({
+        const promptMessage: ChatTranscriptMessage = {
+          id: transcriptId("user_prompt", timestamp, transcriptMessages.length),
           role: "user",
           kind: "user_prompt",
           label: "You",
           text,
           createdAt: timestamp,
           ...currentTurnSettings
-        });
-        lastPromptTranscriptIndex = transcriptMessages.length - 1;
+        };
+
+        if (compactRegion) {
+          flushCompactTurn();
+          compactTurn = { prompt: promptMessage };
+          lastPromptTranscriptIndex = -1;
+        } else {
+          flushCompactTurn();
+          appendTranscriptMessage(promptMessage);
+          lastPromptTranscriptIndex = transcriptMessages.length - 1;
+        }
       }
 
       if (payload.role === "assistant" && text) {
@@ -859,7 +918,8 @@ async function parseSessionFile(
           lastAssistantAfterPrompt = lastAssistant;
         }
 
-        appendTranscriptMessage({
+        const assistantMessage: ChatTranscriptMessage = {
+          id: transcriptId(isFinalAnswer ? "assistant_final" : "assistant_commentary", timestamp, transcriptMessages.length),
           role: "assistant",
           kind: isFinalAnswer ? "assistant_final" : "assistant_commentary",
           label: isFinalAnswer ? "Codex" : "Codex update",
@@ -867,7 +927,15 @@ async function parseSessionFile(
           createdAt: timestamp,
           isFinal: isFinalAnswer,
           ...currentTurnSettings
-        });
+        };
+
+        if (compactRegion || compactTurn) {
+          if (compactTurn) {
+            compactTurn.lastResponse = assistantMessage;
+          }
+        } else {
+          appendTranscriptMessage(assistantMessage);
+        }
 
         if (isFinalAnswer) {
           lastFinalAssistant = lastAssistant;
@@ -882,24 +950,45 @@ async function parseSessionFile(
     }
   };
 
-  if (maxTailBytes >= stat.size) {
-    const lines = createInterface({
-      input: createReadStream(filePath, { encoding: "utf8" }),
-      crlfDelay: Infinity
-    });
+  const bytesToRead = Math.min(stat.size, maxTailBytes);
+  if (bytesToRead <= detailedTailLimit) {
+    if (maxTailBytes >= stat.size) {
+      const lines = createInterface({
+        input: createReadStream(filePath, { encoding: "utf8" }),
+        crlfDelay: Infinity
+      });
 
-    for await (const line of lines) {
-      consumeTranscriptLine(line);
+      for await (const line of lines) {
+        consumeTranscriptLine(line);
+      }
+    } else {
+      const start = Math.max(0, stat.size - bytesToRead);
+      const buffer = await readFileSlice(filePath, start, bytesToRead);
+
+      for (const line of buffer.toString("utf8").split(/\r?\n/)) {
+        consumeTranscriptLine(line);
+      }
     }
   } else {
-    const bytesToRead = Math.min(stat.size, maxTailBytes);
-    const start = Math.max(0, stat.size - bytesToRead);
-    const buffer = await readFileSlice(filePath, start, bytesToRead);
+    const tailStart = Math.max(0, stat.size - bytesToRead);
+    const rawDetailedStart = Math.max(tailStart, stat.size - detailedTailLimit);
+    const detailedStart = await findLineStartAtOrBefore(filePath, rawDetailedStart);
+    const compactLength = Math.max(0, detailedStart - tailStart);
 
-    for (const line of buffer.toString("utf8").split(/\r?\n/)) {
+    if (compactLength > 0) {
+      const compactBuffer = await readFileSlice(filePath, tailStart, compactLength);
+      for (const line of compactBuffer.toString("utf8").split(/\r?\n/)) {
+        consumeTranscriptLine(line, true);
+      }
+    }
+
+    const detailedBuffer = await readFileSlice(filePath, detailedStart, stat.size - detailedStart);
+    for (const line of detailedBuffer.toString("utf8").split(/\r?\n/)) {
       consumeTranscriptLine(line);
     }
   }
+
+  flushCompactTurn();
 
   const indexed = index.get(id);
   const indexedUpdated = safeDate(indexed?.updatedAt, stat.mtimeMs);
@@ -1049,6 +1138,7 @@ export async function getChat(id: string, options: { detailTurns?: number; messa
   const detailTurns = clampDetailTurns(options.detailTurns);
   const session = await parseSessionFile(filePath, await readSessionIndex(), {
     maxTailBytes: await detailBytesForTurns(filePath, detailTurns),
+    detailedTailBytes: detailTailBytes,
     detailTurns,
     messageMode: options.messageMode ?? "codex"
   });
