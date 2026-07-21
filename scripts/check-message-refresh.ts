@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
+import { resolveTranscriptTailBytes } from "../server/codexSessions.js";
 
 type TestMessage = {
   id: string;
@@ -56,3 +60,38 @@ assert.deepEqual(
   { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low" },
   "authoritative server metadata must replace optimistic settings when present"
 );
+
+const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-remote-history-"));
+const sessionPath = path.join(temporaryDirectory, "session.jsonl");
+
+try {
+  const records: string[] = [];
+  for (let turn = 1; turn <= 20; turn += 1) {
+    records.push(
+      JSON.stringify({
+        timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:00.000Z`,
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: `prompt ${turn}` }] }
+      }),
+      JSON.stringify({
+        timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:01.000Z`,
+        type: "response_item",
+        payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `response ${turn}` }] }
+      }),
+      JSON.stringify({
+        timestamp: `2026-07-10T00:${String(turn).padStart(2, "0")}:02.000Z`,
+        type: "response_item",
+        payload: { type: "function_call_output", output: "x".repeat(32_000) }
+      })
+    );
+  }
+
+  await fs.writeFile(sessionPath, `${records.join("\n")}\n`);
+  const stat = await fs.stat(sessionPath);
+  const resolvedBytes = await resolveTranscriptTailBytes(sessionPath, stat.size, 1024, 11);
+
+  assert.ok(resolvedBytes > 1024, "a tool-heavy transcript must expand beyond its initial byte tail");
+  assert.ok(resolvedBytes < stat.size, "history pagination should not require reading the whole session when enough turns are near the tail");
+} finally {
+  await fs.rm(temporaryDirectory, { recursive: true, force: true });
+}

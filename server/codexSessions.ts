@@ -40,6 +40,15 @@ type ParseSessionOptions = {
   messageMode?: ChatMessageViewMode;
 };
 
+type DetailTailWindow = {
+  fileSize: number;
+  requiredPrompts: number;
+  bytes: number;
+};
+
+const detailTailWindows = new Map<string, DetailTailWindow>();
+const maxRememberedDetailTailWindows = 40;
+
 type SessionMetaPayload = {
   id?: string;
   cwd?: string;
@@ -54,6 +63,7 @@ type SessionMetaPayload = {
 
 export function clearSessionCache() {
   summarySessionsCache = null;
+  detailTailWindows.clear();
 }
 
 export function isSubagentSessionMeta(payload: SessionMetaPayload): boolean {
@@ -316,6 +326,88 @@ async function readFileSlice(filePath: string, start: number, length: number): P
   } finally {
     await handle.close();
   }
+}
+
+function countPromptRecords(buffer: Buffer): number {
+  let count = 0;
+
+  for (const line of buffer.toString("utf8").split(/\r?\n/)) {
+    if (
+      !line.includes('"type":"response_item"') ||
+      !line.includes('"type":"message"') ||
+      !line.includes('"role":"user"')
+    ) {
+      continue;
+    }
+
+    try {
+      const record = JSON.parse(line) as {
+        type?: string;
+        payload?: { type?: string; role?: string; content?: unknown };
+      };
+
+      if (
+        record.type === "response_item" &&
+        record.payload?.type === "message" &&
+        record.payload.role === "user" &&
+        isPromptText(textFromContent(record.payload.content))
+      ) {
+        count += 1;
+      }
+    } catch {
+      // The first line in a tail slice may be partial. It cannot be a usable turn.
+    }
+  }
+
+  return count;
+}
+
+export async function resolveTranscriptTailBytes(
+  filePath: string,
+  fileSize: number,
+  initialBytes: number,
+  requiredPrompts: number
+): Promise<number> {
+  let bytesToRead = Math.min(fileSize, Math.max(1, initialBytes));
+
+  while (bytesToRead < fileSize) {
+    const buffer = await readFileSlice(filePath, fileSize - bytesToRead, bytesToRead);
+
+    if (countPromptRecords(buffer) >= requiredPrompts) {
+      return bytesToRead;
+    }
+
+    bytesToRead = Math.min(fileSize, bytesToRead * 2);
+  }
+
+  return fileSize;
+}
+
+async function detailBytesForTurns(filePath: string, requestedTurns: number): Promise<number> {
+  const stat = await fs.stat(filePath);
+  const requiredPrompts = clampDetailTurns(requestedTurns) + 1;
+  const previous = detailTailWindows.get(filePath);
+  const appendedBytes = previous && stat.size >= previous.fileSize ? stat.size - previous.fileSize : 0;
+  const previousWindowBytes =
+    previous && stat.size >= previous.fileSize ? Math.min(stat.size, previous.bytes + appendedBytes) : 0;
+  const initialBytes = Math.max(detailTailBytes, previousWindowBytes);
+  const bytes =
+    previous && previous.requiredPrompts >= requiredPrompts && previous.fileSize === stat.size
+      ? previous.bytes
+      : await resolveTranscriptTailBytes(filePath, stat.size, initialBytes, requiredPrompts);
+
+  detailTailWindows.delete(filePath);
+  detailTailWindows.set(filePath, { fileSize: stat.size, requiredPrompts, bytes });
+
+  while (detailTailWindows.size > maxRememberedDetailTailWindows) {
+    const oldestKey = detailTailWindows.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    detailTailWindows.delete(oldestKey);
+  }
+
+  return bytes;
 }
 
 async function readSessionIndex(): Promise<Map<string, IndexedSession>> {
@@ -954,9 +1046,10 @@ export async function getChat(id: string, options: { detailTurns?: number; messa
     return null;
   }
 
+  const detailTurns = clampDetailTurns(options.detailTurns);
   const session = await parseSessionFile(filePath, await readSessionIndex(), {
-    maxTailBytes: detailTailBytes,
-    detailTurns: options.detailTurns,
+    maxTailBytes: await detailBytesForTurns(filePath, detailTurns),
+    detailTurns,
     messageMode: options.messageMode ?? "codex"
   });
 
