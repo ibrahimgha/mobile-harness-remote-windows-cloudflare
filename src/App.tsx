@@ -1188,6 +1188,16 @@ function sameSessionRunsForRender(a: ActiveSessionRun[], b: ActiveSessionRun[]) 
   );
 }
 
+function terminalJobEndsSessionRun(job: CodexRunJob, run: ActiveSessionRun) {
+  if (job.chatId !== run.chatId || !job.finishedAt || (job.status !== "completed" && job.status !== "failed" && job.status !== "stopped")) {
+    return false;
+  }
+
+  const finishedMs = Date.parse(job.finishedAt);
+  const runStartedMs = Date.parse(run.startedAt);
+  return Number.isFinite(finishedMs) && Number.isFinite(runStartedMs) && finishedMs >= runStartedMs;
+}
+
 function readCachedActiveJobs(): Record<string, CodexRunJob[]> {
   try {
     const parsed = JSON.parse(localStorage.getItem(activeJobsCacheKey) ?? "{}") as unknown;
@@ -4204,6 +4214,7 @@ export function App() {
   }, [chatIndex]);
   const activeRunJobs = useMemo(() => {
     const jobsById = new Map<string, CodexRunJob>();
+    const knownJobs: CodexRunJob[] = [];
 
     const addJob = (job: CodexRunJob) => {
       if (!isActiveJob(job)) {
@@ -4214,11 +4225,13 @@ export function App() {
     };
 
     for (const job of state?.runner.recentJobs ?? []) {
+      knownJobs.push(job);
       addJob(job);
     }
 
     for (const jobs of Object.values(chatJobs)) {
       for (const job of jobs) {
+        knownJobs.push(job);
         addJob(job);
       }
     }
@@ -4228,7 +4241,11 @@ export function App() {
     );
 
     for (const run of activeSessionRuns) {
-      if (serverRunningChatIds.has(run.chatId) || !chatSummaryById.has(run.chatId)) {
+      if (
+        serverRunningChatIds.has(run.chatId) ||
+        !chatSummaryById.has(run.chatId) ||
+        knownJobs.some((job) => terminalJobEndsSessionRun(job, run))
+      ) {
         continue;
       }
 

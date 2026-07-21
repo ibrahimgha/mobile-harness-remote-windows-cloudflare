@@ -29,6 +29,9 @@ const maxActivityInactivityMs = Math.max(
   Number(process.env.CODEX_ACTIVITY_MAX_INACTIVITY_MS ?? 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000
 );
 const markerOverlapBytes = 256;
+const terminalStatePath =
+  process.env.CODEX_ACTIVITY_TERMINAL_STATE ?? path.resolve(process.cwd(), ".runtime", "session-run-terminals.json");
+const maxTerminalEntries = 500;
 
 const lifecycleMarkers = [
   { value: '"type":"task_started"', kind: "started" as const },
@@ -41,6 +44,58 @@ const lifecycleMarkers = [
 
 const fileCache = new Map<string, SessionFileCacheEntry>();
 let recentFilesCache: { expiresAt: number; files: RecentSessionFile[] } | null = null;
+let terminalStatePromise: Promise<Map<string, string>> | null = null;
+let terminalWriteChain = Promise.resolve();
+
+async function readTerminalState(): Promise<Map<string, string>> {
+  if (!terminalStatePromise) {
+    terminalStatePromise = fs
+      .readFile(terminalStatePath, "utf8")
+      .then((raw) => {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        return new Map(
+          Object.entries(parsed).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[1] === "string" && Number.isFinite(Date.parse(entry[1]))
+          )
+        );
+      })
+      .catch(() => new Map<string, string>());
+  }
+
+  return terminalStatePromise;
+}
+
+export function sessionRunEndedAt(run: ActiveSessionRun, finishedAt: string | undefined): boolean {
+  const runStartedMs = Date.parse(run.startedAt);
+  const finishedMs = Date.parse(finishedAt ?? "");
+  return Number.isFinite(runStartedMs) && Number.isFinite(finishedMs) && finishedMs >= runStartedMs;
+}
+
+export function recordSessionRunTerminal(chatId: string, finishedAt: string): Promise<void> {
+  terminalWriteChain = terminalWriteChain.then(async () => {
+    const terminals = await readTerminalState();
+    const current = terminals.get(chatId);
+
+    if (current && Date.parse(current) >= Date.parse(finishedAt)) {
+      return;
+    }
+
+    terminals.set(chatId, finishedAt);
+    const recentEntries = [...terminals.entries()]
+      .sort((left, right) => Date.parse(right[1]) - Date.parse(left[1]))
+      .slice(0, maxTerminalEntries);
+    terminals.clear();
+    for (const entry of recentEntries) {
+      terminals.set(...entry);
+    }
+
+    await fs.mkdir(path.dirname(terminalStatePath), { recursive: true });
+    await fs.writeFile(terminalStatePath, JSON.stringify(Object.fromEntries(terminals), null, 2));
+  });
+
+  return terminalWriteChain;
+}
 
 function chatIdFromFilePath(filePath: string): string | null {
   const base = path.basename(filePath, ".jsonl");
@@ -220,5 +275,8 @@ export async function listActiveSessionRuns(): Promise<ActiveSessionRun[]> {
     }
   }
 
-  return [...newestByChat.values()].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+  const terminals = await readTerminalState();
+  return [...newestByChat.values()]
+    .filter((run) => !sessionRunEndedAt(run, terminals.get(run.chatId)))
+    .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
 }

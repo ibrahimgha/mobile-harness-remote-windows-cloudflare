@@ -24,7 +24,7 @@ import {
 } from "./projectStarter.js";
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
-import { listActiveSessionRuns } from "./sessionActivity.js";
+import { listActiveSessionRuns, recordSessionRunTerminal } from "./sessionActivity.js";
 import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
@@ -70,6 +70,17 @@ const runner = new CodexRunner({
       chatId: job.chatId,
       job
     });
+
+    if ((event === "completed" || event === "failed" || event === "stopped") && job.finishedAt) {
+      void recordSessionRunTerminal(job.chatId, job.finishedAt).catch((error: unknown) => {
+        pushEvent("error", "Could not persist terminal session activity", {
+          action: "session-activity-terminal-persist-failed",
+          chatId: job.chatId,
+          jobId: job.id,
+          error: describeError(error)
+        });
+      });
+    }
 
     if (event === "completed" || event === "failed") {
       void sendJobPushNotification(job, event)
