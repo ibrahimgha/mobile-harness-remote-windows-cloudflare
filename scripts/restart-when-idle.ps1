@@ -64,9 +64,12 @@ try {
   while ((Get-Date) -lt $deadline) {
     try {
       $state = Get-RemoteState -Token $token
-      $activeJobs = [int]$state.runner.activeJobs
-      $queuedJobs = [int]$state.runner.queuedJobs
-      Write-RestartLog "activeJobs=$activeJobs queuedJobs=$queuedJobs"
+      $reportedActiveJobs = [int]$state.runner.activeJobs
+      $reportedQueuedJobs = [int]$state.runner.queuedJobs
+      $recentJobs = @($state.runner.recentJobs)
+      $activeJobs = @($recentJobs | Where-Object { $_.status -eq "running" }).Count
+      $queuedJobs = @($recentJobs | Where-Object { $_.status -eq "queued" }).Count
+      Write-RestartLog "activeJobs=$activeJobs queuedJobs=$queuedJobs reportedActiveJobs=$reportedActiveJobs reportedQueuedJobs=$reportedQueuedJobs"
 
       if ($activeJobs -eq 0 -and $queuedJobs -eq 0) {
         $ready = $true
