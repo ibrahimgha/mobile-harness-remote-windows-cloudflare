@@ -3419,8 +3419,8 @@ function RunSettingsPanel({
         />
       </div>
       {compactOnly ? (
-        <span className="composer-power-model" title={`${previewPowerSetting.effortLabel} reasoning`}>
-          {previewPowerSetting.effortLabel}
+        <span className="composer-power-model" title={`${powerSettingLabel(previewPowerSetting)} reasoning`}>
+          {powerSettingLabel(previewPowerSetting)}
         </span>
       ) : (
         <button
