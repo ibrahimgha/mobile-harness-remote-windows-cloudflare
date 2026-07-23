@@ -3575,7 +3575,8 @@ p {
   }
 
   .composer-power-control .run-settings-power-row {
-    grid-template-columns: minmax(0, 1fr) 70px;
+    grid-template-columns: minmax(0, 1fr) 98px;
+    column-gap: 10px;
     min-height: 32px;
   }
 
@@ -3584,7 +3585,7 @@ p {
     min-width: 0;
     height: 32px;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     overflow: hidden;
     color: var(--ink);
     font-size: 0.72rem;
