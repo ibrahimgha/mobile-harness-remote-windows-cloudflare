@@ -35,6 +35,12 @@ assert.match(
   /className="composer-power-model" title=\{`\$\{powerSettingLabel\(previewPowerSetting\)\} reasoning`\}[\s\S]{0,100}\{powerSettingLabel\(previewPowerSetting\)\}/,
   "the compact in-chat slider shows both model and reasoning"
 );
+assert.match(
+  appSource,
+  /function jobRunSettingsLabel\(job: CodexRunJob[\s\S]{0,600}modelCapabilities/,
+  "queued task settings resolve the friendly model label"
+);
+assert.match(appSource, /className="queue-settings">\{jobRunSettingsLabel\(job, state\?\.runner\.settingsOptions\)\}/, "queued task cards display their submission model and reasoning");
 assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve, 800\)\)/, "usage loading feedback remains visible long enough to perceive");
 assert.match(appSource, /catch\(\(\) => apiFetch<BridgeState>\("\/api\/state"\)/, "tap refresh falls back while an older backend waits to restart");
 assert.match(

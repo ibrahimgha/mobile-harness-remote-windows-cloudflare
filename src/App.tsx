@@ -1745,6 +1745,18 @@ function jobDetailText(job: CodexRunJob) {
   return job.status === "queued" ? "Waiting for the target laptop." : "No status details yet.";
 }
 
+function jobRunSettingsLabel(job: CodexRunJob, options: CodexRunSettingsOptions | undefined) {
+  if (!job.settings?.model && !job.settings?.reasoningEffort) {
+    return "";
+  }
+
+  const modelLabel = job.settings?.model
+    ? options?.modelCapabilities?.[job.settings.model]?.label ?? settingLabel(job.settings.model)
+    : "Default";
+  const reasoningLabel = job.settings?.reasoningEffort ? settingLabel(job.settings.reasoningEffort) : "Default";
+  return `${modelLabel} · ${reasoningLabel}`;
+}
+
 function deliveryLabel(state: BridgeState | null) {
   if (state?.runner.mode === "codex-cli" || state?.bridge.promptDelivery === "cli") {
     return "session-send";
@@ -8472,6 +8484,9 @@ export function App() {
                     </span>
                   </div>
                   <p className="queue-preview">{job.promptPreview || "Prompt"}</p>
+                  {jobRunSettingsLabel(job, state?.runner.settingsOptions) ? (
+                    <p className="queue-settings">{jobRunSettingsLabel(job, state?.runner.settingsOptions)}</p>
+                  ) : null}
                   <p className="queue-detail">{jobDetailText(job)}</p>
                 </article>
               ))}

@@ -2423,6 +2423,14 @@ p {
   -webkit-line-clamp: 3;
 }
 
+.queue-settings {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .queue-detail {
   display: none;
 }
