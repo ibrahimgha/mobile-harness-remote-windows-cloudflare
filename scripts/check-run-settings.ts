@@ -25,6 +25,11 @@ assert.match(appSource, /data-testid="usage-refresh-button"/, "usage refresh kee
 assert.match(appSource, /<span>Refreshing\.\.\.<\/span>/, "usage refresh exposes visible loading text");
 assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes the live account measurement");
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
+assert.match(
+  appSource,
+  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-terra", reasoningEffort: "medium", modelLabel: "Terra"[\s\S]*gpt-5\.5", reasoningEffort: "xhigh", modelLabel: "5\.5"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
+  "the shared power slider keeps the requested preset order in both settings surfaces"
+);
 assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve, 800\)\)/, "usage loading feedback remains visible long enough to perceive");
 assert.match(appSource, /catch\(\(\) => apiFetch<BridgeState>\("\/api\/state"\)/, "tap refresh falls back while an older backend waits to restart");
 assert.match(

@@ -3172,12 +3172,12 @@ const codexPowerSettings: Array<{
   modelLabel: string;
   effortLabel: string;
 }> = [
-  { model: "gpt-5.6-terra", reasoningEffort: "low", modelLabel: "5.6 Terra", effortLabel: "Low" },
-  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "5.6 Sol", effortLabel: "Low" },
-  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "5.6 Sol", effortLabel: "Medium" },
-  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "5.6 Sol", effortLabel: "High" },
-  { model: "gpt-5.6-sol", reasoningEffort: "xhigh", modelLabel: "5.6 Sol", effortLabel: "X High" },
-  { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "5.6 Sol", effortLabel: "Ultra" }
+  { model: "gpt-5.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium" },
+  { model: "gpt-5.6-terra", reasoningEffort: "medium", modelLabel: "Terra", effortLabel: "Medium" },
+  { model: "gpt-5.5", reasoningEffort: "xhigh", modelLabel: "5.5", effortLabel: "Extra High" },
+  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium" },
+  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High" },
+  { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "Sol", effortLabel: "Ultra" }
 ];
 
 function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {

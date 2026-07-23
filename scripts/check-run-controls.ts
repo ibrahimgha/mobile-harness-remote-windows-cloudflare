@@ -90,9 +90,10 @@ const queuedSettingsJob = queuedSettingsRunner.enqueue({
   promptHash: "settings-test",
   textLength: 39
 });
+const queuedSettingsSnapshot = { ...selectedSettings };
 
-assert.equal(settingsReadCount, 0, "enqueueing behind an active chat must not snapshot run settings");
-assert.equal(queuedSettingsJob.settings, undefined, "queued jobs must not advertise provisional settings");
+assert.equal(settingsReadCount, 1, "enqueueing must snapshot run settings before the prompt enters the queue");
+assert.deepEqual(queuedSettingsJob.settings, queuedSettingsSnapshot, "queued jobs must advertise their submission settings");
 assert.equal(
   queuedSettingsRunner.jobForClientRequest("settings-chat", "settings-request-1"),
   queuedSettingsJob,
@@ -108,8 +109,8 @@ selectedSettings = {
 queuedSettingsInternals.runningChatIds.delete("settings-chat");
 queuedSettingsInternals.processNext();
 
-assert.equal(settingsReadCount, 1, "settings must be resolved exactly when the queued worker starts");
-assert.deepEqual(startedWithSettings, selectedSettings, "the worker must receive the latest selected run settings");
-assert.deepEqual(queuedSettingsJob.settings, selectedSettings, "the started job event must expose its resolved settings");
+assert.equal(settingsReadCount, 1, "starting a queued worker must not replace its submission settings");
+assert.deepEqual(startedWithSettings, queuedSettingsSnapshot, "the worker must receive the settings selected at queue submission");
+assert.deepEqual(queuedSettingsJob.settings, queuedSettingsSnapshot, "the started job event must preserve its submission settings");
 
 console.log("Run control checks passed");

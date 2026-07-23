@@ -409,10 +409,12 @@ export class CodexRunner {
   }
 
   enqueue(options: EnqueueOptions): CodexRunJob {
+    const runSettings = this.getRunSettings?.();
     const job = this.createJob({
       ...options,
       kind: "prompt",
       status: "queued",
+      settings: runSettings ? { ...runSettings } : undefined,
       message: "Queued for Codex CLI on the target laptop"
     });
 
@@ -467,8 +469,6 @@ export class CodexRunner {
 
       const [next] = this.queue.splice(nextIndex, 1);
       next.job.queuePosition = undefined;
-      const runSettings = this.getRunSettings?.();
-      next.job.settings = runSettings ? { ...runSettings } : next.job.settings;
       this.refreshQueuePositions(true);
       this.runningChatIds.add(next.job.chatId);
 
