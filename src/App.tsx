@@ -3185,8 +3185,8 @@ const codexPowerSettings: Array<{
   effortLabel: string;
 }> = [
   { model: "gpt-5.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium" },
+  { model: "gpt-5.6-luna", reasoningEffort: "high", modelLabel: "Luna", effortLabel: "High" },
   { model: "gpt-5.6-terra", reasoningEffort: "medium", modelLabel: "Terra", effortLabel: "Medium" },
-  { model: "gpt-5.5", reasoningEffort: "xhigh", modelLabel: "5.5", effortLabel: "Extra High" },
   { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium" },
   { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High" },
   { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "Sol", effortLabel: "Ultra" }

@@ -27,7 +27,7 @@ assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes t
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(
   appSource,
-  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-terra", reasoningEffort: "medium", modelLabel: "Terra"[\s\S]*gpt-5\.5", reasoningEffort: "xhigh", modelLabel: "5\.5"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
+  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-luna", reasoningEffort: "high", modelLabel: "Luna"[\s\S]*gpt-5\.6-terra", reasoningEffort: "medium", modelLabel: "Terra"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
   "the shared power slider keeps the requested preset order in both settings surfaces"
 );
 assert.match(
