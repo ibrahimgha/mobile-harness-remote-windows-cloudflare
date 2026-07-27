@@ -75,6 +75,14 @@ import {
 import { applySidebarOrder, captureSidebarOrder, type SidebarOrderSnapshot } from "./sidebarOrder";
 
 type BridgeState = {
+  access: {
+    mode: "full" | "single-chat";
+    chatId?: string;
+    chatTitle?: string;
+    projectName?: string;
+    projectPath?: string;
+    settings?: CodexRunSettings;
+  };
   bridge: {
     mode: "simulation" | "window-control";
     targetTitle: string;
@@ -4523,6 +4531,7 @@ export function App() {
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
   const topbarTitle = selectedChat?.title ?? selectedChatSummary?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
   const serverDisplayName = state?.server.name || "Codex";
+  const singleChatAccess = state?.access.mode === "single-chat";
 
   const apiFetch = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -4873,9 +4882,17 @@ export function App() {
         }
 
         localStorage.setItem(tokenKey, value);
+        const verifiedState = payload.state ?? null;
+        if (verifiedState?.access.mode === "single-chat" && verifiedState.access.chatId) {
+          selectedChatIdRef.current = verifiedState.access.chatId;
+          setSelectedChatId(verifiedState.access.chatId);
+          setSelectedChat(null);
+          rememberSelectedChatId(verifiedState.access.chatId);
+        }
+
         setToken(value);
         setLoginToken(value);
-        setState(payload.state ?? null);
+        setState(verifiedState);
         setAuthenticated(true);
       } catch (error) {
         if (verifiesStoredToken) {
@@ -7864,7 +7881,8 @@ export function App() {
   }
 
   return (
-    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""}`}>
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${singleChatAccess ? "is-single-chat" : ""}`}>
+      {!singleChatAccess ? (
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
           <div className="sidebar-heading-row">
@@ -8187,6 +8205,7 @@ export function App() {
           </div>
         )}
       </aside>
+      ) : null}
 
       {selectedInstructionFile ? (
         <div className="markdown-viewer-overlay" role="dialog" aria-modal="true" aria-labelledby="markdown-viewer-title">
@@ -8245,42 +8264,48 @@ export function App() {
 
       <section className="chat-workspace" aria-label="Selected chat">
         <header className="chat-topbar">
-          <button
-            className="icon-button mobile-menu-button"
-            type="button"
-            onClick={openMobileMenu}
-            aria-label="Open menu"
-            aria-expanded={menuOpen}
-          >
-            <Menu size={18} />
-          </button>
+          {!singleChatAccess ? (
+            <button
+              className="icon-button mobile-menu-button"
+              type="button"
+              onClick={openMobileMenu}
+              aria-label="Open menu"
+              aria-expanded={menuOpen}
+            >
+              <Menu size={18} />
+            </button>
+          ) : null}
           <div className="chat-title-copy">
             <p className="overline">{serverDisplayName}</p>
             <h2>{topbarTitle}</h2>
           </div>
           <div className="chat-topbar-actions">
-            <button
-              className={`icon-button ${chatActionMode === "rename" ? "is-active" : ""}`}
-              type="button"
-              onClick={() => openChatAction("rename")}
-              disabled={!selectedChatForActions || chatActionBusy}
-              aria-label="Rename chat"
-              aria-pressed={chatActionMode === "rename"}
-              title="Rename chat"
-            >
-              <Pencil size={18} />
-            </button>
-            <button
-              className={`icon-button ${chatActionMode === "fork" ? "is-active" : ""}`}
-              type="button"
-              onClick={() => openChatAction("fork")}
-              disabled={!selectedChatForActions || chatActionBusy}
-              aria-label="Fork chat"
-              aria-pressed={chatActionMode === "fork"}
-              title="Fork chat"
-            >
-              <GitFork size={18} />
-            </button>
+            {!singleChatAccess ? (
+              <>
+                <button
+                  className={`icon-button ${chatActionMode === "rename" ? "is-active" : ""}`}
+                  type="button"
+                  onClick={() => openChatAction("rename")}
+                  disabled={!selectedChatForActions || chatActionBusy}
+                  aria-label="Rename chat"
+                  aria-pressed={chatActionMode === "rename"}
+                  title="Rename chat"
+                >
+                  <Pencil size={18} />
+                </button>
+                <button
+                  className={`icon-button ${chatActionMode === "fork" ? "is-active" : ""}`}
+                  type="button"
+                  onClick={() => openChatAction("fork")}
+                  disabled={!selectedChatForActions || chatActionBusy}
+                  aria-label="Fork chat"
+                  aria-pressed={chatActionMode === "fork"}
+                  title="Fork chat"
+                >
+                  <GitFork size={18} />
+                </button>
+              </>
+            ) : null}
             <button
               className={`icon-button message-view-button is-${selectedChatMessageViewMode}`}
               type="button"
@@ -8303,7 +8328,7 @@ export function App() {
             >
               {refreshingChat ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
             </button>
-            <div className="desktop-status-controls">
+            {!singleChatAccess ? <div className="desktop-status-controls">
               <StatusControls
                 socketLive={socketLive}
                 state={state}
@@ -8312,11 +8337,15 @@ export function App() {
                 onNotifications={handleNotificationsClick}
                 onLogout={logout}
               />
-            </div>
+            </div> : (
+              <button className="icon-button" type="button" onClick={logout} aria-label="Sign out" title="Sign out">
+                <LogOut size={18} />
+              </button>
+            )}
           </div>
         </header>
 
-        {chatActionMode && selectedChatForActions ? (
+        {!singleChatAccess && chatActionMode && selectedChatForActions ? (
           <form className="chat-action-panel" onSubmit={submitChatAction} aria-label={chatActionMode === "rename" ? "Rename chat" : "Fork chat"}>
             <label>
               <span>{chatActionMode === "rename" ? "New chat name" : "Fork name"}</span>
@@ -8537,15 +8566,22 @@ export function App() {
         ) : null}
 
         <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
-          <RunSettingsPanel
-            compactOnly
-            settings={state?.runner.settings}
-            options={state?.runner.settingsOptions}
-            busy={settingsSaving}
-            onChange={updateRunSettings}
-          />
-          <div className="composer-field">
-            {dictationRecording ? (
+          {singleChatAccess ? (
+            <div className="scoped-run-settings" aria-label="Locked run settings">
+              <ShieldCheck size={14} />
+              <span>Sol Medium</span>
+            </div>
+          ) : (
+            <RunSettingsPanel
+              compactOnly
+              settings={state?.runner.settings}
+              options={state?.runner.settingsOptions}
+              busy={settingsSaving}
+              onChange={updateRunSettings}
+            />
+          )}
+          <div className={`composer-field ${singleChatAccess ? "is-single-chat" : ""}`}>
+            {!singleChatAccess && dictationRecording ? (
               <button
                 className="dictation-cancel-button"
                 type="button"
@@ -8568,17 +8604,19 @@ export function App() {
                 <Paperclip size={18} />
               </button>
             )}
-            <button
-              className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
-              type="button"
-              onClick={() => void startDictation()}
-              disabled={!selectedChatId || sending || dictationRecording || dictationProcessing}
-              aria-label={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
-              title={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
-            >
-              {dictationProcessing ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
-            </button>
-            {dictationRecording || dictationProcessing ? (
+            {!singleChatAccess ? (
+              <button
+                className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
+                type="button"
+                onClick={() => void startDictation()}
+                disabled={!selectedChatId || sending || dictationRecording || dictationProcessing}
+                aria-label={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
+                title={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
+              >
+                {dictationProcessing ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
+              </button>
+            ) : null}
+            {!singleChatAccess && (dictationRecording || dictationProcessing) ? (
               <DictationWaveform processing={dictationProcessing} barsRef={dictationBarsRef} />
             ) : (
               <div

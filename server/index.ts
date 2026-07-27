@@ -11,6 +11,14 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { appendAuditEvent, getAuditLogPath, readAuditEvents, summarizePrompt } from "./auditLog.js";
+import {
+  hasScopedAccessTokens,
+  resolveScopedAccessToken,
+  scopedLocalPathAllowed,
+  scopedRequestAllowed,
+  type RemoteAccess,
+  type SingleChatRemoteAccess
+} from "./accessTokens.js";
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
@@ -41,7 +49,7 @@ const clientOrigin = process.env.CLIENT_ORIGIN;
 const controlToken = process.env.CONTROL_TOKEN?.trim() ?? "";
 const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
 const targetTitle = process.env.CODEX_WINDOW_TITLE?.trim() || "Codex";
-const tokenRequired = controlEnabled || controlToken.length > 0;
+const tokenRequired = controlEnabled || controlToken.length > 0 || hasScopedAccessTokens();
 const promptDelivery = "cli" as const;
 const maxPromptLength = Number(process.env.REMOTE_PROMPT_MAX_CHARS ?? 12000);
 const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
@@ -148,7 +156,7 @@ const localDownloadContentTypes = new Map([
   [".mov", "video/quicktime"],
   [".webm", "video/webm"]
 ]);
-type LiveWebSocket = WebSocket & { isAlive?: boolean };
+type LiveWebSocket = WebSocket & { isAlive?: boolean; remoteAccess?: RemoteAccess };
 type ChatStartMode = "project" | "chat";
 type ChatStartTask = {
   id: string;
@@ -729,17 +737,19 @@ function pushEvent(type: BridgeEvent["type"], message: string, detail?: Record<s
     console.error("Could not write audit event", error);
   });
 
-  const payload = JSON.stringify({ kind: "event", event, state: getState() });
   for (const client of wss.clients) {
-    sendSocketPayload(client, payload);
+    const access = (client as LiveWebSocket).remoteAccess ?? { mode: "full" };
+    if (access.mode === "single-chat" && detail?.chatId !== access.chatId) {
+      continue;
+    }
+    sendSocketPayload(client, JSON.stringify({ kind: "event", event, state: getState(access) }));
   }
 }
 
 function pushState() {
-  const payload = JSON.stringify({ kind: "state", state: getState() });
-
   for (const client of wss.clients) {
-    sendSocketPayload(client, payload);
+    const access = (client as LiveWebSocket).remoteAccess ?? { mode: "full" };
+    sendSocketPayload(client, JSON.stringify({ kind: "state", state: getState(access) }));
   }
 }
 
@@ -782,14 +792,45 @@ function sendSocketPayload(client: WebSocket, payload: string) {
   }
 }
 
-function getState(): BridgeState {
+function filteredSettingsOptions(access: RemoteAccess) {
+  const options = getRunSettingsOptions();
+  if (access.mode === "full") {
+    return options;
+  }
+
+  const capability = options.modelCapabilities[access.settings.model];
   return {
+    models: [access.settings.model],
+    reasoningEfforts: [access.settings.reasoningEffort],
+    speeds: [access.settings.speed],
+    modelCapabilities: capability ? { [access.settings.model]: capability } : {}
+  };
+}
+
+function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
+  const recentJobs =
+    access.mode === "single-chat" ? runner.recentJobs.filter((job) => job.chatId === access.chatId) : runner.recentJobs;
+  const activeJobs = recentJobs.filter((job) => job.status === "running").length;
+  const queuedJobs = recentJobs.filter((job) => job.status === "queued").length;
+
+  return {
+    access:
+      access.mode === "single-chat"
+        ? {
+            mode: access.mode,
+            chatId: access.chatId,
+            chatTitle: access.chatTitle,
+            projectName: access.projectName,
+            projectPath: access.projectPath,
+            settings: access.settings
+          }
+        : { mode: "full" },
     bridge: {
       mode: bridge.mode,
       targetTitle: bridge.title,
       controlEnabled,
       promptDelivery,
-      tokenConfigured: controlToken.length > 0,
+      tokenConfigured: controlToken.length > 0 || hasScopedAccessTokens(),
       tokenRequired,
       platform: process.platform
     },
@@ -804,14 +845,15 @@ function getState(): BridgeState {
       cliPath: runner.cliPath,
       bypassSandbox: runner.bypassSandbox,
       skipGitRepoCheck: runner.skipGitRepoCheck,
-      settings: getRunSettings(),
-      settingsOptions: getRunSettingsOptions(),
-      activeJobs: runner.activeJobs,
-      queuedJobs: runner.queuedJobs,
-      recentJobs: runner.recentJobs,
-      usage: getCachedCodexUsage()
+      settings: access.mode === "single-chat" ? access.settings : getRunSettings(),
+      settingsOptions: filteredSettingsOptions(access),
+      activeJobs: access.mode === "single-chat" ? activeJobs : runner.activeJobs,
+      queuedJobs: access.mode === "single-chat" ? queuedJobs : runner.queuedJobs,
+      recentJobs,
+      usage: access.mode === "single-chat" ? null : getCachedCodexUsage()
     },
-    recentEvents: events
+    recentEvents:
+      access.mode === "single-chat" ? events.filter((event) => event.detail?.chatId === access.chatId) : events
   };
 }
 
@@ -830,8 +872,11 @@ process.on("uncaughtException", (error) => {
   setTimeout(() => process.exit(1), 250);
 });
 
-function hasValidToken(value: unknown): boolean {
-  return typeof value === "string" && controlToken.length > 0 && value === controlToken;
+function resolveRemoteAccess(value: unknown): RemoteAccess | null {
+  if (typeof value === "string" && controlToken.length > 0 && value === controlToken) {
+    return { mode: "full" };
+  }
+  return resolveScopedAccessToken(value);
 }
 
 function tokenFromRequest(req: express.Request) {
@@ -840,24 +885,13 @@ function tokenFromRequest(req: express.Request) {
 
 function requireControlAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!tokenRequired) {
+    res.locals.remoteAccess = { mode: "full" } satisfies RemoteAccess;
     next();
     return;
   }
 
-  if (!controlToken) {
-    pushEvent("error", "Control request rejected because CONTROL_TOKEN is empty", {
-      action: "auth-rejected",
-      reason: "missing-server-token",
-      request: requestContext(req)
-    });
-    res.status(403).json({
-      ok: false,
-      message: "Set CONTROL_TOKEN before enabling real window control"
-    });
-    return;
-  }
-
-  if (!hasValidToken(tokenFromRequest(req))) {
+  const access = resolveRemoteAccess(tokenFromRequest(req));
+  if (!access) {
     pushEvent("error", "Control request rejected because the token was missing or invalid", {
       action: "auth-rejected",
       reason: "invalid-token",
@@ -870,7 +904,25 @@ function requireControlAuth(req: express.Request, res: express.Response, next: e
     return;
   }
 
+  if (access.mode === "single-chat" && !scopedRequestAllowed(req.method, req.path, access)) {
+    res.status(403).json({ ok: false, message: "This token is limited to one chat" });
+    return;
+  }
+
+  if (access.mode === "single-chat" && ["/api/local-image", "/api/local-file", "/api/local-download"].includes(req.path)) {
+    const rawPath = normalizeLocalFilePath(req.query.path);
+    if (!rawPath || !scopedLocalPathAllowed(path.resolve(rawPath), access)) {
+      res.status(403).json({ ok: false, message: "This file is outside the selected chat project" });
+      return;
+    }
+  }
+
+  res.locals.remoteAccess = access;
   next();
+}
+
+function requestAccess(res: express.Response): RemoteAccess {
+  return (res.locals.remoteAccess as RemoteAccess | undefined) ?? { mode: "full" };
 }
 
 app.get("/api/live", (_req, res) => {
@@ -929,11 +981,11 @@ app.get("/api/auth/status", (_req, res) => {
 });
 
 app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
-  res.json({ ok: true, state: getState() });
+  res.json({ ok: true, state: getState(requestAccess(res)) });
 });
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
-  res.json(getState());
+  res.json(getState(requestAccess(res)));
 });
 
 app.post("/api/usage/refresh", requireControlAuth, async (_req, res) => {
@@ -1290,18 +1342,22 @@ app.post("/api/notifications/test", requireControlAuth, async (req, res) => {
 });
 
 app.get("/api/jobs", requireControlAuth, (_req, res) => {
+  const access = requestAccess(res);
+  const jobs = access.mode === "single-chat" ? runner.recentJobs.filter((job) => job.chatId === access.chatId) : runner.recentJobs;
   res.json({
     ok: true,
     mode: runner.mode,
-    activeJobs: runner.activeJobs,
-    queuedJobs: runner.queuedJobs,
-    jobs: runner.recentJobs
+    activeJobs: jobs.filter((job) => job.status === "running").length,
+    queuedJobs: jobs.filter((job) => job.status === "queued").length,
+    jobs
   });
 });
 
 app.get("/api/chats/activity", requireControlAuth, async (_req, res) => {
   try {
-    res.json({ ok: true, runs: await listActiveSessionRuns() });
+    const access = requestAccess(res);
+    const runs = await listActiveSessionRuns();
+    res.json({ ok: true, runs: access.mode === "single-chat" ? runs.filter((run) => run.chatId === access.chatId) : runs });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not inspect Codex session activity";
     res.status(500).json({ ok: false, message });
@@ -1450,7 +1506,20 @@ app.post("/api/chats/:id/queued-prompts/:jobId/steer", requireControlAuth, (req,
 
 app.get("/api/chats", requireControlAuth, async (req, res) => {
   try {
-    res.json(await listChats());
+    const index = await listChats();
+    const access = requestAccess(res);
+    if (access.mode === "full") {
+      res.json(index);
+      return;
+    }
+
+    const projects = index.projects
+      .map((project) => ({
+        ...project,
+        chats: project.chats.filter((chat) => chat.id === access.chatId)
+      }))
+      .filter((project) => project.chats.length > 0);
+    res.json({ projects, totalChats: projects.reduce((count, project) => count + project.chats.length, 0) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load Codex chats";
 
@@ -2064,7 +2133,8 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       text: text.trimEnd(),
       promptPreview: String(promptSummary.promptPreview ?? ""),
       promptHash: String(promptSummary.promptHash ?? ""),
-      textLength: Number(promptSummary.textLength ?? text.trimEnd().length)
+      textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
+      settings: requestAccess(res).mode === "single-chat" ? (requestAccess(res) as SingleChatRemoteAccess).settings : undefined
     });
 
     pushEvent("action", "Prompt queued for exact Codex session on target laptop", {
@@ -2253,7 +2323,7 @@ wss.on("connection", (socket: WebSocket) => {
     socket.terminate();
   });
 
-  sendSocketPayload(socket, JSON.stringify({ kind: "state", state: getState() }));
+  sendSocketPayload(socket, JSON.stringify({ kind: "state", state: getState(liveSocket.remoteAccess ?? { mode: "full" }) }));
 });
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
@@ -2272,12 +2342,14 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  if (controlToken && !hasValidToken(url.searchParams.get("token"))) {
+  const access = tokenRequired ? resolveRemoteAccess(url.searchParams.get("token")) : ({ mode: "full" } satisfies RemoteAccess);
+  if (!access) {
     socket.destroy();
     return;
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
+    (ws as LiveWebSocket).remoteAccess = access;
     wss.emit("connection", ws, request);
   });
 });

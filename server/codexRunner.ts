@@ -21,6 +21,7 @@ type EnqueueOptions = {
   promptPreview: string;
   promptHash: string;
   textLength: number;
+  settings?: CodexRunSettings;
 };
 
 type CreateJobOptions = EnqueueOptions & {
@@ -409,7 +410,7 @@ export class CodexRunner {
   }
 
   enqueue(options: EnqueueOptions): CodexRunJob {
-    const runSettings = this.getRunSettings?.();
+    const runSettings = options.settings ?? this.getRunSettings?.();
     const job = this.createJob({
       ...options,
       kind: "prompt",

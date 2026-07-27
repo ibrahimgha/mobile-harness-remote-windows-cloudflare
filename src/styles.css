@@ -193,6 +193,27 @@ p {
   border-bottom: 1px solid var(--line);
 }
 
+.remote-shell.is-single-chat {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.scoped-run-settings {
+  position: absolute;
+  right: 18px;
+  bottom: calc(100% + 8px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .sidebar-heading-row,
 .chat-topbar {
   display: flex;
@@ -2099,6 +2120,10 @@ p {
   color: var(--red);
 }
 
+.composer-field.is-single-chat {
+  grid-template-columns: 42px minmax(0, 1fr) 46px;
+}
+
 .composer .dictation-cancel-button,
 .composer .dictation-cancel-button:hover,
 .composer .dictation-cancel-button:active,
@@ -3630,6 +3655,10 @@ p {
     padding-bottom: 0;
   }
 
+  .composer-field.is-single-chat {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+  }
+
   .command-queue {
     grid-row: 4;
     align-self: start;
@@ -3709,6 +3738,10 @@ p {
     gap: 4px;
     padding: 3px;
     border-radius: 24px;
+  }
+
+  .composer-field.is-single-chat {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
   }
 
   .composer-editor {

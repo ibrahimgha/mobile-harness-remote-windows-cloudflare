@@ -11,6 +11,14 @@ export type BridgeEvent = {
 };
 
 export type BridgeState = {
+  access: {
+    mode: "full" | "single-chat";
+    chatId?: string;
+    chatTitle?: string;
+    projectName?: string;
+    projectPath?: string;
+    settings?: CodexRunSettings;
+  };
   bridge: {
     mode: BridgeMode;
     targetTitle: string;
