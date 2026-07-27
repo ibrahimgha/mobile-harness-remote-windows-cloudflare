@@ -56,6 +56,8 @@ import {
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
 import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
 import {
@@ -73,6 +75,7 @@ import {
   type LiveThinkingStatus
 } from "./liveThinking";
 import { applySidebarOrder, captureSidebarOrder, type SidebarOrderSnapshot } from "./sidebarOrder";
+import { messageHtmlSchema } from "./messageHtml";
 
 type BridgeState = {
   access: {
@@ -2183,11 +2186,23 @@ const FormattedMessage = memo(function FormattedMessage({
   }
 
   return (
-    <div className="message-markdown">
+    <div className="message-markdown" dir="auto">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, messageHtmlSchema]]}
         urlTransform={markdownUrlTransform}
         components={{
+          p: ({ node: _node, dir, ...props }) => <p dir={dir ?? "auto"} {...props} />,
+          h1: ({ node: _node, dir, ...props }) => <h1 dir={dir ?? "auto"} {...props} />,
+          h2: ({ node: _node, dir, ...props }) => <h2 dir={dir ?? "auto"} {...props} />,
+          h3: ({ node: _node, dir, ...props }) => <h3 dir={dir ?? "auto"} {...props} />,
+          h4: ({ node: _node, dir, ...props }) => <h4 dir={dir ?? "auto"} {...props} />,
+          h5: ({ node: _node, dir, ...props }) => <h5 dir={dir ?? "auto"} {...props} />,
+          h6: ({ node: _node, dir, ...props }) => <h6 dir={dir ?? "auto"} {...props} />,
+          li: ({ node: _node, dir, ...props }) => <li dir={dir ?? "auto"} {...props} />,
+          blockquote: ({ node: _node, dir, ...props }) => <blockquote dir={dir ?? "auto"} {...props} />,
+          td: ({ node: _node, dir, ...props }) => <td dir={dir ?? "auto"} {...props} />,
+          th: ({ node: _node, dir, ...props }) => <th dir={dir ?? "auto"} {...props} />,
           a: ({ children, href }) => {
             const localImagePath = localImagePathFromSrc(href, basePath);
             const localTextFilePath = localTextFilePathFromHref(href, basePath);

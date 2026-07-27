@@ -1785,6 +1785,19 @@ p {
   word-break: break-word;
 }
 
+.message-markdown {
+  text-align: start;
+}
+
+.message-markdown :where(p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th) {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+.message-markdown bdi {
+  unicode-bidi: isolate;
+}
+
 .message-empty {
   color: var(--muted);
 }
@@ -1860,7 +1873,7 @@ p {
 .message-markdown ul,
 .message-markdown ol {
   margin: 0 0 0.85rem;
-  padding-left: 1.3rem;
+  padding-inline-start: 1.3rem;
 }
 
 .message-markdown li {
