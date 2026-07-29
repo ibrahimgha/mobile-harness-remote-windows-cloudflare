@@ -17,4 +17,28 @@ assert.match(html, /<bdi dir="ltr">REV-001 \/ DOC-0243<\/bdi>/);
 assert.match(html, /<strong>المؤكد:<\/strong>/);
 assert.doesNotMatch(html, /script|alert|onerror/i);
 
-console.log("Sanitized basic HTML and mixed-direction message checks passed.");
+const localPdfPath =
+  "C:/Users/ibrah/bit68-finance/output/pdf/Bit68_Cases_32_44_Documents.pdf";
+const localPdfHtml = renderToStaticMarkup(
+  <ReactMarkdown
+    rehypePlugins={[rehypeRaw, [rehypeSanitize, messageHtmlSchema]]}
+    urlTransform={(url) => url}
+  >
+    {`[Download the PDF](${localPdfPath})`}
+  </ReactMarkdown>
+);
+assert.match(localPdfHtml, new RegExp(`href="${localPdfPath}"`));
+
+const unsafeLinkHtml = renderToStaticMarkup(
+  <ReactMarkdown
+    rehypePlugins={[rehypeRaw, [rehypeSanitize, messageHtmlSchema]]}
+    urlTransform={(url) => url}
+  >
+    {'<a href="javascript:alert(1)">Unsafe link</a>'}
+  </ReactMarkdown>
+);
+assert.doesNotMatch(unsafeLinkHtml, /javascript:/i);
+
+console.log(
+  "Sanitized HTML, mixed-direction messages, and local PDF links passed."
+);
