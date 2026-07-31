@@ -6,7 +6,7 @@ import type { BridgeEvent } from "./types.js";
 const logDir = path.resolve(process.cwd(), process.env.LOG_DIR?.trim() || "logs");
 const auditLogPath = path.join(logDir, "bridge-events.jsonl");
 const defaultPromptPreviewLength = 240;
-const maxAuditReadLimit = 500;
+const maxAuditReadLimit = 5000;
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) {

@@ -10,6 +10,8 @@ export type ControlRoomSlot = {
   machineId: string;
 };
 
+export type ControlRoomViewMode = "chat" | "tracker";
+
 export const controlRoomColumnOptions = [4, 5, 6, 7] as const;
 export const controlRoomRowOptions = [1, 2] as const;
 
@@ -118,10 +120,24 @@ export function normalizePoweredOffSlotIds(value: unknown, slots: ControlRoomSlo
   return [...new Set(value.filter((candidate): candidate is string => typeof candidate === "string" && slotIds.has(candidate)))];
 }
 
-export function controlRoomTileUrl(machine: ControlRoomMachine, slotId: string, parentOrigin: string): string {
+export function normalizeControlRoomViewModes(value: unknown, slots: ControlRoomSlot[]): Record<string, ControlRoomViewMode> {
+  if (!value || typeof value !== "object") return {};
+  const item = value as Record<string, unknown>;
+  return Object.fromEntries(
+    slots.flatMap((slot) => (item[slot.id] === "tracker" ? [[slot.id, "tracker" as const]] : []))
+  );
+}
+
+export function controlRoomTileUrl(
+  machine: ControlRoomMachine,
+  slotId: string,
+  parentOrigin: string,
+  viewMode: ControlRoomViewMode = "chat"
+): string {
   const url = new URL(machine.url);
   url.searchParams.set("control-room-tile", "1");
   url.searchParams.set("control-room-slot", slotId);
   url.searchParams.set("control-room-origin", parentOrigin);
+  if (viewMode === "tracker") url.searchParams.set("control-room-view", "tracker");
   return url.toString();
 }

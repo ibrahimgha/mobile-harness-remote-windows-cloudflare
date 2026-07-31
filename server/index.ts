@@ -24,6 +24,7 @@ import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import { getCachedCodexUsage, refreshCodexUsage } from "./codexUsage.js";
 import { cleanDictationWithCodex } from "./dictationCleaner.js";
+import { buildControlRoomTrackerSnapshot } from "./controlRoomTracker.js";
 import {
   getDefaultProjectsRoot,
   resolveNewProjectPath,
@@ -986,6 +987,55 @@ app.post("/api/auth/verify", requireControlAuth, (_req, res) => {
 
 app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState(requestAccess(res)));
+});
+
+app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
+  try {
+    const access = requestAccess(res);
+    if (access.mode !== "full") {
+      res.status(403).json({ ok: false, message: "Machine tracking requires full remote access" });
+      return;
+    }
+
+    const [chatIndex, auditEvents, activeSessionRuns] = await Promise.all([
+      listChats(),
+      readAuditEvents(5000),
+      listActiveSessionRuns()
+    ]);
+    const externalSettings = new Map<string, Pick<CodexRunSettings, "model" | "reasoningEffort">>();
+    await Promise.all(
+      activeSessionRuns.map(async (run) => {
+        try {
+          const chat = await getChat(run.chatId);
+          if (!chat) return;
+          const message = [...chat.messages].reverse().find((candidate) => candidate.model || candidate.reasoningEffort);
+          if (message) {
+            externalSettings.set(run.chatId, {
+              model: message.model ?? getRunSettings().model,
+              reasoningEffort: message.reasoningEffort ?? getRunSettings().reasoningEffort
+            });
+          }
+        } catch {
+          // The current machine defaults remain an honest fallback for a session still being indexed.
+        }
+      })
+    );
+
+    res.json(
+      buildControlRoomTrackerSnapshot({
+        serverName,
+        projects: chatIndex.projects,
+        jobs: runner.recentJobs,
+        auditEvents,
+        activeSessionRuns,
+        defaultSettings: getRunSettings(),
+        externalSettings,
+        usage: getCachedCodexUsage()
+      })
+    );
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Could not load machine tracker" });
+  }
 });
 
 app.post("/api/usage/refresh", requireControlAuth, async (_req, res) => {

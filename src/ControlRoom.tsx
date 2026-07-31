@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, ExternalLink, Loader2, MessageSquare, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   controlRoomColumnOptions,
@@ -10,10 +10,12 @@ import {
   defaultControlRoomMachines,
   normalizeControlRoomLayout,
   normalizeControlRoomMachines,
+  normalizeControlRoomViewModes,
   normalizePoweredOffSlotIds,
   type ControlRoomLayout,
   type ControlRoomMachine,
-  type ControlRoomSlot
+  type ControlRoomSlot,
+  type ControlRoomViewMode
 } from "./controlRoomState";
 import "./control-room.css";
 
@@ -46,6 +48,7 @@ const storedProfilesKey = "codex-control-room-machines-v1";
 const storedSlotsKey = "codex-control-room-slots-v1";
 const storedPoweredOffSlotsKey = "codex-control-room-powered-off-slots-v1";
 const storedLayoutKey = "codex-control-room-layout-v1";
+const storedViewModesKey = "codex-control-room-view-modes-v1";
 
 function readStoredMachines(): ControlRoomMachine[] {
   try {
@@ -94,6 +97,14 @@ function readStoredPoweredOffSlots(slots: ControlRoomSlot[]): Set<string> {
   }
 }
 
+function readStoredViewModes(slots: ControlRoomSlot[]): Record<string, ControlRoomViewMode> {
+  try {
+    return normalizeControlRoomViewModes(JSON.parse(localStorage.getItem(storedViewModesKey) ?? "null"), slots);
+  } catch {
+    return {};
+  }
+}
+
 function connectionLabel(connection: TileConnection) {
   if (connection === "online") return "Live";
   if (connection === "unauthorized") return "Authentication needed";
@@ -113,6 +124,10 @@ export function ControlRoom() {
     const storedMachines = readStoredMachines();
     const storedSlots = readStoredSlots(storedMachines, controlRoomScreenCount(readStoredLayout()));
     return readStoredPoweredOffSlots(storedSlots);
+  });
+  const [viewModes, setViewModes] = useState<Record<string, ControlRoomViewMode>>(() => {
+    const storedMachines = readStoredMachines();
+    return readStoredViewModes(readStoredSlots(storedMachines, controlRoomScreenCount(readStoredLayout())));
   });
   const [connections, setConnections] = useState<Record<string, TileConnection>>({});
   const [serverNames, setServerNames] = useState<Record<string, string>>({});
@@ -242,6 +257,15 @@ export function ControlRoom() {
     setReloadKeys((current) => ({ ...current, [slotId]: (current[slotId] ?? 0) + 1 }));
   }
 
+  function setSlotViewMode(slotId: string, mode: ControlRoomViewMode) {
+    setViewModes((current) => {
+      const next = { ...current, [slotId]: mode };
+      localStorage.setItem(storedViewModesKey, JSON.stringify(next));
+      return next;
+    });
+    setConnections((current) => ({ ...current, [slotId]: "connecting" }));
+  }
+
   function setSlotDisplay(slotId: string, poweredOn: boolean) {
     setPoweredOffSlots((current) => {
       const next = new Set(current);
@@ -282,6 +306,11 @@ export function ControlRoom() {
     setConnections((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
     setServerNames((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
     setReloadKeys((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
+    setViewModes((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId)));
+      localStorage.setItem(storedViewModesKey, JSON.stringify(next));
+      return next;
+    });
   }
 
   return (
@@ -380,9 +409,10 @@ export function ControlRoom() {
           const machine = machineById.get(slot.machineId) ?? machines[0];
           const connection = connections[slot.id] ?? "connecting";
           const isPoweredOff = poweredOffSlots.has(slot.id);
+          const viewMode = viewModes[slot.id] ?? "chat";
           if (!machine) return null;
 
-          const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin);
+          const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin, viewMode);
           return (
             <article className={`control-room-tile is-${connection}${isPoweredOff ? " is-powered-off" : ""}`} key={slot.id}>
               <div className="control-room-live-surface" aria-hidden={isPoweredOff} inert={isPoweredOff}>
@@ -399,6 +429,15 @@ export function ControlRoom() {
                     {connection === "connecting" ? <Loader2 className="spin" size={13} /> : connection === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
                     {connectionLabel(connection)}
                   </span>
+                  <button
+                    className={`control-room-mode-toggle${viewMode === "tracker" ? " is-tracker" : ""}`}
+                    type="button"
+                    onClick={() => setSlotViewMode(slot.id, viewMode === "tracker" ? "chat" : "tracker")}
+                    aria-label={`${viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"} in workspace ${index + 1}`}
+                    title={viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"}
+                  >
+                    {viewMode === "tracker" ? <MessageSquare size={13} /> : <Activity size={13} />}
+                  </button>
                   <button type="button" onClick={() => reloadSlot(slot.id)} aria-label={`Reload workspace ${index + 1}`} title="Reload workspace">
                     <RefreshCw size={13} />
                   </button>
@@ -410,7 +449,7 @@ export function ControlRoom() {
                   </a>
                 </div>
                 <iframe
-                  key={`${slot.id}-${reloadKeys[slot.id] ?? 0}`}
+                  key={`${slot.id}-${viewMode}-${reloadKeys[slot.id] ?? 0}`}
                   ref={(node) => { frameRefs.current[slot.id] = node; }}
                   src={tileUrl}
                   title={`Workspace ${index + 1} — ${machine.name}`}

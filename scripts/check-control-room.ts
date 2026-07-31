@@ -5,6 +5,7 @@ import {
   createControlRoomSlots,
   defaultControlRoomMachines,
   normalizeControlRoomLayout,
+  normalizeControlRoomViewModes,
   normalizePoweredOffSlotIds,
   normalizeControlRoomMachines
 } from "../src/controlRoomState";
@@ -42,10 +43,17 @@ assert.deepEqual(
   "standby state should persist only unique, configured workspace IDs"
 );
 
-const tileUrl = new URL(controlRoomTileUrl(machines[0], "workspace-3", "https://control.example.test"));
+assert.deepEqual(
+  normalizeControlRoomViewModes({ "workspace-1": "tracker", "workspace-2": "chat", missing: "tracker" }, slots),
+  { "workspace-1": "tracker" },
+  "only tracker modes for configured workspaces need to be persisted"
+);
+
+const tileUrl = new URL(controlRoomTileUrl(machines[0], "workspace-3", "https://control.example.test", "tracker"));
 assert.equal(tileUrl.searchParams.get("control-room-tile"), "1");
 assert.equal(tileUrl.searchParams.get("control-room-slot"), "workspace-3");
 assert.equal(tileUrl.searchParams.get("control-room-origin"), "https://control.example.test");
+assert.equal(tileUrl.searchParams.get("control-room-view"), "tracker");
 assert.equal(tileUrl.searchParams.has("token"), false, "control tokens must never be placed in iframe URLs");
 
 assert.equal(defaultControlRoomMachines.length, 3, "the native app should know all configured remotes before credentials arrive");
