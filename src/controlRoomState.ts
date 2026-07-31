@@ -8,6 +8,7 @@ export type ControlRoomMachine = {
 export type ControlRoomSlot = {
   id: string;
   machineId: string;
+  customUrl?: string;
 };
 
 export type ControlRoomViewMode = "chat" | "tracker";
@@ -50,6 +51,17 @@ export const defaultControlRoomMachines: ControlRoomMachine[] = [
 
 export function normalizeMachineUrl(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+export function normalizeControlRoomCustomUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 export function normalizeControlRoomMachines(value: unknown): ControlRoomMachine[] {
@@ -125,7 +137,8 @@ export function resizeControlRoomSlots(
     const existing = currentById.get(id);
     return {
       id,
-      machineId: existing && (existing.machineId === "" || machineIds.has(existing.machineId)) ? existing.machineId : ""
+      machineId: existing && !existing.customUrl && (existing.machineId === "" || machineIds.has(existing.machineId)) ? existing.machineId : "",
+      ...(existing?.customUrl ? { customUrl: normalizeControlRoomCustomUrl(existing.customUrl) || undefined } : {})
     };
   });
 }

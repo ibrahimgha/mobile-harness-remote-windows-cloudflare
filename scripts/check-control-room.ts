@@ -5,6 +5,7 @@ import {
   controlRoomScreenCount,
   createControlRoomSlots,
   defaultControlRoomMachines,
+  normalizeControlRoomCustomUrl,
   normalizeControlRoomLayout,
   normalizeControlRoomViewModes,
   normalizePoweredOffSlotIds,
@@ -21,6 +22,9 @@ const machines = normalizeControlRoomMachines([
 
 assert.equal(machines.length, 2, "invalid and duplicate machines should be discarded");
 assert.equal(machines[0].url, "https://one.example.test", "machine URLs should be normalized");
+assert.equal(normalizeControlRoomCustomUrl(" https://dash.example.test/live "), "https://dash.example.test/live");
+assert.equal(normalizeControlRoomCustomUrl("javascript:alert(1)"), "", "custom dashboards must be limited to http and https");
+assert.equal(normalizeControlRoomCustomUrl("file:///c:/secrets"), "", "custom dashboards must not load local files");
 
 assert.deepEqual(normalizeControlRoomLayout({ columns: 8, rows: 3 }), { columns: 8, rows: 3 });
 assert.deepEqual(
@@ -47,6 +51,11 @@ assert.deepEqual(
   "newly added workspaces must start terminated instead of choosing random machines"
 );
 assert.equal(resizeControlRoomSlots(expandedSlots, 24, machines).length, 24, "the grid should support eight columns by three rows");
+assert.deepEqual(
+  resizeControlRoomSlots([{ id: "workspace-1", machineId: "", customUrl: "https://dash.example.test/" }], 1, machines),
+  [{ id: "workspace-1", machineId: "", customUrl: "https://dash.example.test/" }],
+  "custom dashboard assignments should survive resize and restart"
+);
 
 assert.deepEqual(
   normalizePoweredOffSlotIds(["workspace-2", "workspace-2", "workspace-9", "missing", 3], slots),
@@ -76,6 +85,8 @@ const appSource = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "u
 const wrapperSource = fs.readFileSync(new URL("../windows/Build-WebViewWrapper.ps1", import.meta.url), "utf8");
 assert.match(controlRoomSource, /terminateSlot\(slot\.id\)/, "each live workspace should expose termination");
 assert.match(controlRoomSource, /Select machine to start/, "terminated workspaces should require an explicit machine selection");
+assert.match(controlRoomSource, /Load custom URL/, "every square should expose the custom dashboard editor");
+assert.match(controlRoomSource, /!isCustomUrl && \(/, "custom URL squares must omit the statistics mode button");
 assert.match(controlRoomSource, /event\.ctrlKey[\s\S]{0,160}event\.key === "ArrowDown"/, "Ctrl+Down should broadcast the global bottom command");
 assert.match(appSource, /if \(isFreshControlRoomStart\) return true;/, "restarted workspaces should open with their sidebar active");
 assert.match(appSource, /isFreshControlRoomStart[\s\S]{0,180}\? null[\s\S]{0,180}: firstChatId/, "freshly restarted workspaces should not choose a random chat");

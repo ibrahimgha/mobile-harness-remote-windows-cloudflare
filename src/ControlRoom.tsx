@@ -1,4 +1,4 @@
-import { Activity, ArrowDownToLine, ExternalLink, Loader2, MessageSquare, MonitorCog, Play, Power, RefreshCw, Settings2, SquareX, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, ArrowDownToLine, ExternalLink, Globe2, Link2, Loader2, MessageSquare, MonitorCog, Play, Power, RefreshCw, Settings2, SquareX, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   controlRoomColumnOptions,
@@ -9,6 +9,7 @@ import {
   defaultControlRoomLayout,
   defaultControlRoomMachines,
   normalizeControlRoomLayout,
+  normalizeControlRoomCustomUrl,
   normalizeControlRoomMachines,
   normalizeControlRoomViewModes,
   normalizePoweredOffSlotIds,
@@ -80,7 +81,12 @@ function readStoredSlots(machines: ControlRoomMachine[], count: number): Control
       const candidate = raw[index];
       const item = candidate && typeof candidate === "object" ? (candidate as Record<string, unknown>) : {};
       const requestedMachineId = typeof item.machineId === "string" ? item.machineId : "";
-      return { ...fallback, machineId: requestedMachineId === "" || machineIds.has(requestedMachineId) ? requestedMachineId : "" };
+      const customUrl = typeof item.customUrl === "string" ? normalizeControlRoomCustomUrl(item.customUrl) : "";
+      return {
+        ...fallback,
+        machineId: customUrl ? "" : requestedMachineId === "" || machineIds.has(requestedMachineId) ? requestedMachineId : "",
+        ...(customUrl ? { customUrl } : {})
+      };
     });
   } catch {
     return defaults;
@@ -110,6 +116,51 @@ function connectionLabel(connection: TileConnection) {
   return "Connecting";
 }
 
+function CustomUrlEditor({
+  slotNumber,
+  value,
+  error,
+  onChange,
+  onSubmit,
+  onCancel
+}: {
+  slotNumber: number;
+  value: string;
+  error: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="control-room-url-editor" role="dialog" aria-labelledby={`custom-url-title-${slotNumber}`}>
+      <form onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
+        <div className="control-room-url-editor-heading">
+          <span><Link2 size={15} /> CUSTOM DASHBOARD</span>
+          <button type="button" onClick={onCancel} aria-label={`Cancel custom URL for workspace ${slotNumber}`}><X size={14} /></button>
+        </div>
+        <strong id={`custom-url-title-${slotNumber}`}>Load a URL in square {String(slotNumber).padStart(2, "0")}</strong>
+        <label>
+          <span>Dashboard URL</span>
+          <input
+            type="url"
+            inputMode="url"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="https://dashboard.example.com"
+            autoFocus
+            required
+          />
+        </label>
+        <small className={error ? "is-error" : ""}>{error || "The site must allow embedding inside an iframe."}</small>
+        <div className="control-room-url-editor-actions">
+          <button type="button" onClick={onCancel}>Cancel</button>
+          <button type="submit" className="is-primary"><Globe2 size={14} /> Load URL</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export function ControlRoom() {
   const [machines, setMachines] = useState<ControlRoomMachine[]>(readStoredMachines);
   const [layout, setLayout] = useState<ControlRoomLayout>(readStoredLayout);
@@ -131,13 +182,17 @@ export function ControlRoom() {
   const [serverNames, setServerNames] = useState<Record<string, string>>({});
   const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
   const [startTokens, setStartTokens] = useState<Record<string, string>>({});
+  const [urlEditorSlotId, setUrlEditorSlotId] = useState("");
+  const [customUrlDraft, setCustomUrlDraft] = useState("");
+  const [customUrlError, setCustomUrlError] = useState("");
   const frameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
 
   const machineById = useMemo(() => new Map(machines.map((machine) => [machine.id, machine])), [machines]);
-  const terminatedCount = slots.filter((slot) => !slot.machineId).length;
+  const terminatedCount = slots.filter((slot) => !slot.machineId && !slot.customUrl).length;
+  const customUrlCount = slots.filter((slot) => Boolean(slot.customUrl)).length;
   const poweredOffCount = poweredOffSlots.size;
-  const activeCount = slots.filter((slot) => slot.machineId && !poweredOffSlots.has(slot.id)).length;
-  const onlineCount = slots.filter((slot) => slot.machineId && !poweredOffSlots.has(slot.id) && connections[slot.id] === "online").length;
+  const activeCount = slots.filter((slot) => (slot.machineId || slot.customUrl) && !poweredOffSlots.has(slot.id)).length;
+  const onlineCount = slots.filter((slot) => (slot.machineId || slot.customUrl) && !poweredOffSlots.has(slot.id) && connections[slot.id] === "online").length;
 
   const sendAuthentication = useCallback(
     (slotId: string) => {
@@ -204,7 +259,7 @@ export function ControlRoom() {
         const nextMachineIds = new Set(nextMachines.map((machine) => machine.id));
         const next = current.map((slot) => ({
           ...slot,
-          machineId: slot.machineId === "" || nextMachineIds.has(slot.machineId) ? slot.machineId : ""
+          machineId: slot.customUrl || slot.machineId === "" || nextMachineIds.has(slot.machineId) ? slot.machineId : ""
         }));
         localStorage.setItem(storedSlotsKey, JSON.stringify(next));
         return next;
@@ -274,7 +329,7 @@ export function ControlRoom() {
 
   function selectMachine(slotId: string, machineId: string) {
     setSlots((current) => {
-      const next = current.map((slot) => (slot.id === slotId ? { ...slot, machineId } : slot));
+      const next = current.map((slot) => (slot.id === slotId ? { id: slot.id, machineId } : slot));
       localStorage.setItem(storedSlotsKey, JSON.stringify(next));
       return next;
     });
@@ -289,7 +344,7 @@ export function ControlRoom() {
 
   function terminateSlot(slotId: string) {
     setSlots((current) => {
-      const next = current.map((slot) => (slot.id === slotId ? { ...slot, machineId: "" } : slot));
+      const next = current.map((slot) => (slot.id === slotId ? { id: slot.id, machineId: "" } : slot));
       localStorage.setItem(storedSlotsKey, JSON.stringify(next));
       return next;
     });
@@ -326,6 +381,47 @@ export function ControlRoom() {
     if (!machineById.has(machineId)) return;
     setStartTokens((current) => ({ ...current, [slotId]: `${Date.now()}-${Math.random().toString(16).slice(2)}` }));
     selectMachine(slotId, machineId);
+  }
+
+  function openCustomUrlEditor(slot: ControlRoomSlot) {
+    setUrlEditorSlotId(slot.id);
+    setCustomUrlDraft(slot.customUrl ?? "https://");
+    setCustomUrlError("");
+  }
+
+  function closeCustomUrlEditor() {
+    setUrlEditorSlotId("");
+    setCustomUrlDraft("");
+    setCustomUrlError("");
+  }
+
+  function loadCustomUrl(slotId: string) {
+    const customUrl = normalizeControlRoomCustomUrl(customUrlDraft);
+    if (!customUrl) {
+      setCustomUrlError("Enter a complete http:// or https:// URL");
+      return;
+    }
+
+    setSlots((current) => {
+      const next = current.map((slot) => (slot.id === slotId ? { id: slot.id, machineId: "", customUrl } : slot));
+      localStorage.setItem(storedSlotsKey, JSON.stringify(next));
+      return next;
+    });
+    setPoweredOffSlots((current) => {
+      const next = new Set(current);
+      next.delete(slotId);
+      localStorage.setItem(storedPoweredOffSlotsKey, JSON.stringify([...next]));
+      return next;
+    });
+    setViewModes((current) => {
+      const next = { ...current };
+      delete next[slotId];
+      localStorage.setItem(storedViewModesKey, JSON.stringify(next));
+      return next;
+    });
+    setConnections((current) => ({ ...current, [slotId]: "connecting" }));
+    setReloadKeys((current) => ({ ...current, [slotId]: (current[slotId] ?? 0) + 1 }));
+    closeCustomUrlEditor();
   }
 
   function reloadSlot(slotId: string) {
@@ -402,11 +498,12 @@ export function ControlRoom() {
           <strong>Codex Control Room</strong>
           <span>{slots.length} workspaces</span>
         </div>
-        <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${poweredOffCount} displays off; ${terminatedCount} terminated`}>
+        <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${customUrlCount} custom dashboards; ${poweredOffCount} displays off; ${terminatedCount} terminated`}>
           <span className={activeCount > 0 && onlineCount === activeCount ? "is-all-online" : ""} />
           <strong>{onlineCount}</strong>
           <span>/ {activeCount} live</span>
           {poweredOffCount > 0 && <span className="control-room-standby-count">· {poweredOffCount} off</span>}
+          {customUrlCount > 0 && <span className="control-room-standby-count">· {customUrlCount} custom</span>}
           {terminatedCount > 0 && <span className="control-room-standby-count">· {terminatedCount} terminated</span>}
         </div>
       </header>
@@ -483,10 +580,13 @@ export function ControlRoom() {
       >
         {slots.map((slot, index) => {
           const machine = machineById.get(slot.machineId);
+          const customUrl = slot.customUrl ?? "";
+          const isCustomUrl = Boolean(customUrl);
           const connection = connections[slot.id] ?? "connecting";
           const isPoweredOff = poweredOffSlots.has(slot.id);
           const viewMode = viewModes[slot.id] ?? "chat";
-          if (!machine) {
+          const urlEditorOpen = urlEditorSlotId === slot.id;
+          if (!machine && !isCustomUrl) {
             return (
               <article className="control-room-tile is-terminated" key={slot.id}>
                 <span className="control-room-terminated-index">{String(index + 1).padStart(2, "0")}</span>
@@ -502,36 +602,56 @@ export function ControlRoom() {
                     </select>
                     <Play size={12} aria-hidden="true" />
                   </label>
+                  <button className="control-room-custom-url-launch" type="button" onClick={() => openCustomUrlEditor(slot)}>
+                    <Link2 size={13} /> Load custom URL
+                  </button>
                 </div>
+                {urlEditorOpen && (
+                  <CustomUrlEditor
+                    slotNumber={index + 1}
+                    value={customUrlDraft}
+                    error={customUrlError}
+                    onChange={(value) => { setCustomUrlDraft(value); setCustomUrlError(""); }}
+                    onSubmit={() => loadCustomUrl(slot.id)}
+                    onCancel={closeCustomUrlEditor}
+                  />
+                )}
               </article>
             );
           }
 
-          const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin, viewMode, startTokens[slot.id]);
+          const tileUrl = isCustomUrl ? customUrl : controlRoomTileUrl(machine!, slot.id, window.location.origin, viewMode, startTokens[slot.id]);
+          const tileLabel = isCustomUrl ? new URL(customUrl).hostname : machine!.name;
           return (
-            <article className={`control-room-tile is-${connection}${isPoweredOff ? " is-powered-off" : ""}`} key={slot.id}>
+            <article className={`control-room-tile is-${connection}${isCustomUrl ? " is-custom-url" : ""}${isPoweredOff ? " is-powered-off" : ""}`} key={slot.id}>
               <div className="control-room-live-surface" aria-hidden={isPoweredOff} inert={isPoweredOff}>
                 <div className="control-room-tilebar">
                   <span className="control-room-index">{String(index + 1).padStart(2, "0")}</span>
                   <label>
                     <span className="sr-only">Machine for workspace {index + 1}</span>
-                    <select value={slot.machineId} onChange={(event) => selectMachine(slot.id, event.target.value)}>
+                    <select value={isCustomUrl ? "__custom__" : slot.machineId} onChange={(event) => selectMachine(slot.id, event.target.value)}>
+                      {isCustomUrl && <option value="__custom__">Custom URL</option>}
                       {machines.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
                     </select>
                   </label>
-                  <span className="control-room-server-name">{serverNames[slot.id] || machine.name}</span>
-                  <span className="control-room-connection" title={connectionLabel(connection)}>
-                    {connection === "connecting" ? <Loader2 className="spin" size={13} /> : connection === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
-                    {connectionLabel(connection)}
+                  <span className="control-room-server-name">{isCustomUrl ? tileLabel : serverNames[slot.id] || machine!.name}</span>
+                  <span className="control-room-connection" title={isCustomUrl ? "Custom dashboard" : connectionLabel(connection)}>
+                    {isCustomUrl ? <Globe2 size={13} /> : connection === "connecting" ? <Loader2 className="spin" size={13} /> : connection === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
+                    {isCustomUrl ? "Dashboard" : connectionLabel(connection)}
                   </span>
-                  <button
-                    className={`control-room-mode-toggle${viewMode === "tracker" ? " is-tracker" : ""}`}
-                    type="button"
-                    onClick={() => setSlotViewMode(slot.id, viewMode === "tracker" ? "chat" : "tracker")}
-                    aria-label={`${viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"} in workspace ${index + 1}`}
-                    title={viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"}
-                  >
-                    {viewMode === "tracker" ? <MessageSquare size={13} /> : <Activity size={13} />}
+                  {!isCustomUrl && (
+                    <button
+                      className={`control-room-mode-toggle${viewMode === "tracker" ? " is-tracker" : ""}`}
+                      type="button"
+                      onClick={() => setSlotViewMode(slot.id, viewMode === "tracker" ? "chat" : "tracker")}
+                      aria-label={`${viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"} in workspace ${index + 1}`}
+                      title={viewMode === "tracker" ? "Show full chat" : "Show live machine tracker"}
+                    >
+                      {viewMode === "tracker" ? <MessageSquare size={13} /> : <Activity size={13} />}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => openCustomUrlEditor(slot)} aria-label={`Load custom URL in workspace ${index + 1}`} title="Load custom URL">
+                    <Link2 size={13} />
                   </button>
                   <button type="button" onClick={() => reloadSlot(slot.id)} aria-label={`Reload workspace ${index + 1}`} title="Reload workspace">
                     <RefreshCw size={13} />
@@ -542,7 +662,7 @@ export function ControlRoom() {
                   <button className="control-room-terminate" type="button" onClick={() => terminateSlot(slot.id)} aria-label={`Terminate workspace ${index + 1}`} title="Terminate workspace">
                     <SquareX size={13} />
                   </button>
-                  <a href={machine.url} target="_blank" rel="noreferrer" aria-label={`Open ${machine.name} separately`} title="Open separately">
+                  <a href={tileUrl} target="_blank" rel="noreferrer" aria-label={`Open ${tileLabel} separately`} title="Open separately">
                     <ExternalLink size={13} />
                   </a>
                 </div>
@@ -550,15 +670,25 @@ export function ControlRoom() {
                   key={`${slot.id}-${viewMode}-${reloadKeys[slot.id] ?? 0}`}
                   ref={(node) => { frameRefs.current[slot.id] = node; }}
                   src={tileUrl}
-                  title={`Workspace ${index + 1} — ${machine.name}`}
+                  title={`Workspace ${index + 1} — ${tileLabel}`}
                   onLoad={() => {
-                    setConnections((current) => ({ ...current, [slot.id]: "connecting" }));
-                    window.setTimeout(() => sendAuthentication(slot.id), 150);
+                    setConnections((current) => ({ ...current, [slot.id]: isCustomUrl ? "online" : "connecting" }));
+                    if (!isCustomUrl) window.setTimeout(() => sendAuthentication(slot.id), 150);
                   }}
                   onError={() => setConnections((current) => ({ ...current, [slot.id]: "offline" }))}
                   allow="clipboard-read; clipboard-write; microphone"
                 />
               </div>
+              {urlEditorOpen && (
+                <CustomUrlEditor
+                  slotNumber={index + 1}
+                  value={customUrlDraft}
+                  error={customUrlError}
+                  onChange={(value) => { setCustomUrlDraft(value); setCustomUrlError(""); }}
+                  onSubmit={() => loadCustomUrl(slot.id)}
+                  onCancel={closeCustomUrlEditor}
+                />
+              )}
               {isPoweredOff && (
                 <button
                   className="control-room-wake"

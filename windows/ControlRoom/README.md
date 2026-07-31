@@ -6,6 +6,8 @@ Each workspace has an independent display-power control. Turning a display off r
 
 The control room remembers its grid, machine assignments, terminated and display-off states, tracker/chat modes, selected chat, side-menu state, and native window size, position, and maximized state. Relaunching restores the previous operating layout; invalid off-screen window coordinates safely fall back to the centered default.
 
+Any square can load and remember a custom HTTP or HTTPS dashboard URL. Custom dashboard squares retain reload, display-off, terminate, URL-edit, and open-separately controls, while the Codex statistics toggle is intentionally omitted. The remote site must permit iframe embedding through its own CSP and `X-Frame-Options` headers.
+
 Install or refresh the app and its encrypted machine credentials:
 
 ```powershell

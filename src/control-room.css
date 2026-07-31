@@ -342,6 +342,73 @@ body:has(.control-room-shell) {
 .control-room-terminated-content select:hover,
 .control-room-terminated-content select:focus-visible { border-color: rgba(199, 243, 107, 0.28); outline: none; }
 
+.control-room-custom-url-launch {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--console-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 10px/1 "Bahnschrift", sans-serif;
+  cursor: pointer;
+}
+
+.control-room-custom-url-launch:hover,
+.control-room-custom-url-launch:focus-visible { color: var(--console-signal); outline: 1px solid var(--console-line); }
+
+.control-room-url-editor {
+  position: absolute;
+  inset: 30px 0 0;
+  z-index: 5;
+  padding: 16px;
+  background: rgba(7, 10, 8, 0.96);
+  display: grid;
+  place-items: center;
+  animation: control-room-panel-in 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.is-terminated > .control-room-url-editor { inset: 0; }
+
+.control-room-url-editor form {
+  width: min(360px, 100%);
+  padding: 16px;
+  border: 1px solid var(--console-line);
+  border-radius: 4px;
+  background: var(--console-deck);
+  display: grid;
+  gap: 12px;
+}
+
+.control-room-url-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.control-room-url-editor-heading > span { color: var(--console-signal); display: flex; align-items: center; gap: 7px; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; }
+.control-room-url-editor-heading > button { width: 36px; height: 36px; border: 0; border-radius: 4px; background: transparent; color: var(--console-muted); display: grid; place-items: center; cursor: pointer; }
+.control-room-url-editor-heading > button:hover,
+.control-room-url-editor-heading > button:focus-visible { background: var(--console-raised); color: var(--console-ink); outline: 1px solid var(--console-line); }
+.control-room-url-editor form > strong { color: var(--console-ink); font-size: 15px; font-weight: 600; }
+.control-room-url-editor label { display: grid; gap: 6px; }
+.control-room-url-editor label > span { color: var(--console-secondary); font-size: 10px; font-weight: 600; }
+.control-room-url-editor input {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--console-line);
+  border-radius: 4px;
+  background: var(--console-inset);
+  color: var(--console-ink);
+  font: 500 12px/1 "Bahnschrift", sans-serif;
+}
+.control-room-url-editor input:focus { border-color: rgba(199, 243, 107, 0.4); outline: 2px solid rgba(199, 243, 107, 0.1); }
+.control-room-url-editor form > small { min-height: 12px; color: var(--console-muted); font-size: 9px; }
+.control-room-url-editor form > small.is-error { color: var(--console-danger); }
+.control-room-url-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.control-room-url-editor-actions button { min-width: 72px; height: 40px; padding: 0 12px; border: 1px solid var(--console-line); border-radius: 4px; background: transparent; color: var(--console-secondary); display: flex; align-items: center; justify-content: center; gap: 6px; font: 600 10px/1 "Bahnschrift", sans-serif; cursor: pointer; }
+.control-room-url-editor-actions button:hover,
+.control-room-url-editor-actions button:focus-visible { border-color: rgba(241, 243, 238, 0.2); color: var(--console-ink); outline: none; }
+.control-room-url-editor-actions button.is-primary { border-color: rgba(199, 243, 107, 0.28); background: rgba(199, 243, 107, 0.08); color: var(--console-signal); }
+.control-room-url-editor-actions button:active { transform: scale(0.97); }
+
 .control-room-live-surface {
   width: 100%;
   height: 100%;
@@ -441,6 +508,7 @@ body:has(.control-room-shell) {
 }
 
 .is-online .control-room-connection { color: var(--console-signal); }
+.is-custom-url .control-room-connection { color: var(--console-signal); }
 .is-unauthorized .control-room-connection { color: var(--console-warning); }
 .is-offline .control-room-connection { color: var(--console-danger); }
 
