@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Security
 
 $AppName = "Codex Control Room"
 $AppUserModelId = "CodexRemote.ControlRoom"
@@ -126,4 +127,3 @@ if (-not $NoDesktopShortcut) {
 Write-Host "Installed $AppName"
 Write-Host "Executable: $exePath"
 Write-Host "Start Menu: $startMenuPath"
-
