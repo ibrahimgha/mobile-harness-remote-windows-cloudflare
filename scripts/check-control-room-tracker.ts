@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { buildControlRoomTrackerSnapshot, trackerDayStart } from "../server/controlRoomTracker.js";
 import type { CodexRunJob, CodexRunSettings } from "../server/types.js";
 
@@ -60,5 +61,12 @@ assert.equal(snapshot.runningCount, 2, "runner and externally detected sessions 
 assert.equal(snapshot.completedSinceDayStart, 1, "completed jobs after the 5am boundary are counted");
 assert.equal(snapshot.recent[0]?.durationMs, 150_000, "recent run duration is derived from terminal timestamps");
 assert.equal(snapshot.running[0]?.model, "gpt-5.6-sol", "running jobs retain their submitted model metadata");
+
+const trackerSource = fs.readFileSync(new URL("../src/MachineTracker.tsx", import.meta.url), "utf8");
+const trackerStyles = fs.readFileSync(new URL("../src/machine-tracker.css", import.meta.url), "utf8");
+assert.match(trackerSource, /snapshot\.running\.slice\(0, 3\)/, "the distance view should limit active rows to the most useful three");
+assert.match(trackerSource, /MORE ACTIVE/, "hidden active jobs should remain visible as an aggregate count");
+assert.match(trackerStyles, /font-size: clamp\(54px, 8vw, 92px\)/, "the active-job count should be readable from across the room");
+assert.match(trackerStyles, /width: 4px; background: var\(--board-live\)/, "active rows should carry a strong live status rail");
 
 console.log("Control room tracker checks passed");

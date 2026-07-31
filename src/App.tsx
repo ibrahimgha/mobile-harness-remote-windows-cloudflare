@@ -482,6 +482,7 @@ const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
 const chatHistoryCacheKey = "chat-history-cache-v3";
 const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = controlRoomSlotId ? `selected-chat-id:${controlRoomSlotId}` : "selected-chat-id";
+const controlRoomMenuOpenKey = controlRoomSlotId ? `menu-open:${controlRoomSlotId}` : "";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final"];
@@ -3724,7 +3725,15 @@ export function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [chatTurnLimits, setChatTurnLimits] = useState<Record<string, number>>({});
-  const [menuOpen, setMenuOpen] = useState(isFreshControlRoomStart);
+  const [menuOpen, setMenuOpen] = useState(() => {
+    if (isFreshControlRoomStart) return true;
+    if (!isControlRoomTile || !controlRoomMenuOpenKey) return false;
+    try {
+      return localStorage.getItem(controlRoomMenuOpenKey) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [sidebarOrderSnapshot, setSidebarOrderSnapshot] = useState<SidebarOrderSnapshot | null>(null);
   const [runBoardOpen, setRunBoardOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
@@ -6690,6 +6699,13 @@ export function App() {
 
   useEffect(() => {
     menuOpenRef.current = menuOpen;
+    if (isControlRoomTile && controlRoomMenuOpenKey) {
+      try {
+        localStorage.setItem(controlRoomMenuOpenKey, String(menuOpen));
+      } catch {
+        // The live state remains usable when storage is unavailable.
+      }
+    }
     chatShouldAutoScrollRef.current = chatIsNearBottom();
     updateScrollDebugPosition();
   }, [chatIsNearBottom, menuOpen, updateScrollDebugPosition]);

@@ -39,16 +39,18 @@ function modelLabel(run: TrackerRun): string {
 function UsageLimit({ label, window }: { label: string; window?: CodexUsageWindow }) {
   const used = Math.min(100, Math.max(0, window?.usedPercent ?? 0));
   const pressure = used >= 90 ? "is-critical" : used >= 75 ? "is-warning" : "";
+  const remaining = Math.round(100 - used);
   return (
     <div className={`machine-tracker-limit ${pressure}`}>
-      <div>
+      <div className="machine-tracker-limit-heading">
         <span>{label}</span>
-        <strong>{window ? `${Math.round(100 - used)}% left` : "Measuring"}</strong>
+        <strong>{window ? `${remaining}%` : "—"}</strong>
+        <small>{window ? "LEFT" : "MEASURING"}</small>
       </div>
       <div className="machine-tracker-limit-track" aria-label={`${label}: ${Math.round(used)} percent used`}>
         <span style={{ width: `${used}%` }} />
       </div>
-      <small>{window ? `${Math.round(used)}% used · ${clockLabel(window.resetsAt)}` : "Waiting for Codex usage data"}</small>
+      <p>{window ? clockLabel(window.resetsAt) : "Waiting for usage data"}</p>
     </div>
   );
 }
@@ -57,7 +59,7 @@ function RunRow({ run, nowMs, active = false }: { run: TrackerRun; nowMs: number
   return (
     <li className={active ? "is-active" : `is-${run.status}`}>
       <span className="machine-tracker-run-status" aria-label={run.status}>
-        {active ? <Radio size={12} /> : run.status === "completed" ? <Check size={12} /> : <AlertTriangle size={12} />}
+        {active ? <Radio size={16} /> : run.status === "completed" ? <Check size={16} /> : <AlertTriangle size={16} />}
       </span>
       <span className="machine-tracker-run-copy">
         <strong title={run.title}>{run.title}</strong>
@@ -171,28 +173,28 @@ export function MachineTracker() {
       ) : (
         <div className="machine-tracker-content">
           <section className="machine-tracker-scoreboard" aria-label="Machine job summary">
-            <div className={snapshot.runningCount ? "is-live" : ""}>
-              <span>RUNNING NOW</span>
+            <div className={`machine-tracker-primary-count${snapshot.runningCount ? " is-live" : ""}`}>
+              <span>ACTIVE NOW</span>
               <strong>{snapshot.runningCount}</strong>
-              <small>{snapshot.runningCount === 1 ? "active job" : "active jobs"}</small>
+              <small>{snapshot.runningCount === 1 ? "JOB RUNNING" : "JOBS RUNNING"}</small>
             </div>
-            <div>
-              <span>DONE SINCE 05:00</span>
+            <div className="machine-tracker-completed-count">
+              <span>DONE TODAY</span>
               <strong>{snapshot.completedSinceDayStart}</strong>
-              <small>completed jobs</small>
+              <small>SINCE 05:00</small>
             </div>
           </section>
 
           <section className="machine-tracker-section is-running">
             <div className="machine-tracker-section-title"><span><Radio size={12} /> CURRENTLY RUNNING</span><small>{updatedLabel}</small></div>
-            {snapshot.running.length ? <ul>{snapshot.running.map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} active />)}</ul> : (
+            {snapshot.running.length ? <><ul>{snapshot.running.slice(0, 3).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} active />)}</ul>{snapshot.running.length > 3 && <div className="machine-tracker-overflow">+{snapshot.running.length - 3} MORE ACTIVE</div>}</> : (
               <div className="machine-tracker-empty"><Clock3 size={15} /><span>No active jobs on this machine</span></div>
             )}
           </section>
 
           <section className="machine-tracker-section is-recent">
             <div className="machine-tracker-section-title"><span><Check size={12} /> RECENT RUNS</span><small>latest first</small></div>
-            {snapshot.recent.length ? <ul>{snapshot.recent.map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} />)}</ul> : (
+            {snapshot.recent.length ? <ul>{snapshot.recent.slice(0, 4).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} />)}</ul> : (
               <div className="machine-tracker-empty"><span>No recent runs recorded</span></div>
             )}
           </section>

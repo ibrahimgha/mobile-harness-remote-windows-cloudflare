@@ -73,11 +73,16 @@ assert.equal(defaultControlRoomMachines[2]?.id, "thinkcentre-1", "TC1 should be 
 
 const controlRoomSource = fs.readFileSync(new URL("../src/ControlRoom.tsx", import.meta.url), "utf8");
 const appSource = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const wrapperSource = fs.readFileSync(new URL("../windows/Build-WebViewWrapper.ps1", import.meta.url), "utf8");
 assert.match(controlRoomSource, /terminateSlot\(slot\.id\)/, "each live workspace should expose termination");
 assert.match(controlRoomSource, /Select machine to start/, "terminated workspaces should require an explicit machine selection");
 assert.match(controlRoomSource, /event\.ctrlKey[\s\S]{0,160}event\.key === "ArrowDown"/, "Ctrl+Down should broadcast the global bottom command");
-assert.match(appSource, /useState\(isFreshControlRoomStart\)/, "restarted workspaces should open with their sidebar active");
+assert.match(appSource, /if \(isFreshControlRoomStart\) return true;/, "restarted workspaces should open with their sidebar active");
 assert.match(appSource, /isFreshControlRoomStart[\s\S]{0,180}\? null[\s\S]{0,180}: firstChatId/, "freshly restarted workspaces should not choose a random chat");
 assert.match(appSource, /codex-control-room-scroll-all-request/, "focused child chats should relay Ctrl+Down to the wall");
+assert.match(appSource, /menu-open:\$\{controlRoomSlotId\}/, "each workspace should remember whether its side menu was open");
+assert.match(appSource, /localStorage\.setItem\(controlRoomMenuOpenKey, String\(menuOpen\)\)/, "side menu state should persist as it changes");
+assert.match(wrapperSource, /window-state\.json/, "the Windows wrapper should persist its monitor placement");
+assert.match(wrapperSource, /WorkingArea\.IntersectsWith\(bounds\)/, "saved window placement should be rejected when every monitor is disconnected");
 
 console.log("Control room checks passed");

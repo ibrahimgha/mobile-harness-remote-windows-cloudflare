@@ -131,10 +131,17 @@ internal sealed class MainForm : Form
   private const string UserDataFolderName = "$csUserDataFolder";
   private const string ProfileConfigPath = "$csProfileConfigPath";
   private readonly WebView2 webView;
+  private readonly string windowStatePath;
 
   public MainForm()
   {
     Text = AppName;
+    windowStatePath = Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+      "CodexRemoteWindowsApps",
+      UserDataFolderName,
+      "window-state.json"
+    );
     StartPosition = FormStartPosition.CenterScreen;
     Size = new Size(1280, 860);
     MinimumSize = new Size(900, 640);
@@ -144,6 +151,66 @@ internal sealed class MainForm : Form
     webView = new WebView2();
     webView.Dock = DockStyle.Fill;
     Controls.Add(webView);
+    RestoreWindowState();
+  }
+
+  protected override void OnFormClosing(FormClosingEventArgs eventArgs)
+  {
+    SaveWindowState();
+    base.OnFormClosing(eventArgs);
+  }
+
+  private void RestoreWindowState()
+  {
+    try
+    {
+      if (!File.Exists(windowStatePath)) return;
+      var serializer = new JavaScriptSerializer();
+      var state = serializer.Deserialize<WindowPlacement>(File.ReadAllText(windowStatePath));
+      if (state == null || state.width < MinimumSize.Width || state.height < MinimumSize.Height) return;
+
+      var bounds = new Rectangle(state.left, state.top, state.width, state.height);
+      bool visible = false;
+      foreach (Screen screen in Screen.AllScreens)
+      {
+        if (screen.WorkingArea.IntersectsWith(bounds))
+        {
+          visible = true;
+          break;
+        }
+      }
+      if (!visible) return;
+
+      StartPosition = FormStartPosition.Manual;
+      Bounds = bounds;
+      if (state.maximized) WindowState = FormWindowState.Maximized;
+    }
+    catch
+    {
+      // Use the centered default when saved monitor geometry is no longer valid.
+    }
+  }
+
+  private void SaveWindowState()
+  {
+    try
+    {
+      Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+      Directory.CreateDirectory(Path.GetDirectoryName(windowStatePath));
+      var serializer = new JavaScriptSerializer();
+      File.WriteAllText(windowStatePath, serializer.Serialize(new WindowPlacement
+      {
+        left = bounds.Left,
+        top = bounds.Top,
+        width = bounds.Width,
+        height = bounds.Height,
+        maximized = WindowState == FormWindowState.Maximized
+      }));
+    }
+    catch
+    {
+      // A preference write must never block app shutdown.
+    }
   }
 
   protected override async void OnShown(EventArgs eventArgs)
@@ -249,6 +316,15 @@ internal sealed class DecryptedMachineProfile
   public string name { get; set; }
   public string url { get; set; }
   public string token { get; set; }
+}
+
+internal sealed class WindowPlacement
+{
+  public int left { get; set; }
+  public int top { get; set; }
+  public int width { get; set; }
+  public int height { get; set; }
+  public bool maximized { get; set; }
 }
 "@
 
