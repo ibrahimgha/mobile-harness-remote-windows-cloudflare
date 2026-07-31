@@ -112,7 +112,7 @@ Install the multi-device `Codex Control Room` Windows app:
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1
 ```
 
-It opens a ten-workspace wall optimized for 4K and ultrawide monitors. Each workspace independently selects a machine, project, and chat while exposing the full remote controls. The installer authenticates the local, ThinkCentre 10, and TC1 remotes using current-user DPAPI-encrypted credentials.
+It opens a ten-workspace wall optimized for 4K and ultrawide monitors. Each workspace independently selects a machine, project, and chat while exposing the full remote controls. A per-workspace display control blanks an individual square while preserving its live remote session for instant wake. The installer authenticates the local, ThinkCentre 10, and TC1 remotes using current-user DPAPI-encrypted credentials.
 
 Install the `Ibrahim HP` Windows app shortcut for the public remote URL:
 

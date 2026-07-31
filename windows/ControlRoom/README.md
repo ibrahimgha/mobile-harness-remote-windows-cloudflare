@@ -2,6 +2,8 @@
 
 The Windows control room opens ten independent Codex Remote workspaces in one high-density native WebView2 window. Every workspace can switch between configured machines, projects, and chats while retaining the complete Codex Remote controls.
 
+Each workspace has an independent display-power control. Turning a display off replaces that square with a black standby panel while its iframe remains mounted and connected; waking it reveals the same live session without reloading.
+
 Install or refresh the app and its encrypted machine credentials:
 
 ```powershell

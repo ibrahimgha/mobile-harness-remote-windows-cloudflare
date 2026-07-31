@@ -3,6 +3,7 @@ import {
   controlRoomTileUrl,
   createControlRoomSlots,
   defaultControlRoomMachines,
+  normalizePoweredOffSlotIds,
   normalizeControlRoomMachines
 } from "../src/controlRoomState";
 
@@ -24,6 +25,12 @@ assert.deepEqual(
   "workspaces should alternate across available machines"
 );
 assert.equal(new Set(slots.map((slot) => slot.id)).size, slots.length, "every workspace needs an independent storage scope");
+
+assert.deepEqual(
+  normalizePoweredOffSlotIds(["workspace-2", "workspace-2", "workspace-9", "missing", 3], slots),
+  ["workspace-2", "workspace-9"],
+  "standby state should persist only unique, configured workspace IDs"
+);
 
 const tileUrl = new URL(controlRoomTileUrl(machines[0], "workspace-3", "https://control.example.test"));
 assert.equal(tileUrl.searchParams.get("control-room-tile"), "1");

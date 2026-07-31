@@ -77,6 +77,15 @@ export function createControlRoomSlots(machines: ControlRoomMachine[], count = c
   }));
 }
 
+export function normalizePoweredOffSlotIds(value: unknown, slots: ControlRoomSlot[]): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const slotIds = new Set(slots.map((slot) => slot.id));
+  return [...new Set(value.filter((candidate): candidate is string => typeof candidate === "string" && slotIds.has(candidate)))];
+}
+
 export function controlRoomTileUrl(machine: ControlRoomMachine, slotId: string, parentOrigin: string): string {
   const url = new URL(machine.url);
   url.searchParams.set("control-room-tile", "1");

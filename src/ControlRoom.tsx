@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, MonitorCog, RefreshCw, Settings2, Wifi, WifiOff } from "lucide-react";
+import { ExternalLink, Loader2, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   controlRoomSlotCount,
@@ -6,6 +6,7 @@ import {
   createControlRoomSlots,
   defaultControlRoomMachines,
   normalizeControlRoomMachines,
+  normalizePoweredOffSlotIds,
   type ControlRoomMachine,
   type ControlRoomSlot
 } from "./controlRoomState";
@@ -38,6 +39,7 @@ declare global {
 
 const storedProfilesKey = "codex-control-room-machines-v1";
 const storedSlotsKey = "codex-control-room-slots-v1";
+const storedPoweredOffSlotsKey = "codex-control-room-powered-off-slots-v1";
 
 function readStoredMachines(): ControlRoomMachine[] {
   try {
@@ -69,6 +71,14 @@ function readStoredSlots(machines: ControlRoomMachine[]): ControlRoomSlot[] {
   }
 }
 
+function readStoredPoweredOffSlots(slots: ControlRoomSlot[]): Set<string> {
+  try {
+    return new Set(normalizePoweredOffSlotIds(JSON.parse(localStorage.getItem(storedPoweredOffSlotsKey) ?? "null"), slots));
+  } catch {
+    return new Set();
+  }
+}
+
 function connectionLabel(connection: TileConnection) {
   if (connection === "online") return "Live";
   if (connection === "unauthorized") return "Authentication needed";
@@ -79,13 +89,19 @@ function connectionLabel(connection: TileConnection) {
 export function ControlRoom() {
   const [machines, setMachines] = useState<ControlRoomMachine[]>(readStoredMachines);
   const [slots, setSlots] = useState<ControlRoomSlot[]>(() => readStoredSlots(readStoredMachines()));
+  const [poweredOffSlots, setPoweredOffSlots] = useState<Set<string>>(() => {
+    const storedMachines = readStoredMachines();
+    return readStoredPoweredOffSlots(readStoredSlots(storedMachines));
+  });
   const [connections, setConnections] = useState<Record<string, TileConnection>>({});
   const [serverNames, setServerNames] = useState<Record<string, string>>({});
   const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
   const frameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
 
   const machineById = useMemo(() => new Map(machines.map((machine) => [machine.id, machine])), [machines]);
-  const onlineCount = Object.values(connections).filter((value) => value === "online").length;
+  const poweredOffCount = poweredOffSlots.size;
+  const activeCount = slots.length - poweredOffCount;
+  const onlineCount = slots.filter((slot) => !poweredOffSlots.has(slot.id) && connections[slot.id] === "online").length;
 
   const sendAuthentication = useCallback(
     (slotId: string) => {
@@ -196,6 +212,17 @@ export function ControlRoom() {
     setReloadKeys((current) => ({ ...current, [slotId]: (current[slotId] ?? 0) + 1 }));
   }
 
+  function setSlotDisplay(slotId: string, poweredOn: boolean) {
+    setPoweredOffSlots((current) => {
+      const next = new Set(current);
+      if (poweredOn) next.delete(slotId);
+      else next.add(slotId);
+      localStorage.setItem(storedPoweredOffSlotsKey, JSON.stringify([...next]));
+      return next;
+    });
+
+  }
+
   return (
     <main className="control-room-shell">
       <header className="control-room-header">
@@ -207,10 +234,11 @@ export function ControlRoom() {
           <strong>Codex Control Room</strong>
           <span>{slots.length} workspaces</span>
         </div>
-        <div className="control-room-health" aria-label={`${onlineCount} of ${slots.length} workspaces online`}>
-          <span className={onlineCount === slots.length ? "is-all-online" : ""} />
+        <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${poweredOffCount} displays off`}>
+          <span className={activeCount > 0 && onlineCount === activeCount ? "is-all-online" : ""} />
           <strong>{onlineCount}</strong>
-          <span>/ {slots.length} live</span>
+          <span>/ {activeCount} live</span>
+          {poweredOffCount > 0 && <span className="control-room-standby-count">· {poweredOffCount} off</span>}
         </div>
       </header>
 
@@ -218,43 +246,62 @@ export function ControlRoom() {
         {slots.map((slot, index) => {
           const machine = machineById.get(slot.machineId) ?? machines[0];
           const connection = connections[slot.id] ?? "connecting";
+          const isPoweredOff = poweredOffSlots.has(slot.id);
           if (!machine) return null;
 
           const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin);
           return (
-            <article className={`control-room-tile is-${connection}`} key={slot.id}>
-              <div className="control-room-tilebar">
-                <span className="control-room-index">{String(index + 1).padStart(2, "0")}</span>
-                <label>
-                  <span className="sr-only">Machine for workspace {index + 1}</span>
-                  <select value={slot.machineId} onChange={(event) => selectMachine(slot.id, event.target.value)}>
-                    {machines.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-                  </select>
-                </label>
-                <span className="control-room-server-name">{serverNames[slot.id] || machine.name}</span>
-                <span className="control-room-connection" title={connectionLabel(connection)}>
-                  {connection === "connecting" ? <Loader2 className="spin" size={13} /> : connection === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
-                  {connectionLabel(connection)}
-                </span>
-                <button type="button" onClick={() => reloadSlot(slot.id)} aria-label={`Reload workspace ${index + 1}`} title="Reload workspace">
-                  <RefreshCw size={13} />
-                </button>
-                <a href={machine.url} target="_blank" rel="noreferrer" aria-label={`Open ${machine.name} separately`} title="Open separately">
-                  <ExternalLink size={13} />
-                </a>
+            <article className={`control-room-tile is-${connection}${isPoweredOff ? " is-powered-off" : ""}`} key={slot.id}>
+              <div className="control-room-live-surface" aria-hidden={isPoweredOff} inert={isPoweredOff}>
+                <div className="control-room-tilebar">
+                  <span className="control-room-index">{String(index + 1).padStart(2, "0")}</span>
+                  <label>
+                    <span className="sr-only">Machine for workspace {index + 1}</span>
+                    <select value={slot.machineId} onChange={(event) => selectMachine(slot.id, event.target.value)}>
+                      {machines.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+                    </select>
+                  </label>
+                  <span className="control-room-server-name">{serverNames[slot.id] || machine.name}</span>
+                  <span className="control-room-connection" title={connectionLabel(connection)}>
+                    {connection === "connecting" ? <Loader2 className="spin" size={13} /> : connection === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
+                    {connectionLabel(connection)}
+                  </span>
+                  <button type="button" onClick={() => reloadSlot(slot.id)} aria-label={`Reload workspace ${index + 1}`} title="Reload workspace">
+                    <RefreshCw size={13} />
+                  </button>
+                  <button type="button" onClick={() => setSlotDisplay(slot.id, false)} aria-label={`Turn off display for workspace ${index + 1}`} title="Turn display off">
+                    <Power size={13} />
+                  </button>
+                  <a href={machine.url} target="_blank" rel="noreferrer" aria-label={`Open ${machine.name} separately`} title="Open separately">
+                    <ExternalLink size={13} />
+                  </a>
+                </div>
+                <iframe
+                  key={`${slot.id}-${reloadKeys[slot.id] ?? 0}`}
+                  ref={(node) => { frameRefs.current[slot.id] = node; }}
+                  src={tileUrl}
+                  title={`Workspace ${index + 1} — ${machine.name}`}
+                  onLoad={() => {
+                    setConnections((current) => ({ ...current, [slot.id]: "connecting" }));
+                    window.setTimeout(() => sendAuthentication(slot.id), 150);
+                  }}
+                  onError={() => setConnections((current) => ({ ...current, [slot.id]: "offline" }))}
+                  allow="clipboard-read; clipboard-write; microphone"
+                />
               </div>
-              <iframe
-                key={`${slot.id}-${reloadKeys[slot.id] ?? 0}`}
-                ref={(node) => { frameRefs.current[slot.id] = node; }}
-                src={tileUrl}
-                title={`Workspace ${index + 1} — ${machine.name}`}
-                onLoad={() => {
-                  setConnections((current) => ({ ...current, [slot.id]: "connecting" }));
-                  window.setTimeout(() => sendAuthentication(slot.id), 150);
-                }}
-                onError={() => setConnections((current) => ({ ...current, [slot.id]: "offline" }))}
-                allow="clipboard-read; clipboard-write; microphone"
-              />
+              {isPoweredOff && (
+                <button
+                  className="control-room-wake"
+                  type="button"
+                  onClick={() => setSlotDisplay(slot.id, true)}
+                  aria-label={`Turn on display for workspace ${index + 1}`}
+                  title="Turn display on"
+                >
+                  <Power size={22} />
+                  <strong>DISPLAY OFF</strong>
+                  <span>Workspace {String(index + 1).padStart(2, "0")} · click to wake</span>
+                </button>
+              )}
             </article>
           );
         })}
@@ -262,4 +309,3 @@ export function ControlRoom() {
     </main>
   );
 }
-
