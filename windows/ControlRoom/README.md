@@ -8,7 +8,7 @@ Install or refresh the app and its encrypted machine credentials:
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1
 ```
 
-The installer reads the local remote token from this repository's `.env`, reads the ThinkCentre 10 token over the existing SSH profile, encrypts both with Windows DPAPI for the current user, builds the native wrapper, and creates Start Menu and Desktop shortcuts.
+The installer reads the local remote token from this repository's `.env`, reads the ThinkCentre 10 and TC1 tokens over their existing SSH profiles, encrypts all three with Windows DPAPI for the current user, builds the native wrapper, and creates Start Menu and Desktop shortcuts.
 
 The app opens:
 
@@ -17,4 +17,3 @@ https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com/cont
 ```
 
 Machine tokens are posted from the native wrapper into the page at runtime; they are never placed in iframe URLs.
-

@@ -31,7 +31,7 @@ assert.equal(tileUrl.searchParams.get("control-room-slot"), "workspace-3");
 assert.equal(tileUrl.searchParams.get("control-room-origin"), "https://control.example.test");
 assert.equal(tileUrl.searchParams.has("token"), false, "control tokens must never be placed in iframe URLs");
 
-assert.equal(defaultControlRoomMachines.length, 2, "the native app should know both requested remotes before credentials arrive");
+assert.equal(defaultControlRoomMachines.length, 3, "the native app should know all configured remotes before credentials arrive");
+assert.equal(defaultControlRoomMachines[2]?.id, "thinkcentre-1", "TC1 should be available as a default machine");
 
 console.log("Control room checks passed");
-

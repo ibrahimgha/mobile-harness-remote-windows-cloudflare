@@ -1,7 +1,8 @@
 param(
   [switch]$NoDesktopShortcut,
   [string]$LocalRemoteUrl = "https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com",
-  [string]$ThinkCentre10RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com"
+  [string]$ThinkCentre10RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com",
+  [string]$ThinkCentre1RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-1.bit68-infra.com"
 )
 
 Set-StrictMode -Version Latest
@@ -53,15 +54,17 @@ function Protect-ForCurrentUser {
   return [Convert]::ToBase64String($protected)
 }
 
-function Read-ThinkCentreToken {
-  $line = & ssh thinkcentre-10 "grep -m1 '^CONTROL_TOKEN=' /var/www/html/mobile-harness-remote-windows-cloudflare/.env" 2>$null
+function Read-RemoteToken {
+  param([string]$SshHost, [string]$MachineName)
+
+  $line = & ssh $SshHost "grep -m1 '^CONTROL_TOKEN=' /var/www/html/mobile-harness-remote-windows-cloudflare/.env" 2>$null
   if ($LASTEXITCODE -ne 0 -or -not $line) {
-    throw "Could not read the ThinkCentre 10 Codex Remote token over SSH."
+    throw "Could not read the $MachineName Codex Remote token over SSH."
   }
 
   $value = ([string]$line).Substring("CONTROL_TOKEN=".Length).Trim().Trim('"').Trim("'")
   if (-not $value) {
-    throw "ThinkCentre 10 returned an empty CONTROL_TOKEN."
+    throw "$MachineName returned an empty CONTROL_TOKEN."
   }
 
   return $value
@@ -84,7 +87,8 @@ function New-AppShortcut {
 }
 
 $localToken = Read-EnvToken -Path $LocalEnvPath
-$thinkCentre10Token = Read-ThinkCentreToken
+$thinkCentre10Token = Read-RemoteToken -SshHost "thinkcentre-10" -MachineName "ThinkCentre 10"
+$thinkCentre1Token = Read-RemoteToken -SshHost "thinkcentre-1" -MachineName "TC1"
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 $profileConfig = @{
@@ -101,6 +105,12 @@ $profileConfig = @{
       name = "ThinkCentre 10"
       url = $ThinkCentre10RemoteUrl.TrimEnd('/')
       encryptedToken = Protect-ForCurrentUser -Value $thinkCentre10Token
+    },
+    @{
+      id = "thinkcentre-1"
+      name = "TC1"
+      url = $ThinkCentre1RemoteUrl.TrimEnd('/')
+      encryptedToken = Protect-ForCurrentUser -Value $thinkCentre1Token
     }
   )
 }

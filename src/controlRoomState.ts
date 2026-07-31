@@ -24,6 +24,12 @@ export const defaultControlRoomMachines: ControlRoomMachine[] = [
     name: "ThinkCentre 10",
     url: "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com",
     token: ""
+  },
+  {
+    id: "thinkcentre-1",
+    name: "TC1",
+    url: "https://mobile-harness-remote-windows-cloudflare-thinkcentre-1.bit68-infra.com",
+    token: ""
   }
 ];
 
@@ -78,4 +84,3 @@ export function controlRoomTileUrl(machine: ControlRoomMachine, slotId: string, 
   url.searchParams.set("control-room-origin", parentOrigin);
   return url.toString();
 }
-
