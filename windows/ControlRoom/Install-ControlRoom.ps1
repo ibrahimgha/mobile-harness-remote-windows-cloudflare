@@ -20,7 +20,8 @@ $InstallRoot = Join-Path $env:LOCALAPPDATA "CodexControlRoom"
 $OutputDir = Join-Path $InstallRoot "app"
 $ProfilePath = Join-Path $InstallRoot "machine-profiles.json"
 $LocalEnvPath = Join-Path $RepoRoot ".env"
-$AppUrl = "$($LocalRemoteUrl.TrimEnd('/'))/control-room"
+$AppCacheVersion = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$AppUrl = "$($LocalRemoteUrl.TrimEnd('/'))/control-room?app-version=$AppCacheVersion"
 
 function Read-EnvToken {
   param([string]$Path)
