@@ -100,9 +100,13 @@ assert.match(wrapperSource, /instanceId = InstanceId/, "the native wrapper shoul
 assert.match(controlRoomSource, /control-room-instance/, "named instances should be visibly identifiable in the wall header");
 
 const installerSource = fs.readFileSync(new URL("../windows/ControlRoom/Install-ControlRoom.ps1", import.meta.url), "utf8");
+const fleetInstallerSource = fs.readFileSync(new URL("../windows/ControlRoom/Install-Six-ControlRoomInstances.ps1", import.meta.url), "utf8");
 assert.match(installerSource, /\$isNamedInstance/, "the installer should distinguish default and named instances");
 assert.match(installerSource, /CodexRemote\.ControlRoom\.\$InstanceId/, "named instances should have unique Windows app identities");
 assert.match(installerSource, /CodexControlRoom-\$InstanceId/, "named instances should have isolated WebView2 memory folders");
 assert.match(installerSource, /\$InstallRoot = \$BaseInstallRoot/, "the default instance should retain its legacy installation root");
+assert.match(installerSource, /CustomIconPath/, "an installation should accept a custom shortcut and executable icon");
+assert.match(fleetInstallerSource, /Number = 6; Id = "instance-6"/, "the desktop fleet should define six independent instances");
+assert.match(fleetInstallerSource, /control-room-\$\(\$instance\.Number\)\.ico/, "every fleet shortcut should receive its numbered icon");
 
 console.log("Control room checks passed");

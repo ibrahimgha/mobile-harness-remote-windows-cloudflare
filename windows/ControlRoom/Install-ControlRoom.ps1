@@ -2,6 +2,7 @@ param(
   [switch]$NoDesktopShortcut,
   [string]$InstanceName = "",
   [string]$InstanceId = "",
+  [string]$CustomIconPath = "",
   [string]$LocalRemoteUrl = "https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com",
   [string]$ThinkCentre10RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com",
   [string]$ThinkCentre1RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-1.bit68-infra.com"
@@ -14,7 +15,11 @@ Add-Type -AssemblyName System.Security
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $AppDir "..\..")).Path
 $BuildScript = Join-Path $RepoRoot "windows\Build-WebViewWrapper.ps1"
-$IconPath = Join-Path $RepoRoot "windows\IbrahimHP\ibrahim-hp.ico"
+$IconPath = if ([string]::IsNullOrWhiteSpace($CustomIconPath)) {
+  Join-Path $RepoRoot "windows\IbrahimHP\ibrahim-hp.ico"
+} else {
+  (Resolve-Path -LiteralPath $CustomIconPath).Path
+}
 $BaseInstallRoot = Join-Path $env:LOCALAPPDATA "CodexControlRoom"
 
 function ConvertTo-InstanceId {
@@ -182,6 +187,7 @@ $instanceMetadata = [ordered]@{
   appName = $AppName
   executable = $exePath
   userDataFolder = $UserDataFolderName
+  icon = $IconPath
   installedAtUtc = [DateTime]::UtcNow.ToString("o")
 }
 $instanceMetadata | ConvertTo-Json | Set-Content -LiteralPath $InstanceMetadataPath -Encoding UTF8

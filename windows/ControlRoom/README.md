@@ -31,6 +31,14 @@ Names automatically produce stable lowercase IDs. Supply `-InstanceId operations
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Get-ControlRoomInstances.ps1
 ```
 
+Create the standard six-instance desktop set with numbered, high-contrast icons:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-Six-ControlRoomInstances.ps1
+```
+
+This preserves Default and Secondary, installs instances 3 through 6 when missing, and creates exactly six numbered Desktop shortcuts. Their lime, cyan, amber, magenta, violet, and coral icon accents remain distinguishable at Windows shortcut sizes. The icon generator is `New-ControlRoomIcons.ps1`; individual installations may also use `Install-ControlRoom.ps1 -CustomIconPath <path-to-ico>`.
+
 The installer reads the local remote token from this repository's `.env`, reads the ThinkCentre 10 and TC1 tokens over their existing SSH profiles, encrypts all three with Windows DPAPI for the current user, builds the native wrapper, and creates Start Menu and Desktop shortcuts.
 
 The app opens:

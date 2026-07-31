@@ -10,7 +10,10 @@ if (Test-Path -LiteralPath $defaultMetadata) {
   $metadataFiles += Get-Item -LiteralPath $defaultMetadata
 }
 if (Test-Path -LiteralPath $namedInstancesRoot) {
-  $metadataFiles += Get-ChildItem -LiteralPath $namedInstancesRoot -Filter "instance.json" -File -Recurse -Depth 1
+  $metadataFiles += Get-ChildItem -LiteralPath $namedInstancesRoot -Directory | ForEach-Object {
+    $metadataPath = Join-Path $_.FullName "instance.json"
+    if (Test-Path -LiteralPath $metadataPath) { Get-Item -LiteralPath $metadataPath }
+  }
 }
 
 $instances = foreach ($metadataFile in $metadataFiles) {
