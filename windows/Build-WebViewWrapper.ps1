@@ -17,7 +17,13 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ExeName,
 
-  [string]$ProfileConfigPath = ""
+  [string]$ProfileConfigPath = "",
+
+  [string]$UserDataFolderName = "",
+
+  [string]$InstanceId = "default",
+
+  [string]$InstanceName = "Default"
 )
 
 Set-StrictMode -Version Latest
@@ -78,6 +84,10 @@ if (-not (Test-Path -LiteralPath $IconPath)) {
 Ensure-WebView2Package
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
+if ([string]::IsNullOrWhiteSpace($UserDataFolderName)) {
+  $UserDataFolderName = $ExeName
+}
+
 $objDir = Join-Path $OutputDir "obj"
 New-Item -ItemType Directory -Force -Path $objDir | Out-Null
 
@@ -90,8 +100,10 @@ $exePath = Join-Path $OutputDir "$ExeName.exe"
 $csAppName = ConvertTo-CSharpString $AppName
 $csAppUrl = ConvertTo-CSharpString $AppUrl
 $csAppUserModelId = ConvertTo-CSharpString $AppUserModelId
-$csUserDataFolder = ConvertTo-CSharpString $ExeName
+$csUserDataFolder = ConvertTo-CSharpString $UserDataFolderName
 $csProfileConfigPath = ConvertTo-CSharpString $ProfileConfigPath
+$csInstanceId = ConvertTo-CSharpString $InstanceId
+$csInstanceName = ConvertTo-CSharpString $InstanceName
 
 $programSource = @"
 using Microsoft.Web.WebView2.Core;
@@ -130,6 +142,8 @@ internal sealed class MainForm : Form
   private const string AppUrl = "$csAppUrl";
   private const string UserDataFolderName = "$csUserDataFolder";
   private const string ProfileConfigPath = "$csProfileConfigPath";
+  private const string InstanceId = "$csInstanceId";
+  private const string InstanceName = "$csInstanceName";
   private readonly WebView2 webView;
   private readonly string windowStatePath;
 
@@ -282,6 +296,8 @@ internal sealed class MainForm : Form
       webView.CoreWebView2.PostWebMessageAsJson(serializer.Serialize(new
       {
         type = "codex-control-room-profiles",
+        instanceId = InstanceId,
+        instanceName = InstanceName,
         machines = machines
       }));
     }

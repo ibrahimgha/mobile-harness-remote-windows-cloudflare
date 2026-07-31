@@ -95,5 +95,14 @@ assert.match(appSource, /menu-open:\$\{controlRoomSlotId\}/, "each workspace sho
 assert.match(appSource, /localStorage\.setItem\(controlRoomMenuOpenKey, String\(menuOpen\)\)/, "side menu state should persist as it changes");
 assert.match(wrapperSource, /window-state\.json/, "the Windows wrapper should persist its monitor placement");
 assert.match(wrapperSource, /WorkingArea\.IntersectsWith\(bounds\)/, "saved window placement should be rejected when every monitor is disconnected");
+assert.match(wrapperSource, /UserDataFolderName = \"\$csUserDataFolder\"/, "each native instance should receive an explicit WebView2 memory folder");
+assert.match(wrapperSource, /instanceId = InstanceId/, "the native wrapper should identify its instance to the wall");
+assert.match(controlRoomSource, /control-room-instance/, "named instances should be visibly identifiable in the wall header");
+
+const installerSource = fs.readFileSync(new URL("../windows/ControlRoom/Install-ControlRoom.ps1", import.meta.url), "utf8");
+assert.match(installerSource, /\$isNamedInstance/, "the installer should distinguish default and named instances");
+assert.match(installerSource, /CodexRemote\.ControlRoom\.\$InstanceId/, "named instances should have unique Windows app identities");
+assert.match(installerSource, /CodexControlRoom-\$InstanceId/, "named instances should have isolated WebView2 memory folders");
+assert.match(installerSource, /\$InstallRoot = \$BaseInstallRoot/, "the default instance should retain its legacy installation root");
 
 console.log("Control room checks passed");

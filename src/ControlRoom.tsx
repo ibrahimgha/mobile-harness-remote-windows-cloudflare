@@ -32,6 +32,8 @@ type ControlRoomStatusMessage = {
 
 type NativeProfilesMessage = {
   type: "codex-control-room-profiles";
+  instanceId?: unknown;
+  instanceName?: unknown;
   machines: unknown;
 };
 
@@ -162,6 +164,7 @@ function CustomUrlEditor({
 }
 
 export function ControlRoom() {
+  const [instance, setInstance] = useState({ id: "default", name: "" });
   const [machines, setMachines] = useState<ControlRoomMachine[]>(readStoredMachines);
   const [layout, setLayout] = useState<ControlRoomLayout>(readStoredLayout);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -250,6 +253,9 @@ export function ControlRoom() {
       if (!event.data || typeof event.data !== "object") return;
       const message = event.data as Partial<NativeProfilesMessage>;
       if (message.type !== "codex-control-room-profiles") return;
+      if (typeof message.instanceId === "string" && typeof message.instanceName === "string") {
+        setInstance({ id: message.instanceId, name: message.instanceName });
+      }
       const nextMachines = normalizeControlRoomMachines(message.machines);
       if (!nextMachines.length) return;
 
@@ -496,6 +502,9 @@ export function ControlRoom() {
         <div className="control-room-brand">
           <span className="control-room-mark"><MonitorCog size={17} /></span>
           <strong>Codex Control Room</strong>
+          {instance.id !== "default" && instance.name && (
+            <span className="control-room-instance" title={`Independent instance: ${instance.name}`}>{instance.name}</span>
+          )}
           <span>{slots.length} workspaces</span>
         </div>
         <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${customUrlCount} custom dashboards; ${poweredOffCount} displays off; ${terminatedCount} terminated`}>

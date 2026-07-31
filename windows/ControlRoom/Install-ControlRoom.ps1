@@ -1,5 +1,7 @@
 param(
   [switch]$NoDesktopShortcut,
+  [string]$InstanceName = "",
+  [string]$InstanceId = "",
   [string]$LocalRemoteUrl = "https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com",
   [string]$ThinkCentre10RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com",
   [string]$ThinkCentre1RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-1.bit68-infra.com"
@@ -9,16 +11,59 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Security
 
-$AppName = "Codex Control Room"
-$AppUserModelId = "CodexRemote.ControlRoom"
-$ExeName = "CodexControlRoom"
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $AppDir "..\..")).Path
 $BuildScript = Join-Path $RepoRoot "windows\Build-WebViewWrapper.ps1"
 $IconPath = Join-Path $RepoRoot "windows\IbrahimHP\ibrahim-hp.ico"
-$InstallRoot = Join-Path $env:LOCALAPPDATA "CodexControlRoom"
+$BaseInstallRoot = Join-Path $env:LOCALAPPDATA "CodexControlRoom"
+
+function ConvertTo-InstanceId {
+  param([string]$Value)
+
+  $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9]+', '-'
+  $slug = $slug.Trim('-')
+  if ($slug.Length -gt 40) {
+    $slug = $slug.Substring(0, 40).TrimEnd('-')
+  }
+  return $slug
+}
+
+$isNamedInstance = $PSBoundParameters.ContainsKey("InstanceName") -or $PSBoundParameters.ContainsKey("InstanceId")
+if ($isNamedInstance) {
+  if ([string]::IsNullOrWhiteSpace($InstanceName)) {
+    $InstanceName = $InstanceId
+  }
+  if ([string]::IsNullOrWhiteSpace($InstanceId)) {
+    $InstanceId = ConvertTo-InstanceId -Value $InstanceName
+  }
+  if ([string]::IsNullOrWhiteSpace($InstanceId) -or $InstanceId -notmatch '^[a-z0-9][a-z0-9-]{0,39}$') {
+    throw "InstanceId must contain 1-40 lowercase letters, numbers, or hyphens, and cannot start with a hyphen."
+  }
+  if ($InstanceId -eq "default") {
+    throw "'default' is reserved for the existing Control Room installation. Choose another InstanceId."
+  }
+  if ($InstanceName.Length -gt 64 -or $InstanceName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+    throw "InstanceName must be a valid Windows shortcut name of 64 characters or fewer."
+  }
+
+  $AppName = "Codex Control Room - $InstanceName"
+  $AppUserModelId = "CodexRemote.ControlRoom.$InstanceId"
+  $ExeName = "CodexControlRoom-$InstanceId"
+  $UserDataFolderName = "CodexControlRoom-$InstanceId"
+  $InstallRoot = Join-Path (Join-Path $BaseInstallRoot "instances") $InstanceId
+} else {
+  $InstanceId = "default"
+  $InstanceName = "Default"
+  $AppName = "Codex Control Room"
+  $AppUserModelId = "CodexRemote.ControlRoom"
+  $ExeName = "CodexControlRoom"
+  $UserDataFolderName = "CodexControlRoom"
+  $InstallRoot = $BaseInstallRoot
+}
+
 $OutputDir = Join-Path $InstallRoot "app"
 $ProfilePath = Join-Path $InstallRoot "machine-profiles.json"
+$InstanceMetadataPath = Join-Path $InstallRoot "instance.json"
 $LocalEnvPath = Join-Path $RepoRoot ".env"
 $AppCacheVersion = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $AppUrl = "$($LocalRemoteUrl.TrimEnd('/'))/control-room?app-version=$AppCacheVersion"
@@ -124,9 +169,23 @@ $profileConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ProfilePath
   -IconPath $IconPath `
   -OutputDir $OutputDir `
   -ExeName $ExeName `
-  -ProfileConfigPath $ProfilePath
+  -ProfileConfigPath $ProfilePath `
+  -UserDataFolderName $UserDataFolderName `
+  -InstanceId $InstanceId `
+  -InstanceName $InstanceName
 
 $exePath = Join-Path $OutputDir "$ExeName.exe"
+$instanceMetadata = [ordered]@{
+  version = 1
+  id = $InstanceId
+  name = $InstanceName
+  appName = $AppName
+  executable = $exePath
+  userDataFolder = $UserDataFolderName
+  installedAtUtc = [DateTime]::UtcNow.ToString("o")
+}
+$instanceMetadata | ConvertTo-Json | Set-Content -LiteralPath $InstanceMetadataPath -Encoding UTF8
+
 $startMenuPath = Join-Path ([Environment]::GetFolderPath("Programs")) "$AppName.lnk"
 New-AppShortcut -ShortcutPath $startMenuPath -ExecutablePath $exePath
 

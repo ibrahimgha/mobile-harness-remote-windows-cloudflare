@@ -14,6 +14,23 @@ Install or refresh the app and its encrypted machine credentials:
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1
 ```
 
+## Independent instances
+
+Install any number of named instances when separate persistent walls are needed:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1 -InstanceName "Operations"
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1 -InstanceName "Dashboards"
+```
+
+The no-argument installation remains the **Default** instance and keeps its existing memory. Each named instance receives a separate executable and Windows app identity, WebView2 profile, encrypted credentials, window placement, Start Menu shortcut, and optional Desktop shortcut. Instances can run side by side without sharing layout, selected machines/projects/chats, custom URLs, display states, or cookies. A compact badge in the app header identifies named instances at a glance.
+
+Names automatically produce stable lowercase IDs. Supply `-InstanceId operations-east` when a fixed automation-friendly ID is desired; rerunning the same name or ID upgrades that instance in place and preserves its memory. List installed instances and their current running state with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Get-ControlRoomInstances.ps1
+```
+
 The installer reads the local remote token from this repository's `.env`, reads the ThinkCentre 10 and TC1 tokens over their existing SSH profiles, encrypts all three with Windows DPAPI for the current user, builds the native wrapper, and creates Start Menu and Desktop shortcuts.
 
 The app opens:
