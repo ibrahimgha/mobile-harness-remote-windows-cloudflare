@@ -9,3 +9,4 @@ logs/
 *.local
 *.tsbuildinfo
 npm-debug.log*
+windows/.packages/

@@ -461,11 +461,15 @@ type RemoteNotificationState = "unsupported" | "default" | "denied" | "enabled" 
 type ChatMessageViewMode = "final" | "codex";
 
 const tokenKey = "control-token";
+const controlRoomParams = new URLSearchParams(window.location.search);
+const controlRoomSlotId = controlRoomParams.get("control-room-slot")?.trim() ?? "";
+const controlRoomParentOrigin = controlRoomParams.get("control-room-origin")?.trim() ?? "";
+const isControlRoomTile = controlRoomParams.get("control-room-tile") === "1" && Boolean(controlRoomSlotId);
 const collapsedProjectsKey = "collapsed-projects";
 const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
 const chatHistoryCacheKey = "chat-history-cache-v3";
 const activeJobsCacheKey = "active-jobs-cache-v1";
-const selectedChatIdKey = "selected-chat-id";
+const selectedChatIdKey = controlRoomSlotId ? `selected-chat-id:${controlRoomSlotId}` : "selected-chat-id";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
 const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
 const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final"];
@@ -4923,6 +4927,50 @@ export function App() {
     },
     []
   );
+
+  useEffect(() => {
+    if (!isControlRoomTile || window.parent === window) {
+      return;
+    }
+
+    const targetOrigin = controlRoomParentOrigin || "*";
+    const notifyParent = (status: "ready" | "authenticated" | "unauthorized", serverName?: string) => {
+      window.parent.postMessage(
+        {
+          type: "codex-control-room-status",
+          slotId: controlRoomSlotId,
+          status,
+          serverName
+        },
+        targetOrigin
+      );
+    };
+
+    const receiveControlRoomAuthentication = (event: MessageEvent<unknown>) => {
+      if (controlRoomParentOrigin && event.origin !== controlRoomParentOrigin) return;
+      if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
+
+      const message = event.data as Record<string, unknown>;
+      if (
+        message.type !== "codex-control-room-auth" ||
+        message.slotId !== controlRoomSlotId ||
+        typeof message.token !== "string"
+      ) {
+        return;
+      }
+
+      if (authenticated && token === message.token) {
+        notifyParent("authenticated", state?.server.name);
+        return;
+      }
+
+      void verifyToken(message.token);
+    };
+
+    window.addEventListener("message", receiveControlRoomAuthentication);
+    notifyParent(authenticated ? "authenticated" : authError ? "unauthorized" : "ready", state?.server.name);
+    return () => window.removeEventListener("message", receiveControlRoomAuthentication);
+  }, [authError, authenticated, state?.server.name, token, verifyToken]);
 
   const loadChats = useCallback(async () => {
     if (!authenticated) {
