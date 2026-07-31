@@ -111,13 +111,30 @@ export function MachineTracker() {
       if (parentOrigin && event.origin !== parentOrigin) return;
       if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
       const message = event.data as Record<string, unknown>;
+      if (message.type === "codex-control-room-scroll-bottom" && message.slotId === slotId) {
+        document.querySelector<HTMLElement>(".machine-tracker-shell")?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
+        return;
+      }
       if (message.type !== "codex-control-room-auth" || message.slotId !== slotId || typeof message.token !== "string") return;
       setToken(message.token);
       void refresh(message.token);
     };
+    const requestGlobalScroll = (event: KeyboardEvent) => {
+      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowDown") {
+        event.preventDefault();
+        window.parent.postMessage(
+          { type: "codex-control-room-scroll-all-request", slotId },
+          parentOrigin || "*"
+        );
+      }
+    };
     window.addEventListener("message", receiveAuthentication);
+    window.addEventListener("keydown", requestGlobalScroll);
     notifyParent("ready");
-    return () => window.removeEventListener("message", receiveAuthentication);
+    return () => {
+      window.removeEventListener("message", receiveAuthentication);
+      window.removeEventListener("keydown", requestGlobalScroll);
+    };
   }, [notifyParent, refresh]);
 
   useEffect(() => {

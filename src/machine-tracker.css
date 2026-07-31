@@ -16,6 +16,8 @@
   --tracker-live: #79f29a;
   --tracker-warning: #f6c85f;
   min-height: 100dvh;
+  height: 100dvh;
+  overflow-y: auto;
   background: var(--tracker-canvas);
   color: var(--tracker-ink);
   font-variant-numeric: tabular-nums;

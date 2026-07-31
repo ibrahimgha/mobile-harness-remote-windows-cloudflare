@@ -12,8 +12,8 @@ export type ControlRoomSlot = {
 
 export type ControlRoomViewMode = "chat" | "tracker";
 
-export const controlRoomColumnOptions = [4, 5, 6, 7] as const;
-export const controlRoomRowOptions = [1, 2] as const;
+export const controlRoomColumnOptions = [4, 5, 6, 7, 8] as const;
+export const controlRoomRowOptions = [1, 2, 3] as const;
 
 export type ControlRoomLayout = {
   columns: (typeof controlRoomColumnOptions)[number];
@@ -102,13 +102,32 @@ export function controlRoomScreenCount(layout: ControlRoomLayout): number {
 }
 
 export function createControlRoomSlots(machines: ControlRoomMachine[], count = controlRoomSlotCount): ControlRoomSlot[] {
-  const safeCount = Math.max(1, Math.min(16, Math.floor(count)));
+  const safeCount = Math.max(1, Math.min(24, Math.floor(count)));
   const fallbackMachineId = machines[0]?.id ?? "";
 
   return Array.from({ length: safeCount }, (_, index) => ({
     id: `workspace-${index + 1}`,
     machineId: machines[index % Math.max(1, machines.length)]?.id ?? fallbackMachineId
   }));
+}
+
+export function resizeControlRoomSlots(
+  current: ControlRoomSlot[],
+  count: number,
+  machines: ControlRoomMachine[]
+): ControlRoomSlot[] {
+  const safeCount = Math.max(1, Math.min(24, Math.floor(count)));
+  const machineIds = new Set(machines.map((machine) => machine.id));
+  const currentById = new Map(current.map((slot) => [slot.id, slot]));
+
+  return Array.from({ length: safeCount }, (_, index) => {
+    const id = `workspace-${index + 1}`;
+    const existing = currentById.get(id);
+    return {
+      id,
+      machineId: existing && (existing.machineId === "" || machineIds.has(existing.machineId)) ? existing.machineId : ""
+    };
+  });
 }
 
 export function normalizePoweredOffSlotIds(value: unknown, slots: ControlRoomSlot[]): string[] {
@@ -132,12 +151,14 @@ export function controlRoomTileUrl(
   machine: ControlRoomMachine,
   slotId: string,
   parentOrigin: string,
-  viewMode: ControlRoomViewMode = "chat"
+  viewMode: ControlRoomViewMode = "chat",
+  startToken = ""
 ): string {
   const url = new URL(machine.url);
   url.searchParams.set("control-room-tile", "1");
   url.searchParams.set("control-room-slot", slotId);
   url.searchParams.set("control-room-origin", parentOrigin);
   if (viewMode === "tracker") url.searchParams.set("control-room-view", "tracker");
+  if (startToken) url.searchParams.set("control-room-start", startToken);
   return url.toString();
 }

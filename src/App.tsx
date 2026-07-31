@@ -465,6 +465,18 @@ const controlRoomParams = new URLSearchParams(window.location.search);
 const controlRoomSlotId = controlRoomParams.get("control-room-slot")?.trim() ?? "";
 const controlRoomParentOrigin = controlRoomParams.get("control-room-origin")?.trim() ?? "";
 const isControlRoomTile = controlRoomParams.get("control-room-tile") === "1" && Boolean(controlRoomSlotId);
+const controlRoomStartToken = controlRoomParams.get("control-room-start")?.trim() ?? "";
+const isFreshControlRoomStart = (() => {
+  if (!isControlRoomTile || !controlRoomStartToken) return false;
+  try {
+    const key = `control-room-start:${controlRoomSlotId}`;
+    if (sessionStorage.getItem(key) === controlRoomStartToken) return false;
+    sessionStorage.setItem(key, controlRoomStartToken);
+    return true;
+  } catch {
+    return true;
+  }
+})();
 const collapsedProjectsKey = "collapsed-projects";
 const legacyChatHistoryCacheKeys = ["chat-history-cache-v1"];
 const chatHistoryCacheKey = "chat-history-cache-v3";
@@ -3651,6 +3663,7 @@ function RunBoard({
 
 export function App() {
   const initialChatSelection = useMemo(() => {
+    if (isFreshControlRoomStart) return { id: null, chat: null };
     const storedChatId = readStoredSelectedChatId();
     const storedChat = storedChatId ? getCachedChatHistory(storedChatId) : null;
     const fallbackChat = storedChat ?? (!storedChatId ? newestCachedChatHistory() : null);
@@ -3711,7 +3724,7 @@ export function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [chatTurnLimits, setChatTurnLimits] = useState<Record<string, number>>({});
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(isFreshControlRoomStart);
   const [sidebarOrderSnapshot, setSidebarOrderSnapshot] = useState<SidebarOrderSnapshot | null>(null);
   const [runBoardOpen, setRunBoardOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
@@ -4982,7 +4995,11 @@ export function App() {
       const index = await apiFetch<ChatIndex>("/api/chats");
       setChatIndex(index);
       setSelectedChatId((current) => {
-        const next = current && (isTemporaryChatId(current) || chatIndexContainsChat(index, current)) ? current : firstChatId(index);
+        const next = current && (isTemporaryChatId(current) || chatIndexContainsChat(index, current))
+          ? current
+          : isFreshControlRoomStart
+            ? null
+            : firstChatId(index);
 
         if (next) {
           selectedChatIdRef.current = next;
@@ -5179,6 +5196,33 @@ export function App() {
 
     chatShouldAutoScrollRef.current = true;
   }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
+
+  useEffect(() => {
+    if (!isControlRoomTile || window.parent === window) return;
+    const receiveControlRoomCommand = (event: MessageEvent<unknown>) => {
+      if (controlRoomParentOrigin && event.origin !== controlRoomParentOrigin) return;
+      if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
+      const message = event.data as Record<string, unknown>;
+      if (message.type === "codex-control-room-scroll-bottom" && message.slotId === controlRoomSlotId) {
+        scrollChatToBottom("auto");
+      }
+    };
+    const requestGlobalScroll = (event: KeyboardEvent) => {
+      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowDown") {
+        event.preventDefault();
+        window.parent.postMessage(
+          { type: "codex-control-room-scroll-all-request", slotId: controlRoomSlotId },
+          controlRoomParentOrigin || "*"
+        );
+      }
+    };
+    window.addEventListener("message", receiveControlRoomCommand);
+    window.addEventListener("keydown", requestGlobalScroll);
+    return () => {
+      window.removeEventListener("message", receiveControlRoomCommand);
+      window.removeEventListener("keydown", requestGlobalScroll);
+    };
+  }, [scrollChatToBottom]);
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {

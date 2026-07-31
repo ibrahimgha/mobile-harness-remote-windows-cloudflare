@@ -1,4 +1,4 @@
-import { Activity, ExternalLink, Loader2, MessageSquare, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, ArrowDownToLine, ExternalLink, Loader2, MessageSquare, MonitorCog, Play, Power, RefreshCw, Settings2, SquareX, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   controlRoomColumnOptions,
@@ -12,6 +12,7 @@ import {
   normalizeControlRoomMachines,
   normalizeControlRoomViewModes,
   normalizePoweredOffSlotIds,
+  resizeControlRoomSlots,
   type ControlRoomLayout,
   type ControlRoomMachine,
   type ControlRoomSlot,
@@ -79,10 +80,7 @@ function readStoredSlots(machines: ControlRoomMachine[], count: number): Control
       const candidate = raw[index];
       const item = candidate && typeof candidate === "object" ? (candidate as Record<string, unknown>) : {};
       const requestedMachineId = typeof item.machineId === "string" ? item.machineId : "";
-      return {
-        ...fallback,
-        machineId: machineIds.has(requestedMachineId) ? requestedMachineId : fallback.machineId
-      };
+      return { ...fallback, machineId: requestedMachineId === "" || machineIds.has(requestedMachineId) ? requestedMachineId : "" };
     });
   } catch {
     return defaults;
@@ -132,12 +130,14 @@ export function ControlRoom() {
   const [connections, setConnections] = useState<Record<string, TileConnection>>({});
   const [serverNames, setServerNames] = useState<Record<string, string>>({});
   const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
+  const [startTokens, setStartTokens] = useState<Record<string, string>>({});
   const frameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
 
   const machineById = useMemo(() => new Map(machines.map((machine) => [machine.id, machine])), [machines]);
+  const terminatedCount = slots.filter((slot) => !slot.machineId).length;
   const poweredOffCount = poweredOffSlots.size;
-  const activeCount = slots.length - poweredOffCount;
-  const onlineCount = slots.filter((slot) => !poweredOffSlots.has(slot.id) && connections[slot.id] === "online").length;
+  const activeCount = slots.filter((slot) => slot.machineId && !poweredOffSlots.has(slot.id)).length;
+  const onlineCount = slots.filter((slot) => slot.machineId && !poweredOffSlots.has(slot.id) && connections[slot.id] === "online").length;
 
   const sendAuthentication = useCallback(
     (slotId: string) => {
@@ -202,9 +202,9 @@ export function ControlRoom() {
       setMachines(nextMachines);
       setSlots((current) => {
         const nextMachineIds = new Set(nextMachines.map((machine) => machine.id));
-        const next = current.map((slot, index) => ({
+        const next = current.map((slot) => ({
           ...slot,
-          machineId: nextMachineIds.has(slot.machineId) ? slot.machineId : nextMachines[index % nextMachines.length].id
+          machineId: slot.machineId === "" || nextMachineIds.has(slot.machineId) ? slot.machineId : ""
         }));
         localStorage.setItem(storedSlotsKey, JSON.stringify(next));
         return next;
@@ -237,6 +237,41 @@ export function ControlRoom() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [settingsOpen]);
 
+  const scrollAllToBottom = useCallback(() => {
+    for (const slot of slots) {
+      const machine = machineById.get(slot.machineId);
+      const frame = frameRefs.current[slot.id];
+      if (!machine || !frame?.contentWindow || poweredOffSlots.has(slot.id)) continue;
+      frame.contentWindow.postMessage({ type: "codex-control-room-scroll-bottom", slotId: slot.id }, new URL(machine.url).origin);
+    }
+  }, [machineById, poweredOffSlots, slots]);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowDown") {
+        event.preventDefault();
+        scrollAllToBottom();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [scrollAllToBottom]);
+
+  useEffect(() => {
+    const receiveScrollRequest = (event: MessageEvent<unknown>) => {
+      if (!event.data || typeof event.data !== "object") return;
+      const message = event.data as Record<string, unknown>;
+      if (message.type !== "codex-control-room-scroll-all-request" || typeof message.slotId !== "string") return;
+      const slot = slots.find((candidate) => candidate.id === message.slotId);
+      const machine = slot ? machineById.get(slot.machineId) : null;
+      const frame = slot ? frameRefs.current[slot.id] : null;
+      if (!machine || event.origin !== new URL(machine.url).origin || event.source !== frame?.contentWindow) return;
+      scrollAllToBottom();
+    };
+    window.addEventListener("message", receiveScrollRequest);
+    return () => window.removeEventListener("message", receiveScrollRequest);
+  }, [machineById, scrollAllToBottom, slots]);
+
   function selectMachine(slotId: string, machineId: string) {
     setSlots((current) => {
       const next = current.map((slot) => (slot.id === slotId ? { ...slot, machineId } : slot));
@@ -250,6 +285,47 @@ export function ControlRoom() {
       return next;
     });
     setReloadKeys((current) => ({ ...current, [slotId]: (current[slotId] ?? 0) + 1 }));
+  }
+
+  function terminateSlot(slotId: string) {
+    setSlots((current) => {
+      const next = current.map((slot) => (slot.id === slotId ? { ...slot, machineId: "" } : slot));
+      localStorage.setItem(storedSlotsKey, JSON.stringify(next));
+      return next;
+    });
+    setPoweredOffSlots((current) => {
+      const next = new Set(current);
+      next.delete(slotId);
+      localStorage.setItem(storedPoweredOffSlotsKey, JSON.stringify([...next]));
+      return next;
+    });
+    setConnections((current) => {
+      const next = { ...current };
+      delete next[slotId];
+      return next;
+    });
+    setServerNames((current) => {
+      const next = { ...current };
+      delete next[slotId];
+      return next;
+    });
+    setViewModes((current) => {
+      const next = { ...current };
+      delete next[slotId];
+      localStorage.setItem(storedViewModesKey, JSON.stringify(next));
+      return next;
+    });
+    setStartTokens((current) => {
+      const next = { ...current };
+      delete next[slotId];
+      return next;
+    });
+  }
+
+  function restartTerminatedSlot(slotId: string, machineId: string) {
+    if (!machineById.has(machineId)) return;
+    setStartTokens((current) => ({ ...current, [slotId]: `${Date.now()}-${Math.random().toString(16).slice(2)}` }));
+    selectMachine(slotId, machineId);
   }
 
   function reloadSlot(slotId: string) {
@@ -286,14 +362,7 @@ export function ControlRoom() {
     localStorage.setItem(storedLayoutKey, JSON.stringify(normalizedLayout));
 
     setSlots((current) => {
-      const defaults = createControlRoomSlots(machines, nextCount);
-      const machineIds = new Set(machines.map((machine) => machine.id));
-      const next = defaults.map((fallback, index) => {
-        const existing = current[index];
-        return existing && machineIds.has(existing.machineId)
-          ? { ...fallback, machineId: existing.machineId }
-          : fallback;
-      });
+      const next = resizeControlRoomSlots(current, nextCount, machines);
       localStorage.setItem(storedSlotsKey, JSON.stringify(next));
       return next;
     });
@@ -306,6 +375,7 @@ export function ControlRoom() {
     setConnections((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
     setServerNames((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
     setReloadKeys((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
+    setStartTokens((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
     setViewModes((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId)));
       localStorage.setItem(storedViewModesKey, JSON.stringify(next));
@@ -332,11 +402,12 @@ export function ControlRoom() {
           <strong>Codex Control Room</strong>
           <span>{slots.length} workspaces</span>
         </div>
-        <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${poweredOffCount} displays off`}>
+        <div className="control-room-health" aria-label={`${onlineCount} of ${activeCount} active workspaces online; ${poweredOffCount} displays off; ${terminatedCount} terminated`}>
           <span className={activeCount > 0 && onlineCount === activeCount ? "is-all-online" : ""} />
           <strong>{onlineCount}</strong>
           <span>/ {activeCount} live</span>
           {poweredOffCount > 0 && <span className="control-room-standby-count">· {poweredOffCount} off</span>}
+          {terminatedCount > 0 && <span className="control-room-standby-count">· {terminatedCount} terminated</span>}
         </div>
       </header>
 
@@ -389,6 +460,11 @@ export function ControlRoom() {
             </div>
           </fieldset>
 
+          <button className="control-room-scroll-all" type="button" onClick={scrollAllToBottom}>
+            <ArrowDownToLine size={16} />
+            <span><strong>Scroll every window to bottom</strong><small>Ctrl + ↓</small></span>
+          </button>
+
           <div className="control-room-layout-total" aria-live="polite">
             <strong>{controlRoomScreenCount(layout)}</strong>
             <span>screens</span>
@@ -406,13 +482,32 @@ export function ControlRoom() {
         }}
       >
         {slots.map((slot, index) => {
-          const machine = machineById.get(slot.machineId) ?? machines[0];
+          const machine = machineById.get(slot.machineId);
           const connection = connections[slot.id] ?? "connecting";
           const isPoweredOff = poweredOffSlots.has(slot.id);
           const viewMode = viewModes[slot.id] ?? "chat";
-          if (!machine) return null;
+          if (!machine) {
+            return (
+              <article className="control-room-tile is-terminated" key={slot.id}>
+                <span className="control-room-terminated-index">{String(index + 1).padStart(2, "0")}</span>
+                <div className="control-room-terminated-content">
+                  <SquareX size={22} />
+                  <strong>TERMINATED</strong>
+                  <span>No machine or chat is running</span>
+                  <label>
+                    <span className="sr-only">Select a machine to start workspace {index + 1}</span>
+                    <select value="" onChange={(event) => restartTerminatedSlot(slot.id, event.target.value)}>
+                      <option value="" disabled>Select machine to start</option>
+                      {machines.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+                    </select>
+                    <Play size={12} aria-hidden="true" />
+                  </label>
+                </div>
+              </article>
+            );
+          }
 
-          const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin, viewMode);
+          const tileUrl = controlRoomTileUrl(machine, slot.id, window.location.origin, viewMode, startTokens[slot.id]);
           return (
             <article className={`control-room-tile is-${connection}${isPoweredOff ? " is-powered-off" : ""}`} key={slot.id}>
               <div className="control-room-live-surface" aria-hidden={isPoweredOff} inert={isPoweredOff}>
@@ -443,6 +538,9 @@ export function ControlRoom() {
                   </button>
                   <button type="button" onClick={() => setSlotDisplay(slot.id, false)} aria-label={`Turn off display for workspace ${index + 1}`} title="Turn display off">
                     <Power size={13} />
+                  </button>
+                  <button className="control-room-terminate" type="button" onClick={() => terminateSlot(slot.id)} aria-label={`Terminate workspace ${index + 1}`} title="Terminate workspace">
+                    <SquareX size={13} />
                   </button>
                   <a href={machine.url} target="_blank" rel="noreferrer" aria-label={`Open ${machine.name} separately`} title="Open separately">
                     <ExternalLink size={13} />
