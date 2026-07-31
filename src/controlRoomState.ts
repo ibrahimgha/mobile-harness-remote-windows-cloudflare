@@ -10,6 +10,19 @@ export type ControlRoomSlot = {
   machineId: string;
 };
 
+export const controlRoomColumnOptions = [4, 5, 6, 7] as const;
+export const controlRoomRowOptions = [1, 2] as const;
+
+export type ControlRoomLayout = {
+  columns: (typeof controlRoomColumnOptions)[number];
+  rows: (typeof controlRoomRowOptions)[number];
+};
+
+export const defaultControlRoomLayout: ControlRoomLayout = {
+  columns: 5,
+  rows: 2
+};
+
 export const controlRoomSlotCount = 10;
 
 export const defaultControlRoomMachines: ControlRoomMachine[] = [
@@ -65,6 +78,25 @@ export function normalizeControlRoomMachines(value: unknown): ControlRoomMachine
   }
 
   return machines;
+}
+
+export function normalizeControlRoomLayout(value: unknown): ControlRoomLayout {
+  if (!value || typeof value !== "object") {
+    return defaultControlRoomLayout;
+  }
+
+  const item = value as Record<string, unknown>;
+  const columns = controlRoomColumnOptions.find((candidate) => candidate === item.columns);
+  const rows = controlRoomRowOptions.find((candidate) => candidate === item.rows);
+
+  return {
+    columns: columns ?? defaultControlRoomLayout.columns,
+    rows: rows ?? defaultControlRoomLayout.rows
+  };
+}
+
+export function controlRoomScreenCount(layout: ControlRoomLayout): number {
+  return layout.columns * layout.rows;
 }
 
 export function createControlRoomSlots(machines: ControlRoomMachine[], count = controlRoomSlotCount): ControlRoomSlot[] {

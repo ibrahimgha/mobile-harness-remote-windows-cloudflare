@@ -1,12 +1,17 @@
-import { ExternalLink, Loader2, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff } from "lucide-react";
+import { ExternalLink, Loader2, MonitorCog, Power, RefreshCw, Settings2, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  controlRoomSlotCount,
+  controlRoomColumnOptions,
+  controlRoomRowOptions,
+  controlRoomScreenCount,
   controlRoomTileUrl,
   createControlRoomSlots,
+  defaultControlRoomLayout,
   defaultControlRoomMachines,
+  normalizeControlRoomLayout,
   normalizeControlRoomMachines,
   normalizePoweredOffSlotIds,
+  type ControlRoomLayout,
   type ControlRoomMachine,
   type ControlRoomSlot
 } from "./controlRoomState";
@@ -40,6 +45,7 @@ declare global {
 const storedProfilesKey = "codex-control-room-machines-v1";
 const storedSlotsKey = "codex-control-room-slots-v1";
 const storedPoweredOffSlotsKey = "codex-control-room-powered-off-slots-v1";
+const storedLayoutKey = "codex-control-room-layout-v1";
 
 function readStoredMachines(): ControlRoomMachine[] {
   try {
@@ -50,24 +56,33 @@ function readStoredMachines(): ControlRoomMachine[] {
   }
 }
 
-function readStoredSlots(machines: ControlRoomMachine[]): ControlRoomSlot[] {
+function readStoredLayout(): ControlRoomLayout {
+  try {
+    return normalizeControlRoomLayout(JSON.parse(localStorage.getItem(storedLayoutKey) ?? "null"));
+  } catch {
+    return defaultControlRoomLayout;
+  }
+}
+
+function readStoredSlots(machines: ControlRoomMachine[], count: number): ControlRoomSlot[] {
+  const defaults = createControlRoomSlots(machines, count);
+
   try {
     const raw = JSON.parse(localStorage.getItem(storedSlotsKey) ?? "null") as unknown;
-    if (!Array.isArray(raw) || raw.length !== controlRoomSlotCount) {
-      return createControlRoomSlots(machines);
-    }
+    if (!Array.isArray(raw)) return defaults;
 
     const machineIds = new Set(machines.map((machine) => machine.id));
-    return raw.map((candidate, index) => {
+    return defaults.map((fallback, index) => {
+      const candidate = raw[index];
       const item = candidate && typeof candidate === "object" ? (candidate as Record<string, unknown>) : {};
       const requestedMachineId = typeof item.machineId === "string" ? item.machineId : "";
       return {
-        id: `workspace-${index + 1}`,
-        machineId: machineIds.has(requestedMachineId) ? requestedMachineId : (machines[index % machines.length]?.id ?? "")
+        ...fallback,
+        machineId: machineIds.has(requestedMachineId) ? requestedMachineId : fallback.machineId
       };
     });
   } catch {
-    return createControlRoomSlots(machines);
+    return defaults;
   }
 }
 
@@ -88,10 +103,16 @@ function connectionLabel(connection: TileConnection) {
 
 export function ControlRoom() {
   const [machines, setMachines] = useState<ControlRoomMachine[]>(readStoredMachines);
-  const [slots, setSlots] = useState<ControlRoomSlot[]>(() => readStoredSlots(readStoredMachines()));
+  const [layout, setLayout] = useState<ControlRoomLayout>(readStoredLayout);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [slots, setSlots] = useState<ControlRoomSlot[]>(() => {
+    const storedMachines = readStoredMachines();
+    return readStoredSlots(storedMachines, controlRoomScreenCount(readStoredLayout()));
+  });
   const [poweredOffSlots, setPoweredOffSlots] = useState<Set<string>>(() => {
     const storedMachines = readStoredMachines();
-    return readStoredPoweredOffSlots(readStoredSlots(storedMachines));
+    const storedSlots = readStoredSlots(storedMachines, controlRoomScreenCount(readStoredLayout()));
+    return readStoredPoweredOffSlots(storedSlots);
   });
   const [connections, setConnections] = useState<Record<string, TileConnection>>({});
   const [serverNames, setServerNames] = useState<Record<string, string>>({});
@@ -192,6 +213,15 @@ export function ControlRoom() {
     return () => window.clearInterval(timer);
   }, [connections, sendAuthentication, slots]);
 
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [settingsOpen]);
+
   function selectMachine(slotId: string, machineId: string) {
     setSlots((current) => {
       const next = current.map((slot) => (slot.id === slotId ? { ...slot, machineId } : slot));
@@ -223,10 +253,49 @@ export function ControlRoom() {
 
   }
 
+  function applyLayout(nextLayout: ControlRoomLayout) {
+    const normalizedLayout = normalizeControlRoomLayout(nextLayout);
+    const nextCount = controlRoomScreenCount(normalizedLayout);
+    const nextSlotIds = new Set(Array.from({ length: nextCount }, (_, index) => `workspace-${index + 1}`));
+
+    setLayout(normalizedLayout);
+    localStorage.setItem(storedLayoutKey, JSON.stringify(normalizedLayout));
+
+    setSlots((current) => {
+      const defaults = createControlRoomSlots(machines, nextCount);
+      const machineIds = new Set(machines.map((machine) => machine.id));
+      const next = defaults.map((fallback, index) => {
+        const existing = current[index];
+        return existing && machineIds.has(existing.machineId)
+          ? { ...fallback, machineId: existing.machineId }
+          : fallback;
+      });
+      localStorage.setItem(storedSlotsKey, JSON.stringify(next));
+      return next;
+    });
+
+    setPoweredOffSlots((current) => {
+      const next = new Set([...current].filter((slotId) => nextSlotIds.has(slotId)));
+      localStorage.setItem(storedPoweredOffSlotsKey, JSON.stringify([...next]));
+      return next;
+    });
+    setConnections((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
+    setServerNames((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
+    setReloadKeys((current) => Object.fromEntries(Object.entries(current).filter(([slotId]) => nextSlotIds.has(slotId))));
+  }
+
   return (
     <main className="control-room-shell">
       <header className="control-room-header">
-        <button className="control-room-settings" type="button" aria-label="Settings" title="Settings will be configured next">
+        <button
+          className={`control-room-settings${settingsOpen ? " is-open" : ""}`}
+          type="button"
+          aria-label="Screen layout settings"
+          aria-expanded={settingsOpen}
+          aria-controls="control-room-layout-settings"
+          title="Screen layout"
+          onClick={() => setSettingsOpen((current) => !current)}
+        >
           <Settings2 size={17} />
         </button>
         <div className="control-room-brand">
@@ -242,7 +311,71 @@ export function ControlRoom() {
         </div>
       </header>
 
-      <section className="control-room-grid" aria-label="Codex remote workspaces">
+      {settingsOpen && (
+        <aside
+          className="control-room-settings-panel"
+          id="control-room-layout-settings"
+          role="dialog"
+          aria-labelledby="control-room-layout-title"
+        >
+          <div className="control-room-settings-heading">
+            <div>
+              <span>DISPLAY MATRIX</span>
+              <strong id="control-room-layout-title">Screen layout</strong>
+            </div>
+            <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close screen layout settings" title="Close">
+              <X size={14} />
+            </button>
+          </div>
+
+          <fieldset className="control-room-layout-fieldset">
+            <legend>Columns</legend>
+            <div className="control-room-layout-options is-columns">
+              {controlRoomColumnOptions.map((columns) => (
+                <button
+                  type="button"
+                  key={columns}
+                  aria-pressed={layout.columns === columns}
+                  onClick={() => applyLayout({ ...layout, columns })}
+                >
+                  {columns}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <fieldset className="control-room-layout-fieldset">
+            <legend>Rows</legend>
+            <div className="control-room-layout-options is-rows">
+              {controlRoomRowOptions.map((rows) => (
+                <button
+                  type="button"
+                  key={rows}
+                  aria-pressed={layout.rows === rows}
+                  onClick={() => applyLayout({ ...layout, rows })}
+                >
+                  {rows}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="control-room-layout-total" aria-live="polite">
+            <strong>{controlRoomScreenCount(layout)}</strong>
+            <span>screens</span>
+            <small>{layout.columns} columns × {layout.rows} {layout.rows === 1 ? "row" : "rows"}</small>
+          </div>
+        </aside>
+      )}
+
+      <section
+        className="control-room-grid"
+        aria-label="Codex remote workspaces"
+        style={{
+          gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`
+        }}
+      >
         {slots.map((slot, index) => {
           const machine = machineById.get(slot.machineId) ?? machines[0];
           const connection = connections[slot.id] ?? "connecting";

@@ -56,11 +56,150 @@ body:has(.control-room-shell) {
 }
 
 .control-room-settings:hover,
-.control-room-settings:focus-visible {
+.control-room-settings:focus-visible,
+.control-room-settings.is-open {
   color: var(--console-ink);
   background: rgba(255, 255, 255, 0.04);
   outline: none;
 }
+
+.control-room-settings.is-open { color: var(--console-signal); }
+
+.control-room-settings-panel {
+  position: fixed;
+  z-index: 100;
+  top: 48px;
+  left: 4px;
+  width: 264px;
+  padding: 12px;
+  border: 1px solid var(--console-line);
+  border-radius: 6px;
+  background: var(--console-raised);
+  color: var(--console-ink);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  transform-origin: top left;
+  animation: control-room-panel-in 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes control-room-panel-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.control-room-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-line-soft);
+}
+
+.control-room-settings-heading > div { display: grid; gap: 3px; }
+.control-room-settings-heading span {
+  color: var(--console-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+.control-room-settings-heading strong { font-size: 14px; font-weight: 600; }
+
+.control-room-settings-heading button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--console-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.control-room-settings-heading button:hover,
+.control-room-settings-heading button:focus-visible {
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--console-ink);
+  outline: none;
+}
+
+.control-room-layout-fieldset {
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.control-room-layout-fieldset legend {
+  margin-bottom: 6px;
+  color: var(--console-secondary);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.control-room-layout-options {
+  display: grid;
+  gap: 4px;
+}
+
+.control-room-layout-options.is-columns { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.control-room-layout-options.is-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.control-room-layout-options button {
+  height: 40px;
+  border: 1px solid var(--console-line);
+  border-radius: 4px;
+  background: var(--console-inset);
+  color: var(--console-secondary);
+  font: 600 12px/1 "Bahnschrift", sans-serif;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out;
+}
+
+.control-room-layout-options button:hover,
+.control-room-layout-options button:focus-visible {
+  color: var(--console-ink);
+  border-color: rgba(241, 243, 238, 0.18);
+  outline: none;
+}
+
+.control-room-layout-options button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--console-signal) 50%, transparent);
+  background: color-mix(in srgb, var(--console-signal) 9%, var(--console-inset));
+  color: var(--console-signal);
+}
+
+.control-room-layout-options button:active,
+.control-room-settings-heading button:active { transform: scale(0.97); }
+
+.control-room-layout-total {
+  min-height: 64px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--console-line-soft);
+  border-radius: 4px;
+  background: var(--console-deck);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: baseline;
+  column-gap: 7px;
+}
+
+.control-room-layout-total strong {
+  grid-row: 1 / 3;
+  align-self: center;
+  color: var(--console-signal);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.control-room-layout-total span { font-size: 12px; font-weight: 600; }
+.control-room-layout-total small { color: var(--console-muted); font-size: 9px; }
 
 .control-room-settings:active,
 .control-room-tilebar button:active,
@@ -279,16 +418,10 @@ body:has(.control-room-shell) {
   border: 0;
 }
 
-@media (max-width: 3000px) {
-  .control-room-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (max-width: 1800px) {
-  .control-room-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .control-room-tilebar button,
   .control-room-tilebar a,
-  .control-room-wake { transition: none; }
+  .control-room-wake,
+  .control-room-layout-options button { transition: none; }
+  .control-room-settings-panel { animation: none; }
 }

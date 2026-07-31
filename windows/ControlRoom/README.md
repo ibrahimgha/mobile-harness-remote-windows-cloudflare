@@ -1,6 +1,6 @@
 # Codex Control Room
 
-The Windows control room opens ten independent Codex Remote workspaces in one high-density native WebView2 window. Every workspace can switch between configured machines, projects, and chats while retaining the complete Codex Remote controls.
+The Windows control room opens a configurable grid of independent Codex Remote workspaces in one high-density native WebView2 window. The Settings panel supports 4, 5, 6, or 7 columns and 1 or 2 rows, and persists the selected geometry. Every workspace can switch between configured machines, projects, and chats while retaining the complete Codex Remote controls.
 
 Each workspace has an independent display-power control. Turning a display off replaces that square with a black standby panel while its iframe remains mounted and connected; waking it reveals the same live session without reloading.
 

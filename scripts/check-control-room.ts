@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
   controlRoomTileUrl,
+  controlRoomScreenCount,
   createControlRoomSlots,
   defaultControlRoomMachines,
+  normalizeControlRoomLayout,
   normalizePoweredOffSlotIds,
   normalizeControlRoomMachines
 } from "../src/controlRoomState";
@@ -16,6 +18,14 @@ const machines = normalizeControlRoomMachines([
 
 assert.equal(machines.length, 2, "invalid and duplicate machines should be discarded");
 assert.equal(machines[0].url, "https://one.example.test", "machine URLs should be normalized");
+
+assert.deepEqual(normalizeControlRoomLayout({ columns: 7, rows: 1 }), { columns: 7, rows: 1 });
+assert.deepEqual(
+  normalizeControlRoomLayout({ columns: 9, rows: 3 }),
+  { columns: 5, rows: 2 },
+  "unsupported layout values should fall back to the five-by-two default"
+);
+assert.equal(controlRoomScreenCount({ columns: 7, rows: 2 }), 14, "layout dimensions should determine screen count");
 
 const slots = createControlRoomSlots(machines, 10);
 assert.equal(slots.length, 10, "the display wall should default to ten workspaces");
