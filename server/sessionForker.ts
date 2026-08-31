@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { clearSessionCache, ensureSessionIndexEntry, findSessionFile, getSessionsRoot, getChat } from "./codexSessions.js";
 import { promoteChatForDesktop } from "./desktopVisibility.js";
 import type { ChatDetail } from "./types.js";
@@ -16,6 +19,8 @@ export type RenameChatResult = {
 };
 
 const maxForkNameLength = Number(process.env.CODEX_FORK_NAME_MAX_CHARS ?? 120);
+const maxSessionMetaBytes = 1024 * 1024;
+const forkStreamChunkBytes = 1024 * 1024;
 
 function cleanChatName(value: string): string {
   const name = value.replace(/\s+/g, " ").trim().slice(0, maxForkNameLength);
@@ -68,32 +73,6 @@ function rewriteSessionMeta(line: string, oldId: string, newId: string, nowIso: 
   }
 }
 
-function rewriteSessionFile(raw: string, oldId: string, newId: string, nowIso: string): string {
-  const lines = raw.split(/\r?\n/);
-  let sessionMetaUpdated = false;
-  const rewritten: string[] = [];
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      rewritten.push(line);
-      continue;
-    }
-
-    if (line.includes('"type":"session_meta"')) {
-      if (!sessionMetaUpdated) {
-        sessionMetaUpdated = true;
-        rewritten.push(rewriteSessionMeta(line, oldId, newId, nowIso));
-      }
-
-      continue;
-    }
-
-    rewritten.push(line.replaceAll(oldId, newId));
-  }
-
-  return rewritten.join("\n").replace(/\n*$/, "\n");
-}
-
 function forkMarkerEvent(nowIso: string, sourceChatId: string, sourceTitle: string) {
   return `${JSON.stringify({
     timestamp: nowIso,
@@ -104,6 +83,110 @@ function forkMarkerEvent(nowIso: string, sourceChatId: string, sourceTitle: stri
       source_title: sourceTitle
     }
   })}\n`;
+}
+
+function createForkTransform(oldId: string, newId: string, nowIso: string, marker: string) {
+  const oldIdBytes = Buffer.from(oldId, "utf8");
+  const newIdBytes = Buffer.from(newId, "utf8");
+  if (oldIdBytes.length !== newIdBytes.length) {
+    throw new Error("Forked session IDs must have the same encoded length");
+  }
+
+  let sessionMetaPending = Buffer.alloc(0);
+  let sessionMetaWritten = false;
+  let replacementTail = Buffer.alloc(0);
+  let lastOutputByte: number | undefined;
+
+  const transform = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      try {
+        let remaining = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (!sessionMetaWritten) {
+          const combined = sessionMetaPending.length
+            ? Buffer.concat([sessionMetaPending, remaining])
+            : remaining;
+          const newlineIndex = combined.indexOf(0x0a);
+          if (newlineIndex < 0) {
+            if (combined.length > maxSessionMetaBytes) {
+              throw new Error("Session metadata header is unexpectedly large");
+            }
+            sessionMetaPending = Buffer.from(combined);
+            callback();
+            return;
+          }
+
+          const lineEnd = newlineIndex > 0 && combined[newlineIndex - 1] === 0x0d
+            ? newlineIndex - 1
+            : newlineIndex;
+          pushOutput(Buffer.from(`${rewriteSessionMeta(combined.subarray(0, lineEnd).toString("utf8"), oldId, newId, nowIso)}\n`));
+          sessionMetaPending = Buffer.alloc(0);
+          sessionMetaWritten = true;
+          remaining = combined.subarray(newlineIndex + 1);
+        }
+
+        replaceAndPush(remaining, false);
+        callback();
+      } catch (error) {
+        callback(error as Error);
+      }
+    },
+    flush(callback) {
+      try {
+        if (!sessionMetaWritten && sessionMetaPending.length) {
+          pushOutput(Buffer.from(`${rewriteSessionMeta(sessionMetaPending.toString("utf8"), oldId, newId, nowIso)}\n`));
+          sessionMetaPending = Buffer.alloc(0);
+          sessionMetaWritten = true;
+        }
+        replaceAndPush(Buffer.alloc(0), true);
+        if (lastOutputByte !== 0x0a) pushOutput(Buffer.from("\n"));
+        pushOutput(Buffer.from(marker));
+        callback();
+      } catch (error) {
+        callback(error as Error);
+      }
+    }
+  });
+
+  function pushOutput(value: Buffer) {
+    if (!value.length) return;
+    lastOutputByte = value[value.length - 1];
+    transform.push(value);
+  }
+
+  function replaceAndPush(chunk: Buffer, final: boolean) {
+    const combined = replacementTail.length
+      ? Buffer.concat([replacementTail, chunk])
+      : Buffer.from(chunk);
+    const safeLength = final
+      ? combined.length
+      : Math.max(0, combined.length - oldIdBytes.length + 1);
+    const rewritten = Buffer.from(combined);
+    let matchIndex = rewritten.indexOf(oldIdBytes);
+    while (matchIndex >= 0 && (final || matchIndex < safeLength)) {
+      newIdBytes.copy(rewritten, matchIndex);
+      matchIndex = rewritten.indexOf(oldIdBytes, matchIndex + oldIdBytes.length);
+    }
+
+    pushOutput(rewritten.subarray(0, safeLength));
+    replacementTail = Buffer.from(rewritten.subarray(safeLength));
+  }
+
+  return transform;
+}
+
+export async function streamForkSessionFile(
+  sourcePath: string,
+  targetPath: string,
+  oldId: string,
+  newId: string,
+  nowIso: string,
+  marker: string
+) {
+  await pipeline(
+    createReadStream(sourcePath, { highWaterMark: forkStreamChunkBytes }),
+    createForkTransform(oldId, newId, nowIso, marker),
+    createWriteStream(targetPath, { flags: "wx" })
+  );
 }
 
 export async function forkChatSession(sourceChatId: string, rawName: string): Promise<ForkChatResult> {
@@ -120,15 +203,15 @@ export async function forkChatSession(sourceChatId: string, rawName: string): Pr
   const newId = randomUUID();
   const targetDir = sessionDirFor(now);
   const targetPath = path.join(targetDir, `rollout-${filenameTimestamp(now)}-${newId}.jsonl`);
-  const raw = await fs.readFile(sourcePath, "utf8");
-  const rewritten = `${rewriteSessionFile(raw, sourceChatId, newId, nowIso).trimEnd()}\n${forkMarkerEvent(
-    nowIso,
-    sourceChatId,
-    sourceChat?.title ?? sourceChatId
-  )}`;
-
   await fs.mkdir(targetDir, { recursive: true });
-  await fs.writeFile(targetPath, rewritten, { flag: "wx" });
+  await streamForkSessionFile(
+    sourcePath,
+    targetPath,
+    sourceChatId,
+    newId,
+    nowIso,
+    forkMarkerEvent(nowIso, sourceChatId, sourceChat?.title ?? sourceChatId)
+  );
   await ensureSessionIndexEntry(newId, name, nowIso);
 
   clearSessionCache();

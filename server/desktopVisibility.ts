@@ -1,13 +1,17 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { ensureSessionIndexEntry, findSessionFile } from "./codexSessions.js";
 import type { ChatDetail } from "./types.js";
 
 type PromotableChat = Pick<ChatDetail, "id" | "updatedAt"> &
   Partial<Pick<ChatDetail, "createdAt" | "lastPrompt">>;
+
+const maxSessionMetaBytes = 1024 * 1024;
 
 export function desktopCwd(projectPath: string) {
   const resolved = path.resolve(projectPath);
@@ -54,48 +58,71 @@ async function rewriteSessionMetaForDesktop(chatId: string, projectPath: string)
 
   const stat = await fs.stat(sessionPath);
   const normalizedCwd = desktopCwd(projectPath);
-  const raw = await fs.readFile(sessionPath, "utf8");
-  let changed = false;
-  const rewritten = raw
-    .split(/(?<=\n)/)
-    .map((line) => {
-      const trimmed = line.trimEnd();
-      const newline = line.endsWith("\n") ? "\n" : "";
+  const handle = await fs.open(sessionPath, "r");
+  let header = Buffer.alloc(0);
+  let newlineIndex = -1;
+  try {
+    while (header.length < maxSessionMetaBytes && newlineIndex < 0) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maxSessionMetaBytes - header.length));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, header.length);
+      if (!bytesRead) break;
+      header = header.length
+        ? Buffer.concat([header, chunk.subarray(0, bytesRead)])
+        : Buffer.from(chunk.subarray(0, bytesRead));
+      newlineIndex = header.indexOf(0x0a);
+    }
+  } finally {
+    await handle.close();
+  }
 
-      if (!trimmed.includes('"type":"session_meta"')) {
-        return line;
-      }
+  if (newlineIndex < 0) return;
+  const lineEnd = newlineIndex > 0 && header[newlineIndex - 1] === 0x0d
+    ? newlineIndex - 1
+    : newlineIndex;
+  const originalLine = header.subarray(0, lineEnd).toString("utf8");
+  let rewrittenLine: string;
+  try {
+    const record = JSON.parse(originalLine) as {
+      type?: string;
+      payload?: {
+        id?: string;
+        cwd?: string;
+        source?: string;
+        thread_source?: string;
+      };
+    };
+    if (record.type !== "session_meta" || record.payload?.id !== chatId) return;
+    if (
+      record.payload.cwd === normalizedCwd &&
+      record.payload.source === "vscode" &&
+      record.payload.thread_source === "user"
+    ) {
+      return;
+    }
+    record.payload.cwd = normalizedCwd;
+    record.payload.source = "vscode";
+    record.payload.thread_source = "user";
+    rewrittenLine = JSON.stringify(record);
+  } catch {
+    return;
+  }
 
-      try {
-        const record = JSON.parse(trimmed) as {
-          type?: string;
-          payload?: {
-            id?: string;
-            cwd?: string;
-            source?: string;
-            thread_source?: string;
-          };
-        };
-
-        if (record.type !== "session_meta" || record.payload?.id !== chatId) {
-          return line;
-        }
-
-        record.payload.cwd = normalizedCwd;
-        record.payload.source = "vscode";
-        record.payload.thread_source = "user";
-        changed = true;
-
-        return `${JSON.stringify(record)}${newline}`;
-      } catch {
-        return line;
-      }
-    })
-    .join("");
-
-  if (changed) {
-    await fs.writeFile(sessionPath, rewritten, "utf8");
+  const newline = lineEnd < newlineIndex ? "\r\n" : "\n";
+  const remainderStart = newlineIndex + 1;
+  const temporaryPath = `${sessionPath}.desktop-meta-${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, `${rewrittenLine}${newline}`, { flag: "wx", mode: stat.mode });
+    await pipeline(
+      createReadStream(sessionPath, { start: remainderStart }),
+      createWriteStream(temporaryPath, { flags: "a" })
+    );
+    await fs.chmod(temporaryPath, stat.mode);
+    if (process.platform !== "win32") await fs.chown(temporaryPath, stat.uid, stat.gid);
+    await fs.rename(temporaryPath, sessionPath);
     await fs.utimes(sessionPath, stat.atime, stat.mtime);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
 
