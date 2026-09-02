@@ -124,7 +124,7 @@ export function scopedRequestAllowed(method: string, requestPath: string, access
 
   const suffix = requestPath.slice(exactChatPrefix.length);
   if (verb === "GET" && (suffix === "" || suffix === "/jobs" || suffix === "/uploads")) return true;
-  if (verb === "POST" && (suffix === "/prompt" || suffix === "/steer" || suffix === "/files")) return true;
+  if (verb === "POST" && (suffix === "/prompt" || suffix === "/steer" || suffix === "/files" || suffix === "/dictation/transcribe")) return true;
   if (verb === "PUT" && suffix === "/files/chunk") return true;
   if (verb === "POST" && /^\/jobs\/[^/]+\/stop$/.test(suffix)) return true;
   if (verb === "DELETE" && /^\/queued-prompts\/[^/]+$/.test(suffix)) return true;

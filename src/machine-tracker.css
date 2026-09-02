@@ -17,7 +17,7 @@
   --board-amber: #ffd166;
   height: 100dvh;
   min-height: 100dvh;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--board-black);
   color: var(--board-white);
   font-variant-numeric: tabular-nums;
@@ -27,9 +27,10 @@
 .machine-tracker-header {
   min-height: 64px;
   padding: 8px 12px 8px 16px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto 44px;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   border-bottom: 1px solid var(--board-line-strong);
   background: var(--board-panel);
 }
@@ -39,27 +40,28 @@
 .machine-tracker-identity span { color: var(--board-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.16em; }
 .machine-tracker-identity strong { overflow: hidden; color: var(--board-white); font-size: clamp(18px, 2.2vw, 26px); line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .machine-tracker-pulse { width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; border: 1px solid var(--board-line-strong); color: var(--board-live) !important; }
+.machine-tracker-header-metrics { align-self: stretch; display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr)); border-inline: 1px solid var(--board-line); }
+.machine-tracker-header-metrics > div { min-width: 0; padding: 6px 14px; display: grid; grid-template-columns: auto auto; align-content: center; align-items: baseline; column-gap: 7px; }
+.machine-tracker-header-metrics > div + div { border-left: 1px solid var(--board-line); }
+.machine-tracker-header-metrics span { grid-column: 1 / -1; color: var(--board-muted); font-size: 9px; font-weight: 750; letter-spacing: 0.12em; }
+.machine-tracker-header-metrics strong { color: var(--board-white); font-size: 28px; font-weight: 700; line-height: 0.9; letter-spacing: -0.04em; }
+.machine-tracker-header-metrics small { color: var(--board-muted); font-size: 8px; font-weight: 700; letter-spacing: 0.08em; white-space: nowrap; }
+.machine-tracker-header-metrics .is-live strong { color: var(--board-live); }
 .machine-tracker-header button { width: 44px; height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: var(--board-secondary); }
 .machine-tracker-header button:hover:not(:disabled), .machine-tracker-header button:focus-visible { background: var(--board-raised); color: var(--board-live); outline: 1px solid var(--board-line-strong); }
 .machine-tracker-header button:active { transform: scale(0.97); }
 .machine-tracker-header button:disabled { opacity: 0.45; }
 
-.machine-tracker-content { padding: 12px; display: grid; gap: 12px; }
-.machine-tracker-scoreboard { display: grid; grid-template-columns: 1.45fr 1fr; min-height: 128px; border: 1px solid var(--board-line-strong); background: var(--board-panel); }
-.machine-tracker-scoreboard > div { min-width: 0; padding: 14px 16px; display: grid; grid-template-columns: auto 1fr; align-items: end; column-gap: 12px; }
-.machine-tracker-scoreboard > div + div { border-left: 1px solid var(--board-line); }
-.machine-tracker-scoreboard span { grid-column: 1 / -1; align-self: start; color: var(--board-secondary); font-size: 12px; font-weight: 750; letter-spacing: 0.14em; }
-.machine-tracker-scoreboard strong { color: var(--board-white); font-size: clamp(54px, 8vw, 92px); font-weight: 700; line-height: 0.78; letter-spacing: -0.06em; }
-.machine-tracker-scoreboard small { padding-bottom: 2px; color: var(--board-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
-.machine-tracker-primary-count.is-live strong { color: var(--board-live); }
-.machine-tracker-completed-count strong { font-size: clamp(42px, 6vw, 70px); }
+.machine-tracker-content { padding: 12px; display: grid; gap: 12px; align-content: start; }
+.machine-tracker-inline-error { min-height: 32px; padding: 7px 10px; border: 1px solid rgba(255, 209, 102, 0.4); background: rgba(255, 209, 102, 0.08); color: var(--board-amber); font-size: 11px; font-weight: 600; }
 
 .machine-tracker-section { border: 1px solid var(--board-line); background: var(--board-panel); }
 .machine-tracker-section-title { min-height: 40px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--board-line); }
 .machine-tracker-section-title > span { display: flex; align-items: center; gap: 8px; color: var(--board-secondary); font-size: 12px; font-weight: 750; letter-spacing: 0.12em; }
 .machine-tracker-section-title small { overflow: hidden; color: var(--board-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .machine-tracker-section ul { margin: 0; padding: 0; list-style: none; }
-.machine-tracker-section li { position: relative; min-height: 66px; padding: 8px 12px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.machine-tracker-section li { position: relative; min-height: 56px; padding: 7px 12px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.machine-tracker-section li.has-external-stop { grid-template-columns: 22px minmax(0, 1fr) auto 32px; }
 .machine-tracker-section li + li { border-top: 1px solid var(--board-line); }
 .machine-tracker-section li.is-active::before { position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--board-live); content: ""; }
 .machine-tracker-run-status { color: var(--board-muted); }
@@ -71,7 +73,11 @@
 .machine-tracker-run-meta { min-width: 96px; max-width: 150px; text-align: right; }
 .machine-tracker-run-meta strong { color: var(--board-secondary); font-size: clamp(18px, 2.5vw, 28px); font-weight: 700; line-height: 1; }
 .machine-tracker-section li.is-active .machine-tracker-run-meta strong { color: var(--board-live); }
+.machine-tracker-external-stop { width: 32px; height: 32px; padding: 0; border: 1px solid rgba(244, 250, 245, 0.2); background: #000; color: var(--board-white); display: grid; place-items: center; cursor: pointer; }
+.machine-tracker-external-stop:hover:not(:disabled), .machine-tracker-external-stop:focus-visible { border-color: rgba(131, 255, 159, 0.7); color: var(--board-live); outline: none; }
+.machine-tracker-external-stop:disabled { opacity: 0.55; cursor: wait; }
 .machine-tracker-overflow { min-height: 36px; padding: 0 12px; display: flex; align-items: center; justify-content: flex-end; border-top: 1px solid var(--board-line); color: var(--board-live); font-size: 11px; font-weight: 750; letter-spacing: 0.1em; }
+.machine-tracker-overflow.is-compact, .machine-tracker-overflow.is-short, .machine-tracker-overflow.is-ultra-compact { display: none; }
 .machine-tracker-empty { min-height: 72px; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--board-muted); font-size: 14px; font-weight: 600; }
 
 .machine-tracker-usage { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -82,7 +88,8 @@
 .machine-tracker-limit-heading > small { color: var(--board-muted); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; }
 .machine-tracker-limit-track { height: 8px; margin: 10px 0 8px; overflow: hidden; background: #263028; }
 .machine-tracker-limit-track span { height: 100%; display: block; background: var(--board-live); }
-.machine-tracker-limit p { margin: 0; overflow: hidden; color: var(--board-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.machine-tracker-limit p { margin: 0; display: flex; min-width: 0; justify-content: space-between; gap: 8px; overflow: hidden; color: var(--board-muted); font-size: 10px; white-space: nowrap; }
+.machine-tracker-limit p span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .machine-tracker-limit.is-warning .machine-tracker-limit-track span, .machine-tracker-limit.is-critical .machine-tracker-limit-track span { background: var(--board-amber); }
 .machine-tracker-limit.is-critical strong { color: var(--board-amber); }
 
@@ -91,21 +98,245 @@
 .machine-tracker-state span { max-width: 280px; font-size: 14px; }
 .machine-tracker-state.is-error svg { color: var(--board-amber); }
 
-@media (max-height: 720px) {
-  .machine-tracker-content { padding: 8px; gap: 8px; }
-  .machine-tracker-scoreboard { min-height: 104px; }
-  .machine-tracker-scoreboard > div { padding: 10px 12px; }
-  .machine-tracker-section li { min-height: 58px; }
-  .machine-tracker-section.is-recent li:nth-child(n + 4) { display: none; }
+@media (max-height: 800px) {
+  .machine-tracker-header { min-height: 48px; padding: 4px 8px 4px 10px; grid-template-columns: minmax(110px, 1fr) auto 40px; gap: 8px; }
+  .machine-tracker-identity { gap: 8px; }
+  .machine-tracker-identity > div { gap: 1px; }
+  .machine-tracker-identity span { font-size: 9px; }
+  .machine-tracker-identity strong { font-size: clamp(16px, 2vw, 22px); }
+  .machine-tracker-pulse { width: 32px; height: 32px; flex-basis: 32px; }
+  .machine-tracker-header-metrics { grid-template-columns: repeat(2, minmax(74px, 1fr)); }
+  .machine-tracker-header-metrics > div { padding: 3px 9px; column-gap: 5px; }
+  .machine-tracker-header-metrics span { font-size: 7px; }
+  .machine-tracker-header-metrics strong { font-size: 22px; }
+  .machine-tracker-header-metrics small { font-size: 6px; }
+  .machine-tracker-header button { width: 40px; height: 40px; }
+
+  .machine-tracker-content { padding: 6px; gap: 6px; }
+
+  .machine-tracker-section-title { min-height: 30px; padding: 0 8px; }
+  .machine-tracker-section-title > span { gap: 6px; font-size: 10px; }
+  .machine-tracker-section-title small { font-size: 8px; }
+  .machine-tracker-section li { min-height: 44px; padding: 4px 8px; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 7px; }
+  .machine-tracker-run-status svg { width: 13px; height: 13px; }
+  .machine-tracker-run-copy, .machine-tracker-run-meta { gap: 1px; }
+  .machine-tracker-run-copy strong { font-size: clamp(13px, 1.5vw, 17px); }
+  .machine-tracker-run-copy small, .machine-tracker-run-meta small { font-size: 9px; }
+  .machine-tracker-run-meta { min-width: 74px; }
+  .machine-tracker-run-meta strong { font-size: clamp(15px, 2vw, 21px); }
+  .machine-tracker-overflow { min-height: 28px; padding: 0 8px; font-size: 9px; }
+  .machine-tracker-empty { min-height: 52px; padding: 8px; font-size: 12px; }
+  .machine-tracker-section.is-running li:nth-child(n + 8) { display: none; }
+  .machine-tracker-overflow.is-standard { display: none; }
+  .machine-tracker-overflow.is-compact { display: flex; }
+
+  .machine-tracker-usage { gap: 6px; }
+  .machine-tracker-limit { min-height: 64px; padding: 7px 8px; }
+  .machine-tracker-limit-heading > span { font-size: 9px; }
+  .machine-tracker-limit-heading > strong { font-size: clamp(23px, 3.4vw, 34px); }
+  .machine-tracker-limit-heading > small { font-size: 7px; }
+  .machine-tracker-limit-track { height: 5px; margin: 5px 0 4px; }
+  .machine-tracker-limit p { font-size: 8px; }
+}
+
+@media (max-height: 650px) {
+  .machine-tracker-section.is-running li:nth-child(n + 7) { display: none; }
+  .machine-tracker-overflow.is-compact { display: none; }
+  .machine-tracker-overflow.is-short { display: flex; }
+}
+
+@media (max-height: 520px) {
+  .machine-tracker-header { min-height: 40px; padding-block: 3px; grid-template-columns: minmax(90px, 1fr) auto 36px; gap: 5px; }
+  .machine-tracker-identity > div > span { display: none; }
+  .machine-tracker-pulse { width: 28px; height: 28px; flex-basis: 28px; }
+  .machine-tracker-header-metrics { grid-template-columns: repeat(2, minmax(58px, 1fr)); }
+  .machine-tracker-header-metrics > div { padding-inline: 6px; }
+  .machine-tracker-header-metrics span { display: block; font-size: 6px; }
+  .machine-tracker-header-metrics strong { font-size: 18px; }
+  .machine-tracker-header-metrics small { display: none; }
+  .machine-tracker-header button { width: 36px; height: 36px; }
+
+  .machine-tracker-content { padding: 4px; gap: 4px; }
+
+  .machine-tracker-section-title { min-height: 24px; }
+  .machine-tracker-section-title > span { font-size: 9px; }
+  .machine-tracker-section-title small { font-size: 7px; }
+  .machine-tracker-section li { min-height: 34px; padding-block: 2px; }
+  .machine-tracker-section.is-running li:nth-child(n + 5),
+  .machine-tracker-section.is-recent li:nth-child(n + 2) { display: none; }
+  .machine-tracker-run-copy strong { font-size: 12px; }
+  .machine-tracker-run-copy small, .machine-tracker-run-meta small { font-size: 8px; }
+  .machine-tracker-run-meta strong { font-size: 14px; }
+  .machine-tracker-overflow { min-height: 22px; }
+  .machine-tracker-overflow.is-short { display: none; }
+  .machine-tracker-overflow.is-ultra-compact { display: flex; }
+  .machine-tracker-empty { min-height: 38px; padding: 4px; font-size: 10px; }
+
+  .machine-tracker-limit { min-height: 52px; padding: 5px 7px; }
+  .machine-tracker-limit-heading > strong { font-size: 22px; }
+  .machine-tracker-limit-track { height: 4px; margin: 3px 0; }
+  .machine-tracker-limit p { font-size: 7px; }
 }
 
 @media (max-width: 360px) {
-  .machine-tracker-scoreboard strong { font-size: 50px; }
-  .machine-tracker-scoreboard small { display: none; }
+  .machine-tracker-header { grid-template-columns: minmax(72px, 1fr) auto 36px; }
+  .machine-tracker-header-metrics { grid-template-columns: repeat(2, minmax(50px, 1fr)); }
+  .machine-tracker-header-metrics > div { padding-inline: 5px; }
+  .machine-tracker-header-metrics small { display: none; }
   .machine-tracker-run-status { display: none; }
   .machine-tracker-section li { grid-template-columns: minmax(0, 1fr) auto; }
   .machine-tracker-run-copy strong { font-size: 15px; }
   .machine-tracker-run-meta strong { font-size: 18px; }
+}
+
+/* Wide wall tiles should read like an operations board, not a scaled-down phone UI. */
+@media (min-width: 560px) {
+  .machine-tracker-header {
+    grid-template-columns: minmax(160px, 0.72fr) minmax(260px, 1.28fr) 40px;
+  }
+
+  .machine-tracker-header-metrics {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(110px, 1fr));
+  }
+
+  .machine-tracker-header-metrics > div {
+    padding-inline: 10px;
+  }
+
+  .machine-tracker-section li {
+    min-height: 46px;
+    padding-block: 4px;
+    grid-template-columns: 20px minmax(120px, 1.25fr) minmax(100px, 1fr) minmax(92px, 0.72fr) minmax(78px, auto) 32px;
+    column-gap: 8px;
+  }
+
+  .machine-tracker-run-copy,
+  .machine-tracker-run-meta {
+    display: contents;
+  }
+
+  .machine-tracker-run-copy strong {
+    grid-column: 2;
+  }
+
+  .machine-tracker-run-copy small {
+    grid-column: 3;
+    color: var(--board-secondary);
+  }
+
+  .machine-tracker-run-meta small {
+    grid-column: 4;
+    color: var(--board-muted);
+    text-align: left;
+  }
+
+  .machine-tracker-run-meta strong {
+    grid-column: 5;
+    grid-row: 1;
+    min-width: 100px;
+    text-align: right;
+  }
+
+  .machine-tracker-external-stop { grid-column: 6; grid-row: 1; }
+
+  .machine-tracker-run-copy strong,
+  .machine-tracker-run-copy small,
+  .machine-tracker-run-meta strong,
+  .machine-tracker-run-meta small {
+    align-self: center;
+  }
+}
+
+@media (min-width: 560px) and (max-height: 800px) {
+  .machine-tracker-header {
+    min-height: 56px;
+    padding: 6px 10px 6px 12px;
+    gap: 10px;
+  }
+
+  .machine-tracker-identity { gap: 10px; }
+  .machine-tracker-identity > div { gap: 2px; }
+  .machine-tracker-identity span { font-size: 10px; }
+  .machine-tracker-identity strong { font-size: clamp(20px, 2vw, 24px); }
+  .machine-tracker-pulse { width: 36px; height: 36px; flex-basis: 36px; }
+  .machine-tracker-header-metrics > div { padding: 5px 16px; column-gap: 8px; justify-content: start; }
+  .machine-tracker-header-metrics span { font-size: 10px; }
+  .machine-tracker-header-metrics strong { font-size: 30px; }
+  .machine-tracker-header-metrics small { font-size: 9px; }
+  .machine-tracker-header button { width: 40px; height: 40px; }
+
+  .machine-tracker-content { padding: 8px; gap: 8px; }
+
+  .machine-tracker-section-title { min-height: 30px; padding-inline: 12px; }
+  .machine-tracker-section-title > span { gap: 8px; font-size: 14px; }
+  .machine-tracker-section-title small { font-size: 12px; }
+  .machine-tracker-section li { min-height: 44px; padding: 3px 12px; }
+  .machine-tracker-run-status svg { width: 16px; height: 16px; }
+  .machine-tracker-run-copy strong { font-size: clamp(16px, 1.35vw, 20px); }
+  .machine-tracker-run-copy small,
+  .machine-tracker-run-meta small { font-size: 13px; }
+  .machine-tracker-run-meta strong { font-size: clamp(20px, 1.8vw, 26px); }
+  .machine-tracker-empty { min-height: 70px; padding: 12px; font-size: 15px; }
+
+  .machine-tracker-usage { gap: 8px; }
+  .machine-tracker-limit { min-height: 76px; padding: 9px 12px; }
+  .machine-tracker-limit-heading > span { font-size: 12px; }
+  .machine-tracker-limit-heading > strong { font-size: clamp(30px, 3.2vw, 40px); }
+  .machine-tracker-limit-heading > small { font-size: 10px; }
+  .machine-tracker-limit-track { height: 6px; margin: 7px 0 5px; }
+  .machine-tracker-limit p { font-size: 11px; }
+}
+
+@media (min-width: 1100px) {
+  .machine-tracker-limit {
+    min-height: 52px;
+    padding: 7px 10px;
+    display: grid;
+    grid-template-columns: minmax(105px, auto) auto minmax(120px, 1fr) auto minmax(110px, auto);
+    align-items: center;
+    gap: 10px;
+  }
+  .machine-tracker-limit-heading { display: contents; }
+  .machine-tracker-limit-heading > span { grid-column: 1; align-self: center; }
+  .machine-tracker-limit-heading > small { grid-column: 2; align-self: center; }
+  .machine-tracker-limit-track { grid-column: 3; height: 7px; margin: 0; }
+  .machine-tracker-limit-heading > strong { grid-column: 4; grid-row: 1; font-size: 26px; }
+  .machine-tracker-limit p { grid-column: 5; font-size: 10px; }
+}
+
+@media (min-width: 560px) and (max-height: 520px) {
+  .machine-tracker-header {
+    min-height: 48px;
+    grid-template-columns: minmax(150px, 0.72fr) minmax(250px, 1.28fr) 36px;
+  }
+
+  .machine-tracker-identity > div > span { display: block; }
+  .machine-tracker-identity strong { font-size: 19px; }
+  .machine-tracker-pulse { width: 32px; height: 32px; flex-basis: 32px; }
+  .machine-tracker-header-metrics { grid-template-columns: repeat(2, minmax(105px, 1fr)); }
+  .machine-tracker-header-metrics span { display: block; font-size: 9px; }
+  .machine-tracker-header-metrics strong { font-size: 25px; }
+  .machine-tracker-header-metrics small { display: block; font-size: 8px; }
+
+  .machine-tracker-section-title { min-height: 30px; }
+  .machine-tracker-section-title > span { font-size: 12px; }
+  .machine-tracker-section-title small { font-size: 10px; }
+  .machine-tracker-section li { min-height: 40px; padding-block: 2px; }
+  .machine-tracker-run-copy strong { font-size: 16px; }
+  .machine-tracker-run-copy small,
+  .machine-tracker-run-meta small { font-size: 11px; }
+  .machine-tracker-run-meta strong { font-size: 21px; }
+  .machine-tracker-empty { min-height: 58px; padding: 8px; font-size: 14px; }
+
+  .machine-tracker-limit { min-height: 64px; padding: 7px 10px; }
+  .machine-tracker-limit-heading > strong { font-size: 30px; }
+  .machine-tracker-limit-track { height: 5px; margin: 5px 0 4px; }
+  .machine-tracker-limit p { font-size: 8px; }
+}
+
+@media (min-width: 1100px) and (max-height: 800px) {
+  .machine-tracker-limit { min-height: 48px; padding-block: 5px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

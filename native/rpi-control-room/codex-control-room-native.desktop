@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Codex Control Room Native
+Comment=Native 4K control room for vm13
+Exec=/home/ibrahim/.local/bin/codex-control-room-native
+Icon=/home/ibrahim/.local/share/codex-control-room-native/control-room.svg
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

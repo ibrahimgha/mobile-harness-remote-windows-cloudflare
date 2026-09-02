@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Control Pad Monitor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        background: #000;
+      }
+
+      * { box-sizing: border-box; }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        cursor: none;
+        outline: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #command {
+        max-width: 96vw;
+        color: #fff;
+        font-size: clamp(3rem, 12vw, 14rem);
+        font-weight: 700;
+        letter-spacing: -0.055em;
+        line-height: 0.92;
+        text-align: center;
+        text-wrap: balance;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-0.02em);
+      }
+
+      #command.is-visible {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      #command.is-fading {
+        opacity: 0;
+        transition: opacity 350ms cubic-bezier(0.77, 0, 0.175, 1);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #command.is-fading { transition-duration: 1ms; }
+      }
+    </style>
+  </head>
+  <body tabindex="-1">
+    <output id="command" aria-live="polite"></output>
+    <script>
+      const command = document.querySelector("#command");
+      const pressed = new Map();
+      let fadeTimer = 0;
+      let blankTimer = 0;
+
+      const modifierCodes = [
+        ["ControlLeft", "CTRL"], ["ControlRight", "CTRL"],
+        ["AltLeft", "ALT"], ["AltRight", "ALT"],
+        ["ShiftLeft", "SHIFT"], ["ShiftRight", "SHIFT"],
+        ["MetaLeft", "WIN"], ["MetaRight", "WIN"]
+      ];
+
+      function keyLabel(event) {
+        if (event.code.startsWith("Digit")) return event.code.slice(5);
+        if (event.code.startsWith("Key")) return event.code.slice(3);
+        if (event.code === "ArrowLeft") return "←";
+        if (event.code === "ArrowRight") return "→";
+        if (event.code === "ArrowUp") return "↑";
+        if (event.code === "ArrowDown") return "↓";
+        if (event.code === "Space") return "SPACE";
+        if (event.code === "Escape") return "ESC";
+        return event.key.length === 1 ? event.key.toUpperCase() : event.key.toUpperCase();
+      }
+
+      function chordLabel() {
+        const labels = [];
+        for (const [code, label] of modifierCodes) {
+          if (pressed.has(code) && !labels.includes(label)) labels.push(label);
+        }
+        for (const [code, label] of pressed) {
+          if (!modifierCodes.some(([modifierCode]) => modifierCode === code)) labels.push(label);
+        }
+        return labels.join(" + ");
+      }
+
+      function showChord() {
+        const label = chordLabel();
+        if (!label) return;
+        window.clearTimeout(fadeTimer);
+        window.clearTimeout(blankTimer);
+        command.textContent = label;
+        command.className = "is-visible";
+        fadeTimer = window.setTimeout(() => command.classList.add("is-fading"), 3650);
+        blankTimer = window.setTimeout(() => {
+          command.className = "";
+          command.textContent = "";
+        }, 4000);
+      }
+
+      window.addEventListener("keydown", (event) => {
+        event.preventDefault();
+        pressed.set(event.code, keyLabel(event));
+        showChord();
+      }, { capture: true });
+
+      window.addEventListener("keyup", (event) => {
+        event.preventDefault();
+        pressed.delete(event.code);
+      }, { capture: true });
+
+      window.addEventListener("blur", () => pressed.clear());
+      window.addEventListener("pointerdown", () => document.body.focus());
+    </script>
+  </body>
+</html>

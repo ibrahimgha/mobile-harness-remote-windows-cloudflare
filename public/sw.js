@@ -55,13 +55,14 @@ self.addEventListener("notificationclick", (event) => {
   const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
 
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-      const sameOriginClient = clients.find((client) => new URL(client.url).origin === self.location.origin);
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+      const exactClient = clients.find((client) => client.url === targetUrl);
+      if (exactClient) return exactClient.focus();
 
+      const sameOriginClient = clients.find((client) => new URL(client.url).origin === self.location.origin);
       if (sameOriginClient) {
-        sameOriginClient.focus();
-        sameOriginClient.navigate(targetUrl);
-        return;
+        const navigatedClient = await sameOriginClient.navigate(targetUrl);
+        return (navigatedClient || sameOriginClient).focus();
       }
 
       return self.clients.openWindow(targetUrl);

@@ -1,5 +1,5 @@
-import { Activity, AlertTriangle, Check, Clock3, Loader2, Radio, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, AlertTriangle, Check, Clock3, Loader2, Radio, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CodexUsage, CodexUsageWindow } from "../server/types";
 import type { ControlRoomTrackerSnapshot, TrackerRun } from "../server/controlRoomTracker";
 import "./machine-tracker.css";
@@ -27,16 +27,28 @@ function clockLabel(value?: string | number): string {
   if (!Number.isFinite(date.getTime())) return "Reset unavailable";
   return `Resets ${new Intl.DateTimeFormat(undefined, {
     weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit"
   }).format(date)}`;
 }
 
 function modelLabel(run: TrackerRun): string {
-  return `${run.model.replace(/^gpt-/, "")} · ${run.reasoningEffort}`;
+  const speed = run.speed === "priority" ? "Fast" : "Standard";
+  return `${run.model.replace(/^gpt-/, "")} · ${run.reasoningEffort} · ${speed}`;
 }
 
-function UsageLimit({ label, window }: { label: string; window?: CodexUsageWindow }) {
+function UsageLimit({
+  label,
+  window,
+  resetCreditsAvailable
+}: {
+  label: string;
+  window?: CodexUsageWindow;
+  resetCreditsAvailable?: number;
+}) {
   const used = Math.min(100, Math.max(0, window?.usedPercent ?? 0));
   const pressure = used >= 90 ? "is-critical" : used >= 75 ? "is-warning" : "";
   const remaining = Math.round(100 - used);
@@ -50,14 +62,29 @@ function UsageLimit({ label, window }: { label: string; window?: CodexUsageWindo
       <div className="machine-tracker-limit-track" aria-label={`${label}: ${Math.round(used)} percent used`}>
         <span style={{ width: `${used}%` }} />
       </div>
-      <p>{window ? clockLabel(window.resetsAt) : "Waiting for usage data"}</p>
+      <p>
+        <span>{window ? clockLabel(window.resetsAt) : "Waiting for usage data"}</span>
+        <span>{resetCreditsAvailable === undefined ? "Resets available —" : `${resetCreditsAvailable} resets available`}</span>
+      </p>
     </div>
   );
 }
 
-function RunRow({ run, nowMs, active = false }: { run: TrackerRun; nowMs: number; active?: boolean }) {
+function RunRow({
+  run,
+  nowMs,
+  active = false,
+  stopping = false,
+  onStop
+}: {
+  run: TrackerRun;
+  nowMs: number;
+  active?: boolean;
+  stopping?: boolean;
+  onStop?: (run: TrackerRun) => void;
+}) {
   return (
-    <li className={active ? "is-active" : `is-${run.status}`}>
+    <li className={`${active ? "is-active" : `is-${run.status}`}${active && run.source === "external" ? " has-external-stop" : ""}`}>
       <span className="machine-tracker-run-status" aria-label={run.status}>
         {active ? <Radio size={16} /> : run.status === "completed" ? <Check size={16} /> : <AlertTriangle size={16} />}
       </span>
@@ -69,6 +96,18 @@ function RunRow({ run, nowMs, active = false }: { run: TrackerRun; nowMs: number
         <strong>{elapsedLabel(run.startedAt, run.finishedAt, nowMs)}</strong>
         <small>{modelLabel(run)}</small>
       </span>
+      {active && run.source === "external" && onStop ? (
+        <button
+          className="machine-tracker-external-stop"
+          type="button"
+          onClick={() => onStop(run)}
+          disabled={stopping}
+          aria-label={`Stop ${run.title}`}
+          title="Stop task that was started outside this remote"
+        >
+          {stopping ? <Loader2 className="spin" size={14} /> : <X size={14} />}
+        </button>
+      ) : null}
     </li>
   );
 }
@@ -79,6 +118,9 @@ export function MachineTracker() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [stoppingChatId, setStoppingChatId] = useState("");
+  const [stopError, setStopError] = useState("");
+  const refreshInFlightRef = useRef(false);
 
   const notifyParent = useCallback((status: TrackerStatus, serverName?: string) => {
     if (window.parent === window) return;
@@ -89,7 +131,8 @@ export function MachineTracker() {
   }, []);
 
   const refresh = useCallback(async (accessToken: string, quiet = false) => {
-    if (!accessToken) return;
+    if (!accessToken || refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     if (!quiet) setLoading(true);
     try {
       const response = await fetch("/api/control-room/tracker", {
@@ -104,9 +147,29 @@ export function MachineTracker() {
       setError(cause instanceof Error ? cause.message : "Could not load machine status");
       if (cause instanceof Error && /auth|token|access/i.test(cause.message)) notifyParent("unauthorized");
     } finally {
+      refreshInFlightRef.current = false;
       setLoading(false);
     }
   }, [notifyParent]);
+
+  const stopExternalRun = useCallback(async (run: TrackerRun) => {
+    if (!token || stoppingChatId) return;
+    setStoppingChatId(run.chatId);
+    setStopError("");
+    try {
+      const response = await fetch(`/api/chats/${encodeURIComponent(run.chatId)}/external-run/stop`, {
+        method: "POST",
+        headers: { "x-control-token": token }
+      });
+      const payload = (await response.json()) as { ok?: boolean; message?: string };
+      if (!response.ok || !payload.ok) throw new Error(payload.message ?? "Could not stop task");
+      await refresh(token, true);
+    } catch (cause) {
+      setStopError(cause instanceof Error ? cause.message : "Could not stop task");
+    } finally {
+      setStoppingChatId("");
+    }
+  }, [refresh, stoppingChatId, token]);
 
   useEffect(() => {
     const receiveAuthentication = (event: MessageEvent<unknown>) => {
@@ -141,7 +204,7 @@ export function MachineTracker() {
 
   useEffect(() => {
     if (!token) return;
-    const refreshTimer = window.setInterval(() => void refresh(token, true), 5000);
+    const refreshTimer = window.setInterval(() => void refresh(token, true), 15_000);
     const clockTimer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => {
       window.clearInterval(refreshTimer);
@@ -161,6 +224,20 @@ export function MachineTracker() {
           <span className="machine-tracker-pulse"><Activity size={16} /></span>
           <div><span>LIVE MACHINE</span><strong>{snapshot?.serverName ?? "Connecting"}</strong></div>
         </div>
+        {snapshot ? (
+          <div className="machine-tracker-header-metrics" aria-label="Machine job summary">
+            <div className={snapshot.runningCount ? "is-live" : ""}>
+              <span>ACTIVE NOW</span>
+              <strong>{snapshot.runningCount}</strong>
+              <small>RUNNING</small>
+            </div>
+            <div>
+              <span>DONE TODAY</span>
+              <strong>{snapshot.completedSinceDayStart}</strong>
+              <small>SINCE 05:00</small>
+            </div>
+          </div>
+        ) : null}
         <button type="button" onClick={() => void refresh(token)} disabled={!token || loading} aria-label="Refresh live tracker" title="Refresh now">
           <RefreshCw className={loading ? "spin" : ""} size={14} />
         </button>
@@ -172,36 +249,24 @@ export function MachineTracker() {
         <section className="machine-tracker-state"><Loader2 className="spin" size={22} /><strong>Connecting to machine</strong><span>Authenticating and reading Codex activity…</span></section>
       ) : (
         <div className="machine-tracker-content">
-          <section className="machine-tracker-scoreboard" aria-label="Machine job summary">
-            <div className={`machine-tracker-primary-count${snapshot.runningCount ? " is-live" : ""}`}>
-              <span>ACTIVE NOW</span>
-              <strong>{snapshot.runningCount}</strong>
-              <small>{snapshot.runningCount === 1 ? "JOB RUNNING" : "JOBS RUNNING"}</small>
-            </div>
-            <div className="machine-tracker-completed-count">
-              <span>DONE TODAY</span>
-              <strong>{snapshot.completedSinceDayStart}</strong>
-              <small>SINCE 05:00</small>
-            </div>
-          </section>
-
+          {stopError ? <div className="machine-tracker-inline-error">{stopError}</div> : null}
           <section className="machine-tracker-section is-running">
             <div className="machine-tracker-section-title"><span><Radio size={12} /> CURRENTLY RUNNING</span><small>{updatedLabel}</small></div>
-            {snapshot.running.length ? <><ul>{snapshot.running.slice(0, 3).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} active />)}</ul>{snapshot.running.length > 3 && <div className="machine-tracker-overflow">+{snapshot.running.length - 3} MORE ACTIVE</div>}</> : (
+            {snapshot.running.length ? <><ul>{snapshot.running.slice(0, 8).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} active stopping={stoppingChatId === run.chatId} onStop={stopExternalRun} />)}</ul>{snapshot.running.length > 8 && <div className="machine-tracker-overflow is-standard">+{snapshot.running.length - 8} MORE ACTIVE</div>}{snapshot.running.length > 7 && <div className="machine-tracker-overflow is-compact">+{snapshot.running.length - 7} MORE ACTIVE</div>}{snapshot.running.length > 6 && <div className="machine-tracker-overflow is-short">+{snapshot.running.length - 6} MORE ACTIVE</div>}{snapshot.running.length > 4 && <div className="machine-tracker-overflow is-ultra-compact">+{snapshot.running.length - 4} MORE ACTIVE</div>}</> : (
               <div className="machine-tracker-empty"><Clock3 size={15} /><span>No active jobs on this machine</span></div>
             )}
           </section>
 
           <section className="machine-tracker-section is-recent">
             <div className="machine-tracker-section-title"><span><Check size={12} /> RECENT RUNS</span><small>latest first</small></div>
-            {snapshot.recent.length ? <ul>{snapshot.recent.slice(0, 4).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} />)}</ul> : (
+            {snapshot.recent.length ? <ul>{snapshot.recent.slice(0, snapshot.running.length ? 2 : 3).map((run) => <RunRow key={run.id} run={run} nowMs={nowMs} />)}</ul> : (
               <div className="machine-tracker-empty"><span>No recent runs recorded</span></div>
             )}
           </section>
 
           <section className="machine-tracker-usage" aria-label="Codex subscription limits">
-            <UsageLimit label="5-HOUR LIMIT" window={(snapshot.usage as CodexUsage | null)?.fiveHour} />
-            <UsageLimit label="WEEKLY LIMIT" window={(snapshot.usage as CodexUsage | null)?.weekly} />
+            <UsageLimit label="5-HOUR LIMIT" window={(snapshot.usage as CodexUsage | null)?.fiveHour} resetCreditsAvailable={snapshot.usage?.resetCreditsAvailable} />
+            <UsageLimit label="WEEKLY LIMIT" window={(snapshot.usage as CodexUsage | null)?.weekly} resetCreditsAvailable={snapshot.usage?.resetCreditsAvailable} />
           </section>
         </div>
       )}

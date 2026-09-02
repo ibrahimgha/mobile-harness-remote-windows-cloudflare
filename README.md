@@ -112,7 +112,7 @@ Install the multi-device `Codex Control Room` Windows app:
 powershell -NoProfile -ExecutionPolicy Bypass -File windows\ControlRoom\Install-ControlRoom.ps1
 ```
 
-It opens a configurable workspace wall optimized for 4K and ultrawide monitors. Settings provides 4 through 8 columns and 1 through 3 rows, with the selected geometry persisted across restarts. Each workspace independently selects a machine, project, and chat while exposing the full remote controls. A per-workspace display control blanks an individual square while preserving its live remote session for instant wake. The installer authenticates the local, ThinkCentre 10, and TC1 remotes using current-user DPAPI-encrypted credentials.
+It opens a configurable workspace wall optimized for 4K and ultrawide monitors. Settings provides 1 through 8 columns and 1 through 3 rows, with the selected geometry persisted across restarts. Each workspace independently selects a machine, project, and chat while exposing the full remote controls. A per-workspace display control blanks an individual square while preserving its live remote session for instant wake. The installer authenticates the local, ThinkCentre 10, ThinkCentre 11, and TC1 remotes using current-user DPAPI-encrypted credentials.
 
 Install independently remembered copies that can run at the same time by naming each instance:
 

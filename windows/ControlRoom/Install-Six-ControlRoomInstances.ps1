@@ -1,7 +1,10 @@
+param([switch]$RefreshAll)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $installer = Join-Path $PSScriptRoot "Install-ControlRoom.ps1"
+$shortcutAppIdScript = Join-Path (Split-Path -Parent $PSScriptRoot) "Set-ShortcutAppUserModelId.ps1"
 $iconDirectory = Join-Path $PSScriptRoot "icons"
 $baseInstallRoot = Join-Path $env:LOCALAPPDATA "CodexControlRoom"
 $desktop = [Environment]::GetFolderPath("Desktop")
@@ -28,6 +31,23 @@ function New-DesktopShortcut {
   $shortcut.Save()
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) | Out-Null
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+  $appId = if ($Instance.Id -eq "default") { "CodexRemote.ControlRoom" } else { "CodexRemote.ControlRoom.$($Instance.Id)" }
+  & $shortcutAppIdScript -ShortcutPath $shortcutPath -AppId $appId
+}
+
+function Stop-InstalledInstance {
+  param([string]$ExecutablePath)
+
+  Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $ExecutablePath } | ForEach-Object {
+    $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) { return }
+    if ($process.CloseMainWindow()) {
+      $process.WaitForExit(5000) | Out-Null
+    }
+    if (-not $process.HasExited) {
+      Stop-Process -Id $process.Id -Force
+    }
+  }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $iconDirectory "control-room-6.ico"))) {
@@ -36,7 +56,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $iconDirectory "control-room-6.ico")
 
 foreach ($instance in $instances) {
   $iconPath = Join-Path $iconDirectory "control-room-$($instance.Number).ico"
-  if (-not (Test-Path -LiteralPath $instance.Exe)) {
+  if ($RefreshAll -or -not (Test-Path -LiteralPath $instance.Exe)) {
+    if ($RefreshAll -and (Test-Path -LiteralPath $instance.Exe)) {
+      Stop-InstalledInstance -ExecutablePath $instance.Exe
+    }
     if ($instance.Id -eq "default") {
       & $installer -NoDesktopShortcut -CustomIconPath $iconPath
     } else {

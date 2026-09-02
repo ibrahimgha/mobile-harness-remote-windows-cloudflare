@@ -6,6 +6,7 @@ logs/
 .codex-remote/
 .env
 .DS_Store
+__pycache__/
 *.local
 *.tsbuildinfo
 npm-debug.log*

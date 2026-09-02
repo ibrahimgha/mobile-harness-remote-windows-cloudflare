@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "dashboards": [
+    {
+      "id": "example-dashboard",
+      "type": "dashboard",
+      "name": "Example dashboard",
+      "url": "https://dashboard.example.com/",
+      "credential": {
+        "mode": "access-key",
+        "username": "",
+        "password": "stored only in the installed 0600 config",
+        "autoSubmit": true
+      }
+    }
+  ],
+  "machines": [
+    {
+      "id": "example-machine",
+      "type": "machine",
+      "name": "Example machine",
+      "url": "https://remote.example.com/",
+      "token": "stored only in the installed 0600 config"
+    }
+  ]
+}

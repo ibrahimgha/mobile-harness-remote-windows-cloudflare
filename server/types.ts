@@ -73,6 +73,7 @@ export type CodexUsage = {
   updatedAt: string;
   fiveHour?: CodexUsageWindow;
   weekly?: CodexUsageWindow;
+  resetCreditsAvailable?: number;
 };
 
 export type CodexModelCapability = {
@@ -98,6 +99,7 @@ export type CodexRunJob = {
   projectPath: string;
   status: CodexRunStatus;
   kind?: "prompt" | "steer";
+  recoveredAfterRestart?: boolean;
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;
@@ -174,6 +176,7 @@ export type ChatTranscriptMessage = ChatMessageExcerpt & {
   durationMs?: number;
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
+  speed?: CodexRunSpeed;
 };
 
 export type ChatMessageViewMode = "final" | "codex";

@@ -40,10 +40,12 @@ try {
     rateLimits: {
       primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: futureFiveHourReset },
       secondary: { usedPercent: 44, windowDurationMins: 10080, resetsAt: futureWeeklyReset }
-    }
+    },
+    rateLimitResetCredits: { availableCount: 3, credits: [] }
   });
   assert.deepEqual(liveMeasurement?.fiveHour, { usedPercent: 37, resetsAt: futureFiveHourReset });
   assert.deepEqual(liveMeasurement?.weekly, { usedPercent: 44, resetsAt: futureWeeklyReset });
+  assert.equal(liveMeasurement?.resetCreditsAvailable, 3);
 
   const noFiveHourMeasurement = usageFromAccountRateLimits({
     rateLimits: {

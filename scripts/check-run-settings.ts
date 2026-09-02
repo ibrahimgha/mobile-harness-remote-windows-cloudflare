@@ -7,13 +7,19 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-settings-"))
 const modelsCachePath = path.join(tempDir, "models_cache.json");
 const settingsPath = path.join(tempDir, "run-settings.json");
 const appSource = fs.readFileSync(path.join(process.cwd(), "src", "App.tsx"), "utf8");
+const stylesSource = fs.readFileSync(path.join(process.cwd(), "src", "styles.css"), "utf8");
 const serverSource = fs.readFileSync(path.join(process.cwd(), "server", "index.ts"), "utf8");
 
 assert.match(
   appSource,
-  /label === "Weekly"[\s\S]{0,180}weekday: "short"/,
-  "weekly usage reset dates include the weekday"
+  /resetDate\.toLocaleString\(undefined, \{[\s\S]{0,220}weekday: "short",[\s\S]{0,220}hour: "numeric",[\s\S]{0,100}minute: "2-digit"/,
+  "all usage reset labels include both the full date and time"
 );
+assert.match(appSource, /<span>Resets available<\/span>[\s\S]{0,100}resetCreditsAvailable/, "usage consumption shows the reset credits available");
+assert.match(appSource, /formatDate\(message\.createdAt, true\)/, "phone message metadata renders a compact date without the year");
+assert.match(appSource, /className="bubble-time-full"[\s\S]{0,180}className="bubble-time-compact"/, "message metadata provides desktop and phone date variants");
+assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*?\.bubble-meta\s*\{[\s\S]*?font-size:\s*0\.64rem;/, "phone message metadata uses a smaller font");
+assert.match(stylesSource, /\.bubble-time-full\s*\{\s*display:\s*none;[\s\S]*?\.bubble-time-compact\s*\{\s*display:\s*inline;/, "phones hide the year-bearing date and show the compact date");
 assert.match(
   appSource,
   /const usedPercent = Math\.min\(100, Math\.max\(0, usage\?\.usedPercent \?\? 0\)\)/,
@@ -27,9 +33,10 @@ assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes t
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(
   appSource,
-  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-luna", reasoningEffort: "high", modelLabel: "Luna"[\s\S]*gpt-5\.6-terra", reasoningEffort: "medium", modelLabel: "Terra"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
+  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max"[\s\S]*gpt-5\.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Light"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
   "the shared power slider keeps the requested preset order in both settings surfaces"
 );
+assert.match(appSource, /isControlRoomTile \? "is-control-room-tile"/, "embedded squares identify themselves for tile-specific composer layering");
 assert.match(
   appSource,
   /className="composer-power-model" title=\{`\$\{powerSettingLabel\(previewPowerSetting\)\} reasoning`\}[\s\S]{0,100}\{powerSettingLabel\(previewPowerSetting\)\}/,

@@ -40,6 +40,10 @@ type AppServerRateLimitSnapshot = {
 export type AccountRateLimitsResponse = {
   rateLimits?: AppServerRateLimitSnapshot | null;
   rateLimitsByLimitId?: Record<string, AppServerRateLimitSnapshot | undefined> | null;
+  rateLimitResetCredits?: {
+    availableCount?: number | null;
+    credits?: unknown[] | null;
+  } | null;
 };
 
 function normalizeUsageWindow(window: RateLimitWindow | undefined) {
@@ -75,6 +79,7 @@ export function usageFromAccountRateLimits(response: AccountRateLimitsResponse):
   );
   const fiveHour = normalizeAppServerWindow(windows.find((window) => window.windowDurationMins === 300));
   const weekly = normalizeAppServerWindow(windows.find((window) => window.windowDurationMins === 10080));
+  const resetCreditsAvailable = response.rateLimitResetCredits?.availableCount;
   if (!fiveHour && !weekly) {
     return null;
   }
@@ -82,7 +87,10 @@ export function usageFromAccountRateLimits(response: AccountRateLimitsResponse):
   return {
     updatedAt: new Date().toISOString(),
     fiveHour,
-    weekly
+    weekly,
+    ...(typeof resetCreditsAvailable === "number" && Number.isFinite(resetCreditsAvailable)
+      ? { resetCreditsAvailable: Math.max(0, Math.trunc(resetCreditsAvailable)) }
+      : {})
   };
 }
 
@@ -260,7 +268,10 @@ export async function refreshCodexUsage(_options: { force?: boolean } = {}) {
       cachedUsage = {
         updatedAt: newestUsageTimestamp ?? cachedUsage?.updatedAt ?? new Date(newest.mtimeMs).toISOString(),
         fiveHour: nextFiveHour,
-        weekly: nextWeekly
+        weekly: nextWeekly,
+        ...(cachedUsage?.resetCreditsAvailable !== undefined
+          ? { resetCreditsAvailable: cachedUsage.resetCreditsAvailable }
+          : {})
       };
       return cachedUsage;
     }

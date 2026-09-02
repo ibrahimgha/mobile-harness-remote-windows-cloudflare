@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import { chatDraftStorageKey, composerInputId, readChatDraft, writeChatDraft } from "../src/chatDrafts.js";
-import { buildDictationCleanupPrompt } from "../server/dictationCleaner.js";
 
 const values = new Map<string, string>();
 const storage = {
@@ -32,21 +31,13 @@ assert.equal(readChatDraft(storage, chatB), "Typed for B");
 values.set(chatDraftStorageKey(chatA), "\n");
 assert.equal(readChatDraft(storage, chatA), "");
 
-const cleanupPrompt = buildDictationCleanupPrompt({
-  projectName: "Remote",
-  chatTitle: "Draft test",
-  rawTranscript: "fix react use effect",
-  draftContext: "Do not erase this typed text",
-  language: "en-US"
-});
-assert.match(cleanupPrompt, /vocabulary context only; do not include it in the output/i);
-assert.match(cleanupPrompt, /fix react use effect/);
-
 const appSource = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 assert.match(appSource, /id=\{composerInputId\(selectedChatId\)\}/);
 assert.match(appSource, /const commitComposerEditorState[\s\S]*setDraftForChat\(chatId, text\)/);
 assert.match(appSource, /onInput=[\s\S]{0,180}commitComposerEditorState\(event\.currentTarget\)/);
-assert.match(appSource, /onPaste=[\s\S]{0,900}commitComposerEditorState\(event\.currentTarget, selection\)/);
+assert.match(appSource, /onPaste=[\s\S]{0,1200}commitComposerEditorState\(event\.currentTarget, selection\)/);
+assert.match(appSource, /onPaste=[\s\S]{0,300}clipboardAttachmentFiles\(event\.clipboardData\)/);
+assert.match(appSource, /pastedFiles\.length > 0[\s\S]{0,180}addAttachments\(pastedFiles\)/);
 assert.match(appSource, /const attachComposerEditor = useCallback[\s\S]*syncComposerEditorText\(editor, latestDraftRef\.current\)/);
 assert.match(appSource, /ref=\{attachComposerEditor\}/);
 assert.match(appSource, /preserveDraft:\s*true/);

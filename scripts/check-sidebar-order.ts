@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applySidebarOrder, captureSidebarOrder } from "../src/sidebarOrder";
+import { applySidebarOrder, captureSidebarOrder, nextProjectCollapseState } from "../src/sidebarOrder";
 
 const openedProjects = [
   {
@@ -54,3 +54,18 @@ assert.deepEqual(
 );
 assert.equal(orderedProjects[0]?.label, "Alpha updated", "fresh project data remains visible while order is frozen");
 assert.equal(orderedProjects[0]?.chats[0]?.title, "First updated", "fresh chat data remains visible while order is frozen");
+
+const initiallyCollapsed = new Set(["C:\\projects\\alpha", "C:\\projects\\retired"]);
+const collapsedAll = nextProjectCollapseState(initiallyCollapsed, ["C:\\projects\\alpha", "C:\\projects\\beta"]);
+assert.deepEqual(
+  [...collapsedAll].sort(),
+  ["C:\\projects\\alpha", "C:\\projects\\beta", "C:\\projects\\retired"],
+  "collapse all closes every current project without discarding persisted projects"
+);
+
+const expandedAll = nextProjectCollapseState(collapsedAll, ["C:\\projects\\alpha", "C:\\projects\\beta"]);
+assert.deepEqual(
+  [...expandedAll],
+  ["C:\\projects\\retired"],
+  "the same control expands every current project when all are collapsed"
+);

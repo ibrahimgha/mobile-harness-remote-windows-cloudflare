@@ -12,6 +12,8 @@ export type TrackerRun = {
   durationMs?: number;
   model: string;
   reasoningEffort: string;
+  speed: CodexRunSettings["speed"];
+  source: "remote" | "external";
 };
 
 export type ControlRoomTrackerSnapshot = {
@@ -71,7 +73,9 @@ function runFromJob(job: CodexRunJob, chats: Map<string, ChatMetadata>, fallback
     ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
     ...(Number.isFinite(finishedMs) && Number.isFinite(startedMs) ? { durationMs: Math.max(0, finishedMs - startedMs) } : {}),
     model: settings.model,
-    reasoningEffort: settings.reasoningEffort
+    reasoningEffort: settings.reasoningEffort,
+    speed: settings.speed,
+    source: "remote"
   };
 }
 
@@ -83,7 +87,7 @@ export function buildControlRoomTrackerSnapshot(options: {
   auditEvents: BridgeEvent[];
   activeSessionRuns: ActiveSessionRun[];
   defaultSettings: CodexRunSettings;
-  externalSettings?: Map<string, Pick<CodexRunSettings, "model" | "reasoningEffort">>;
+  externalSettings?: Map<string, Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>;
   usage: CodexUsage | null;
 }): ControlRoomTrackerSnapshot {
   const now = options.now ?? new Date();
@@ -93,7 +97,11 @@ export function buildControlRoomTrackerSnapshot(options: {
 
   for (const event of options.auditEvents) {
     const job = jobFromAuditEvent(event);
-    if (job && !jobsById.has(job.id)) jobsById.set(job.id, job);
+    // Audit records survive service restarts, but their running state does not.
+    // Only the live runner (or active session detection below) can establish that
+    // work is still in progress. Restoring a historical running event otherwise
+    // leaves crashed, stopped, or reboot-interrupted jobs running forever.
+    if (job && job.status !== "running" && !jobsById.has(job.id)) jobsById.set(job.id, job);
   }
   for (const job of options.jobs) jobsById.set(job.id, job);
 
@@ -114,7 +122,9 @@ export function buildControlRoomTrackerSnapshot(options: {
         status: "running" as const,
         startedAt: run.startedAt,
         model: settings.model,
-        reasoningEffort: settings.reasoningEffort
+        reasoningEffort: settings.reasoningEffort,
+        speed: settings.speed,
+        source: "external" as const
       };
     });
   const running = [...jobRuns.filter((run) => run.status === "running"), ...externalRuns]

@@ -1,5 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createWriteStream, existsSync, type Stats } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  type Stats
+} from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +18,7 @@ import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus } from "./typ
 type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
   getRunSettings?: () => CodexRunSettings;
+  statePath?: string | null;
 };
 
 type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed" | "stopped";
@@ -51,6 +61,19 @@ const stdoutLineBufferLimit = Math.max(
 );
 const runLogDir = path.resolve(process.cwd(), "logs", "codex-runs");
 const recoveredLogJobsLimit = Number(process.env.CODEX_RECOVERED_LOG_JOBS_LIMIT ?? 20);
+const defaultRunnerStatePath = path.resolve(
+  process.env.CODEX_RUNNER_STATE_PATH ?? path.join(process.cwd(), ".runtime", "codex-runner-state.json")
+);
+
+type PersistedRunnerItem = {
+  job: CodexRunJob;
+  text: string;
+};
+
+type PersistedRunnerState = {
+  version: 1;
+  pending: PersistedRunnerItem[];
+};
 
 function safeSegment(value: string): string {
   return value.replace(/[^a-z0-9_.-]/gi, "-").slice(0, 120);
@@ -238,6 +261,8 @@ export class CodexRunner {
   >();
   private readonly stopRequestedJobIds = new Set<string>();
   private readonly runningChatIds = new Set<string>();
+  private readonly statePath: string | null;
+  private started = false;
 
   readonly bypassSandbox = shouldBypassSandbox();
   readonly skipGitRepoCheck = shouldSkipGitRepoCheck();
@@ -246,6 +271,15 @@ export class CodexRunner {
   constructor(options: CodexRunnerOptions = {}) {
     this.onJobChange = options.onJobChange;
     this.getRunSettings = options.getRunSettings;
+    this.statePath = options.statePath === undefined ? defaultRunnerStatePath : options.statePath;
+    this.restorePendingState();
+  }
+
+  start() {
+    if (this.started) return;
+    this.started = true;
+    for (const item of this.queue) this.emit(item.job, "queued");
+    this.processNext();
   }
 
   get mode() {
@@ -292,6 +326,7 @@ export class CodexRunner {
     this.jobs.delete(item.job.id);
     this.jobTexts.delete(item.job.id);
     this.refreshQueuePositions(true);
+    this.persistPendingState();
 
     return { job: item.job, text };
   }
@@ -470,29 +505,44 @@ export class CodexRunner {
 
       const [next] = this.queue.splice(nextIndex, 1);
       next.job.queuePosition = undefined;
-      this.refreshQueuePositions(true);
       this.runningChatIds.add(next.job.chatId);
+      next.job.status = "running";
+      next.job.startedAt = new Date().toISOString();
+      next.job.finishedAt = undefined;
+      next.job.exitCode = undefined;
+      next.job.signal = undefined;
+      const cliPath = this.cliPath;
+      const args = this.argsForJob(next.job);
+      next.job.command = [cliPath, ...args];
+      next.job.message = this.simulationMode
+        ? "Simulating Codex CLI run"
+        : next.job.recoveredAfterRestart
+          ? "Resuming Codex CLI job interrupted by a service restart"
+          : next.job.kind === "steer"
+            ? "Steering Codex CLI on target laptop"
+            : "Running Codex CLI on target laptop";
+      this.refreshQueuePositions(true);
+      this.emit(next.job, "started");
 
-      void this.runJob(next.job, next.text).finally(() => {
-        this.runningChatIds.delete(next.job.chatId);
-        this.processNext();
-      });
+      void this.runJob(next.job, next.text)
+        .catch((error: unknown) => {
+          next.job.status = "failed";
+          next.job.finishedAt = new Date().toISOString();
+          next.job.message = error instanceof Error ? error.message : "Codex runner failed before the worker started";
+          this.jobTexts.delete(next.job.id);
+          this.emit(next.job, "failed");
+        })
+        .finally(() => {
+          this.runningChatIds.delete(next.job.chatId);
+          this.processNext();
+        });
     }
   }
 
   private async runJob(job: CodexRunJob, text: string): Promise<void> {
     await fs.mkdir(path.dirname(job.logPaths.stdout), { recursive: true });
-    job.status = "running";
-    job.startedAt = new Date().toISOString();
     const cliPath = this.cliPath;
     const args = this.argsForJob(job);
-    job.command = [cliPath, ...args];
-    job.message = this.simulationMode
-      ? "Simulating Codex CLI run"
-      : job.kind === "steer"
-        ? "Steering Codex CLI on target laptop"
-        : "Running Codex CLI on target laptop";
-    this.emit(job, "started");
 
     if (this.simulationMode) {
       await fs.writeFile(job.logPaths.stdout, `simulation prompt for ${job.chatId}\n`, "utf8");
@@ -1073,7 +1123,104 @@ export class CodexRunner {
     }
   }
 
+  private restorePendingState() {
+    if (!this.statePath) return;
+
+    try {
+      const parsed = JSON.parse(readFileSync(this.statePath, "utf8")) as Partial<PersistedRunnerState>;
+      if (parsed.version !== 1 || !Array.isArray(parsed.pending)) return;
+
+      const interrupted: PersistedRunnerItem[] = [];
+      const queued: PersistedRunnerItem[] = [];
+      for (const entry of parsed.pending) {
+        const job = entry?.job;
+        if (
+          !job ||
+          typeof job.id !== "string" ||
+          typeof job.chatId !== "string" ||
+          typeof job.projectPath !== "string" ||
+          typeof entry.text !== "string" ||
+          (job.status !== "queued" && job.status !== "running")
+        ) {
+          continue;
+        }
+
+        const restoredJob: CodexRunJob = {
+          ...job,
+          logPaths: { ...job.logPaths },
+          command: [...(job.command ?? [])],
+          settings: job.settings ? { ...job.settings } : undefined,
+          heartbeatHistory: job.heartbeatHistory ? [...job.heartbeatHistory] : undefined
+        };
+        let text = entry.text;
+        if (restoredJob.status === "running") {
+          restoredJob.status = "queued";
+          restoredJob.kind = "prompt";
+          restoredJob.recoveredAfterRestart = true;
+          restoredJob.startedAt = undefined;
+          restoredJob.finishedAt = undefined;
+          restoredJob.exitCode = undefined;
+          restoredJob.signal = undefined;
+          restoredJob.promptPreview = "resume";
+          restoredJob.promptHash = "service-restart-resume";
+          restoredJob.textLength = 6;
+          restoredJob.message = "Queued to resume after an interrupted service or machine restart";
+          text = "resume";
+        }
+
+        const item = { job: restoredJob, text };
+        (restoredJob.recoveredAfterRestart ? interrupted : queued).push(item);
+        this.jobs.set(restoredJob.id, restoredJob);
+        this.jobTexts.set(restoredJob.id, text);
+      }
+
+      this.queue.push(...interrupted, ...queued);
+      this.refreshQueuePositions();
+      // Rewrite immediately so another reboot cannot multiply recovery jobs.
+      this.persistPendingState();
+    } catch {
+      // A missing or damaged journal must never prevent the remote from starting.
+    }
+  }
+
+  private persistPendingState() {
+    if (!this.statePath) return;
+
+    const pending = [...this.jobs.values()]
+      .filter((job) => job.status === "queued" || job.status === "running")
+      .sort((left, right) => {
+        if (left.status !== right.status) return left.status === "running" ? -1 : 1;
+        if (left.status === "queued") return (left.queuePosition ?? Number.MAX_SAFE_INTEGER) - (right.queuePosition ?? Number.MAX_SAFE_INTEGER);
+        return Date.parse(left.startedAt ?? left.createdAt) - Date.parse(right.startedAt ?? right.createdAt);
+      })
+      .map((job) => ({
+        job: {
+          ...job,
+          logPaths: { ...job.logPaths },
+          settings: job.settings ? { ...job.settings } : undefined,
+          command: [...job.command],
+          heartbeatHistory: job.heartbeatHistory ? [...job.heartbeatHistory] : undefined
+        },
+        text: this.jobTexts.get(job.id) ?? (job.recoveredAfterRestart ? "resume" : "")
+      }));
+    const state: PersistedRunnerState = { version: 1, pending };
+    const tempPath = `${this.statePath}.${process.pid}.tmp`;
+
+    try {
+      mkdirSync(path.dirname(this.statePath), { recursive: true });
+      writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+      renameSync(tempPath, this.statePath);
+    } catch {
+      try {
+        rmSync(tempPath, { force: true });
+      } catch {
+        // Best-effort cleanup; the next state transition will retry the journal.
+      }
+    }
+  }
+
   private emit(job: CodexRunJob, event: JobEvent) {
+    if (event !== "heartbeat") this.persistPendingState();
     this.onJobChange?.(
       {
         ...job,

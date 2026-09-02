@@ -23,8 +23,11 @@ import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import { getCachedCodexUsage, refreshCodexUsage } from "./codexUsage.js";
-import { cleanDictationWithCodex } from "./dictationCleaner.js";
-import { buildControlRoomTrackerSnapshot } from "./controlRoomTracker.js";
+import { transcribeAudioWithOpenAI } from "./audioTranscription.js";
+import { controlRoomLed } from "./controlRoomLed.js";
+import { stopExternalCodexRun } from "./externalRunControl.js";
+import { attachPromptRunSettings } from "./promptRunSettings.js";
+import { buildControlRoomTrackerSnapshot, type ControlRoomTrackerSnapshot } from "./controlRoomTracker.js";
 import {
   getDefaultProjectsRoot,
   resolveNewProjectPath,
@@ -34,7 +37,7 @@ import {
 import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
 import { listActiveSessionRuns, recordSessionRunTerminal } from "./sessionActivity.js";
-import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
+import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunJob, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
 import {
   countPushSubscriptions,
   getPushPublicKey,
@@ -48,9 +51,14 @@ const port = Number(process.env.PORT ?? 8787);
 const serverName = process.env.REMOTE_SERVER_NAME?.trim() || os.hostname();
 const clientOrigin = process.env.CLIENT_ORIGIN;
 const controlToken = process.env.CONTROL_TOKEN?.trim() ?? "";
+const controlTokens = new Set(
+  [controlToken, ...(process.env.CONTROL_TOKENS ?? "").split(/[\r\n,;]+/)]
+    .map((token) => token.trim())
+    .filter(Boolean)
+);
 const controlEnabled = process.env.ENABLE_WINDOW_CONTROL === "true";
 const targetTitle = process.env.CODEX_WINDOW_TITLE?.trim() || "Codex";
-const tokenRequired = controlEnabled || controlToken.length > 0 || hasScopedAccessTokens();
+const tokenRequired = controlEnabled || controlTokens.size > 0 || hasScopedAccessTokens();
 const promptDelivery = "cli" as const;
 const maxPromptLength = Number(process.env.REMOTE_PROMPT_MAX_CHARS ?? 12000);
 const maxUploadFiles = Number(process.env.REMOTE_UPLOAD_MAX_FILES ?? 5);
@@ -65,6 +73,7 @@ const shortcutInstructionsRoot = path.resolve(
 const maxShortcutInstructionBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_BYTES ?? 128 * 1024);
 const maxShortcutInstructionTotalBytes = Number(process.env.SHORTCUT_INSTRUCTION_MAX_TOTAL_BYTES ?? 768 * 1024);
 const maxLocalTextFileBytes = Number(process.env.LOCAL_TEXT_FILE_MAX_BYTES ?? 2 * 1024 * 1024);
+const maxDictationAudioBytes = Math.min(25 * 1024 * 1024, Number(process.env.DICTATION_MAX_AUDIO_BYTES ?? 25 * 1024 * 1024));
 
 const app = express();
 const server = createServer(app);
@@ -115,6 +124,8 @@ const runner = new CodexRunner({
   }
 });
 const events: BridgeEvent[] = [];
+runner.start();
+controlRoomLed.start();
 const imageContentTypes = new Map([
   [".png", "image/png"],
   [".jpg", "image/jpeg"],
@@ -583,6 +594,18 @@ async function writeRequestBodyToFile(req: express.Request, absolutePath: string
   }
 }
 
+async function readRequestBody(req: express.Request, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) throw new Error(`Audio recording must be ${Math.round(maxBytes / 1024 / 1024)} MB or smaller`);
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
 function uploadRootsForChat(projectPath: string, chatId: string): string[] {
   const roots = new Set<string>();
 
@@ -831,7 +854,7 @@ function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
       targetTitle: bridge.title,
       controlEnabled,
       promptDelivery,
-      tokenConfigured: controlToken.length > 0 || hasScopedAccessTokens(),
+      tokenConfigured: controlTokens.size > 0 || hasScopedAccessTokens(),
       tokenRequired,
       platform: process.platform
     },
@@ -874,7 +897,7 @@ process.on("uncaughtException", (error) => {
 });
 
 function resolveRemoteAccess(value: unknown): RemoteAccess | null {
-  if (typeof value === "string" && controlToken.length > 0 && value === controlToken) {
+  if (typeof value === "string" && controlTokens.has(value)) {
     return { mode: "full" };
   }
   return resolveScopedAccessToken(value);
@@ -977,7 +1000,7 @@ app.get("/api/auth/status", (_req, res) => {
   res.json({
     ok: true,
     tokenRequired,
-    tokenConfigured: controlToken.length > 0
+    tokenConfigured: controlTokens.size > 0
   });
 });
 
@@ -989,20 +1012,75 @@ app.get("/api/state", requireControlAuth, (_req, res) => {
   res.json(getState(requestAccess(res)));
 });
 
-app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
-  try {
-    const access = requestAccess(res);
-    if (access.mode !== "full") {
-      res.status(403).json({ ok: false, message: "Machine tracking requires full remote access" });
-      return;
-    }
+app.get("/api/control-room/led", requireControlAuth, (_req, res) => {
+  if (requestAccess(res).mode !== "full") {
+    res.status(403).json({ ok: false, message: "Control Room LED status requires full remote access" });
+    return;
+  }
+  res.json({ ok: true, ...controlRoomLed.status() });
+});
 
+app.post("/api/control-room/led", requireControlAuth, (req, res) => {
+  if (requestAccess(res).mode !== "full") {
+    res.status(403).json({ ok: false, message: "Control Room LED updates require full remote access" });
+    return;
+  }
+
+  const instanceId = typeof req.body?.instanceId === "string" ? req.body.instanceId.trim() : "";
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(instanceId)) {
+    res.status(400).json({ ok: false, message: "A valid Control Room instance ID is required" });
+    return;
+  }
+
+  const flashing = req.body?.flashing === true;
+  const flashingSquares = Number.isFinite(req.body?.flashingSquares) ? Number(req.body.flashingSquares) : flashing ? 1 : 0;
+  res.json({ ok: true, ...controlRoomLed.report(instanceId, flashing, flashingSquares) });
+});
+
+app.delete("/api/control-room/led/:instanceId", requireControlAuth, (req, res) => {
+  if (requestAccess(res).mode !== "full") {
+    res.status(403).json({ ok: false, message: "Control Room LED updates require full remote access" });
+    return;
+  }
+  const instanceId = Array.isArray(req.params.instanceId) ? req.params.instanceId[0] : req.params.instanceId;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(instanceId)) {
+    res.status(400).json({ ok: false, message: "A valid Control Room instance ID is required" });
+    return;
+  }
+  res.json({ ok: true, ...controlRoomLed.remove(instanceId) });
+});
+
+app.post("/api/control-room/led/off", requireControlAuth, async (_req, res) => {
+  if (requestAccess(res).mode !== "full") {
+    res.status(403).json({ ok: false, message: "Control Room LED control requires full remote access" });
+    return;
+  }
+  controlRoomLed.forceOff();
+  await controlRoomLed.settled();
+  res.json({ ok: true, ...controlRoomLed.status() });
+});
+
+app.post("/api/control-room/led/acknowledge", requireControlAuth, async (_req, res) => {
+  if (requestAccess(res).mode !== "full") {
+    res.status(403).json({ ok: false, message: "Control Room LED control requires full remote access" });
+    return;
+  }
+  controlRoomLed.acknowledge();
+  await controlRoomLed.settled();
+  res.json({ ok: true, ...controlRoomLed.status() });
+});
+
+const controlRoomTrackerCacheMs = 4_000;
+let controlRoomTrackerCache: { expiresAt: number; snapshot: ControlRoomTrackerSnapshot } | null = null;
+let controlRoomTrackerInFlight: Promise<ControlRoomTrackerSnapshot> | null = null;
+
+async function createControlRoomTrackerSnapshot(): Promise<ControlRoomTrackerSnapshot> {
     const [chatIndex, auditEvents, activeSessionRuns] = await Promise.all([
       listChats(),
       readAuditEvents(5000),
       listActiveSessionRuns()
     ]);
-    const externalSettings = new Map<string, Pick<CodexRunSettings, "model" | "reasoningEffort">>();
+    const externalSettings = new Map<string, Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>();
     await Promise.all(
       activeSessionRuns.map(async (run) => {
         try {
@@ -1012,7 +1090,8 @@ app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
           if (message) {
             externalSettings.set(run.chatId, {
               model: message.model ?? getRunSettings().model,
-              reasoningEffort: message.reasoningEffort ?? getRunSettings().reasoningEffort
+              reasoningEffort: message.reasoningEffort ?? getRunSettings().reasoningEffort,
+              speed: getRunSettings().speed
             });
           }
         } catch {
@@ -1021,8 +1100,7 @@ app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
       })
     );
 
-    res.json(
-      buildControlRoomTrackerSnapshot({
+    const snapshot = buildControlRoomTrackerSnapshot({
         serverName,
         projects: chatIndex.projects,
         jobs: runner.recentJobs,
@@ -1031,10 +1109,80 @@ app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
         defaultSettings: getRunSettings(),
         externalSettings,
         usage: getCachedCodexUsage()
-      })
-    );
+      });
+    controlRoomTrackerCache = { expiresAt: Date.now() + controlRoomTrackerCacheMs, snapshot };
+    return snapshot;
+}
+
+function beginControlRoomTrackerRefresh(): Promise<ControlRoomTrackerSnapshot> {
+  if (controlRoomTrackerInFlight) return controlRoomTrackerInFlight;
+
+  const refresh = createControlRoomTrackerSnapshot();
+  controlRoomTrackerInFlight = refresh;
+  void refresh
+    .finally(() => {
+      if (controlRoomTrackerInFlight === refresh) controlRoomTrackerInFlight = null;
+    })
+    .catch(() => undefined);
+  return refresh;
+}
+
+async function loadControlRoomTrackerSnapshot(): Promise<ControlRoomTrackerSnapshot> {
+  if (controlRoomTrackerCache) {
+    if (controlRoomTrackerCache.expiresAt <= Date.now() && !controlRoomTrackerInFlight) {
+      void beginControlRoomTrackerRefresh().catch(() => undefined);
+    }
+    return controlRoomTrackerCache.snapshot;
+  }
+
+  return beginControlRoomTrackerRefresh();
+}
+
+app.get("/api/control-room/tracker", requireControlAuth, async (_req, res) => {
+  try {
+    const access = requestAccess(res);
+    if (access.mode !== "full") {
+      res.status(403).json({ ok: false, message: "Machine tracking requires full remote access" });
+      return;
+    }
+
+    res.json(await loadControlRoomTrackerSnapshot());
   } catch (error) {
     res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Could not load machine tracker" });
+  }
+});
+
+app.post("/api/chats/:id/external-run/stop", requireControlAuth, async (req, res) => {
+  const access = requestAccess(res);
+  if (access.mode !== "full") {
+    res.status(403).json({ ok: false, message: "Stopping machine-level tasks requires full remote access" });
+    return;
+  }
+
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  try {
+    const result = await stopExternalCodexRun(chatId);
+    const finishedAt = new Date().toISOString();
+    await recordSessionRunTerminal(chatId, finishedAt);
+    controlRoomTrackerCache = null;
+    pushEvent("action", result.stoppedProcessIds.length ? "Stopped external Codex task" : "Cleared orphaned Codex task", {
+      action: "external-codex-run-stop",
+      chatId,
+      finishedAt,
+      result,
+      request: requestContext(req)
+    });
+    res.json({
+      ok: true,
+      chatId,
+      result,
+      message: result.stoppedProcessIds.length
+        ? "External Codex task stopped"
+        : "No live worker remained; the orphaned task was cleared"
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not stop external Codex task";
+    res.status(500).json({ ok: false, message });
   }
 });
 
@@ -1717,7 +1865,11 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
       return;
     }
 
-    res.json(chat);
+    const auditEvents = await readAuditEvents(5000);
+    const auditedJobs = auditEvents
+      .map((event) => event.detail?.job)
+      .filter((job): job is CodexRunJob => Boolean(job));
+    res.json(attachPromptRunSettings(chat, [...runner.jobsForChat(chatId), ...auditedJobs]));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load Codex chat";
 
@@ -2063,19 +2215,11 @@ app.post("/api/chats/:id/files", requireControlAuth, async (req, res) => {
   }
 });
 
-app.post("/api/chats/:id/dictation/clean", requireControlAuth, async (req, res) => {
+app.post("/api/chats/:id/dictation/transcribe", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const rawTranscript = typeof req.body?.rawTranscript === "string" ? req.body.rawTranscript.trim() : "";
-  const draftContext = typeof req.body?.draftContext === "string" ? req.body.draftContext : "";
-  const language = typeof req.body?.language === "string" ? req.body.language : "";
-
-  if (!rawTranscript) {
-    res.status(400).json({ ok: false, message: "Transcript is empty" });
-    return;
-  }
-
-  if (rawTranscript.length > maxPromptLength) {
-    res.status(400).json({ ok: false, message: `Transcript is longer than the ${maxPromptLength} character safety limit` });
+  const contentLength = Number(req.header("content-length") ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > maxDictationAudioBytes) {
+    res.status(413).json({ ok: false, message: `Audio recording must be ${Math.round(maxDictationAudioBytes / 1024 / 1024)} MB or smaller` });
     return;
   }
 
@@ -2086,50 +2230,43 @@ app.post("/api/chats/:id/dictation/clean", requireControlAuth, async (req, res) 
       return;
     }
 
+    const audio = await readRequestBody(req, maxDictationAudioBytes);
+    const draftHeader = req.header("x-dictation-draft") ?? "";
+    let draftContext = "";
     try {
-      const cleaned = await cleanDictationWithCodex({
-        cliPath: runner.cliPath,
-        projectName: chat.projectName,
-        chatTitle: chat.title,
-        rawTranscript,
-        draftContext,
-        language
-      });
-      const text = cleaned.trim() || rawTranscript;
-
-      pushEvent("action", "Voice transcript cleaned for prompt", {
-        action: "dictation-cleaned",
-        chatId,
-        route: "POST /api/chats/:id/dictation/clean",
-        request: requestContext(req),
-        rawLength: rawTranscript.length,
-        cleanedLength: text.length
-      });
-      res.json({ ok: true, text, source: "codex" });
-    } catch (error) {
-      pushEvent("status", "Voice transcript cleanup fell back to browser recognition", {
-        action: "dictation-cleanup-fallback",
-        chatId,
-        route: "POST /api/chats/:id/dictation/clean",
-        request: requestContext(req),
-        error: describeError(error)
-      });
-      res.json({
-        ok: true,
-        text: rawTranscript,
-        source: "browser",
-        message: "Codex cleanup was unavailable; using the browser transcript"
-      });
+      draftContext = decodeURIComponent(draftHeader).slice(-2_000);
+    } catch {
+      draftContext = draftHeader.slice(-2_000);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not clean dictation";
-    pushEvent("error", message, {
-      action: "dictation-cleanup-failed",
+    const result = await transcribeAudioWithOpenAI({
+      audio,
+      mimeType: req.header("content-type") || "audio/webm",
+      language: req.header("x-dictation-language") || "",
+      draftContext,
+      chat
+    });
+
+    pushEvent("action", "Voice recording transcribed with audio model", {
+      action: "dictation-transcribed",
       chatId,
+      route: "POST /api/chats/:id/dictation/transcribe",
+      request: requestContext(req),
+      audioBytes: audio.byteLength,
+      transcriptLength: result.text.length,
+      contextLength: result.contextLength,
+      humanNameCount: result.humanNameCount
+    });
+    res.json({ ok: true, text: result.text, source: "openai" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not transcribe audio";
+    pushEvent("error", "Voice transcription failed", {
+      action: "dictation-transcription-failed",
+      chatId,
+      route: "POST /api/chats/:id/dictation/transcribe",
       request: requestContext(req),
       error: describeError(error)
     });
-    res.status(500).json({ ok: false, message });
+    res.status(/must be .* MB or smaller/i.test(message) ? 413 : 502).json({ ok: false, message });
   }
 });
 
@@ -2378,6 +2515,7 @@ wss.on("connection", (socket: WebSocket) => {
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
 server.on("close", () => clearInterval(socketHeartbeat));
+server.on("close", () => controlRoomLed.stop());
 void refreshUsageAndPushState();
 const usageRefreshTimer = setInterval(() => void refreshUsageAndPushState(), usageRefreshIntervalMs);
 usageRefreshTimer.unref();

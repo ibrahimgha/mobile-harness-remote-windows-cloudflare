@@ -5,6 +5,7 @@ param(
   [string]$CustomIconPath = "",
   [string]$LocalRemoteUrl = "https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com",
   [string]$ThinkCentre10RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-10.bit68-infra.com",
+  [string]$ThinkCentre11RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-11.bit68-infra.com",
   [string]$ThinkCentre1RemoteUrl = "https://mobile-harness-remote-windows-cloudflare-thinkcentre-1.bit68-infra.com"
 )
 
@@ -15,8 +16,9 @@ Add-Type -AssemblyName System.Security
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $AppDir "..\..")).Path
 $BuildScript = Join-Path $RepoRoot "windows\Build-WebViewWrapper.ps1"
+$ShortcutAppIdScript = Join-Path $RepoRoot "windows\Set-ShortcutAppUserModelId.ps1"
 $IconPath = if ([string]::IsNullOrWhiteSpace($CustomIconPath)) {
-  Join-Path $RepoRoot "windows\IbrahimHP\ibrahim-hp.ico"
+  Join-Path $RepoRoot "windows\ControlRoom\icons\control-room-1.ico"
 } else {
   (Resolve-Path -LiteralPath $CustomIconPath).Path
 }
@@ -135,10 +137,12 @@ function New-AppShortcut {
   $shortcut.Save()
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) | Out-Null
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+  & $ShortcutAppIdScript -ShortcutPath $ShortcutPath -AppId $AppUserModelId
 }
 
 $localToken = Read-EnvToken -Path $LocalEnvPath
 $thinkCentre10Token = Read-RemoteToken -SshHost "thinkcentre-10" -MachineName "ThinkCentre 10"
+$thinkCentre11Token = Read-RemoteToken -SshHost "thinkcentre-11" -MachineName "ThinkCentre 11"
 $thinkCentre1Token = Read-RemoteToken -SshHost "thinkcentre-1" -MachineName "TC1"
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
@@ -156,6 +160,12 @@ $profileConfig = @{
       name = "ThinkCentre 10"
       url = $ThinkCentre10RemoteUrl.TrimEnd('/')
       encryptedToken = Protect-ForCurrentUser -Value $thinkCentre10Token
+    },
+    @{
+      id = "thinkcentre-11"
+      name = "ThinkCentre 11"
+      url = $ThinkCentre11RemoteUrl.TrimEnd('/')
+      encryptedToken = Protect-ForCurrentUser -Value $thinkCentre11Token
     },
     @{
       id = "thinkcentre-1"

@@ -274,6 +274,10 @@ function projectNameFromPath(projectPath: string): string {
   return path.posix.basename(projectPath.replace(/\\/g, "/"));
 }
 
+export function chatDeepLink(chatId: string): string {
+  return `/?chat=${encodeURIComponent(chatId)}`;
+}
+
 export function formatJobPushNotification(
   job: CodexRunJob,
   event: "completed" | "failed",
@@ -300,7 +304,7 @@ export async function sendJobPushNotification(job: CodexRunJob, event: "complete
     title,
     body,
     tag: `codex-job-${job.id}`,
-    url: "/",
+    url: chatDeepLink(job.chatId),
     icon: "/icon-192.png",
     badge: "/apple-touch-icon.png",
     jobId: job.id,

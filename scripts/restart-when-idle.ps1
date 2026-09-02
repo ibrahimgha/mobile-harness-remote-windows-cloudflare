@@ -2,10 +2,13 @@ param(
   [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
   [ValidateRange(1, 60)]
   [int]$PollSeconds = 3,
-  [ValidateRange(1, 1440)]
+  [ValidateRange(0, 525600)]
   [int]$MaxWaitMinutes = 120,
   [string]$LogPath = "",
-  [string]$TaskName = ""
+  [string]$TaskName = "",
+  [string]$StartupShortcutPath = "",
+  [string]$ResumeChatId = "",
+  [string]$ResumeText = "resume"
 )
 
 Set-StrictMode -Version Latest
@@ -58,7 +61,7 @@ function Append-ProcessOutput {
 try {
   Write-RestartLog "Restart helper started"
   $token = Get-ControlToken
-  $deadline = (Get-Date).AddMinutes($MaxWaitMinutes)
+  $deadline = if ($MaxWaitMinutes -eq 0) { [DateTime]::MaxValue } else { (Get-Date).AddMinutes($MaxWaitMinutes) }
   $ready = $false
 
   while ((Get-Date) -lt $deadline) {
@@ -130,8 +133,23 @@ try {
 
   Write-RestartLog "Restart verified newPid=$newAppProcessId health=True"
 
+  if (-not [string]::IsNullOrWhiteSpace($ResumeChatId)) {
+    $resumeBody = @{ text = $ResumeText; clientRequestId = "restart-resume-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" } | ConvertTo-Json -Compress
+    $resumeResult = Invoke-RestMethod `
+      -Uri "http://127.0.0.1:8787/api/chats/$([Uri]::EscapeDataString($ResumeChatId))/prompt" `
+      -Method Post `
+      -Headers @{ "x-control-token" = $token } `
+      -ContentType "application/json" `
+      -Body $resumeBody `
+      -TimeoutSec 30
+    Write-RestartLog "Resume prompt submitted chatId=$ResumeChatId disposition=$($resumeResult.disposition)"
+  }
+
   if (-not [string]::IsNullOrWhiteSpace($TaskName)) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  }
+  if (-not [string]::IsNullOrWhiteSpace($StartupShortcutPath)) {
+    Remove-Item -LiteralPath $StartupShortcutPath -Force -ErrorAction SilentlyContinue
   }
 } catch {
   Write-RestartLog "Restart failed: $($_.Exception.Message)"

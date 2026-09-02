@@ -55,3 +55,18 @@ export function applySidebarOrder<TChat extends SidebarChat, TProject extends Si
     chats: preserveKnownOrder(project.chats, snapshot.chatIdsByProject[project.projectPath] ?? [], (chat) => chat.id)
   }));
 }
+
+export function nextProjectCollapseState(current: Set<string>, projectPaths: string[]): Set<string> {
+  const allCollapsed = projectPaths.length > 0 && projectPaths.every((projectPath) => current.has(projectPath));
+  const next = new Set(current);
+
+  for (const projectPath of projectPaths) {
+    if (allCollapsed) {
+      next.delete(projectPath);
+    } else {
+      next.add(projectPath);
+    }
+  }
+
+  return next;
+}

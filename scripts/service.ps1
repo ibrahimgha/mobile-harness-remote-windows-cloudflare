@@ -294,6 +294,38 @@ function Test-Pid {
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
+function Test-ManagedPid {
+  param(
+    [Nullable[int]]$ProcessId,
+    [ValidateSet("app", "tunnel")]
+    [string]$Kind
+  )
+
+  if ($null -eq $ProcessId) {
+    return $false
+  }
+
+  try {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+    if ($null -eq $process) {
+      return $false
+    }
+
+    $name = [string]$process.Name
+    $commandLine = [string]$process.CommandLine
+    if ($Kind -eq "app") {
+      return $name.Equals("node.exe", [StringComparison]::OrdinalIgnoreCase) -and
+        $commandLine.IndexOf($ServerEntry, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    }
+
+    return $name.Equals("cloudflared.exe", [StringComparison]::OrdinalIgnoreCase) -and
+      $commandLine.IndexOf($TunnelName, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+      $commandLine.IndexOf($CloudflaredConfig, [StringComparison]::OrdinalIgnoreCase) -ge 0
+  } catch {
+    return $false
+  }
+}
+
 function Get-PidAgeSeconds {
   param([Nullable[int]]$ProcessId)
 
@@ -332,18 +364,31 @@ function Test-PublicHealth {
 function Stop-PidFile {
   param(
     [string]$Name,
-    [string]$Path
+    [string]$Path,
+    [ValidateSet("app", "tunnel")]
+    [string]$Kind
   )
 
   $processIds = @(Read-Pids -Path $Path)
   $stoppedAny = $false
 
   foreach ($processId in $processIds | Select-Object -Unique) {
-    if (Test-Pid -ProcessId $processId) {
-      Stop-Process -Id $processId -Force
+    if (Test-ManagedPid -ProcessId $processId -Kind $Kind) {
+      if ($Kind -eq "app") {
+        # Stop the full Node/Codex process tree. The runner journal converts any
+        # interrupted in-flight work into a same-settings `resume` job on boot.
+        & taskkill.exe /PID $processId /T /F 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0 -and (Test-Pid -ProcessId $processId)) {
+          Stop-Process -Id $processId -Force
+        }
+      } else {
+        Stop-Process -Id $processId -Force
+      }
       Write-Host "Stopped $Name (pid $processId)"
       Write-ServiceLog "Stopped $Name pid=$processId"
       $stoppedAny = $true
+    } elseif (Test-Pid -ProcessId $processId) {
+      Write-ServiceLog "$Name pid file pointed to a different process; removed stale pid=$processId without stopping it"
     } elseif ($null -ne $processId) {
       Write-ServiceLog "$Name was not running; removed stale pid=$processId"
     }
@@ -362,6 +407,8 @@ function Stop-PidFile {
 function Start-ManagedProcess {
   param(
     [string]$Name,
+    [ValidateSet("app", "tunnel")]
+    [string]$Kind,
     [string]$PidPath,
     [string]$FilePath,
     [string[]]$Arguments,
@@ -370,7 +417,7 @@ function Start-ManagedProcess {
   )
 
   $existingPid = Read-Pid -Path $PidPath
-  if (Test-Pid -ProcessId $existingPid) {
+  if (Test-ManagedPid -ProcessId $existingPid -Kind $Kind) {
     Write-Host "$Name is already running (pid $existingPid)"
     Write-ServiceLog "$Name already running pid=$existingPid"
     return
@@ -425,23 +472,46 @@ function Start-Remote {
 
   $appPid = Read-Pid -Path $AppPidFile
   $tunnelPid = Read-Pid -Path $TunnelPidFile
-  $appRunning = Test-Pid -ProcessId $appPid
-  $tunnelRunning = Test-Pid -ProcessId $tunnelPid
+  $appRunning = Test-ManagedPid -ProcessId $appPid -Kind "app"
+  $tunnelRunning = Test-ManagedPid -ProcessId $tunnelPid -Kind "tunnel"
 
-  if ($appRunning -and (Get-PidAgeSeconds -ProcessId $appPid) -gt 25 -and -not (Test-LocalHealth)) {
-    Write-Host "Codex window remote app is running but unhealthy; restarting it."
-    Write-ServiceLog "App pid=$appPid failed local health check; restarting"
-    Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile
-    $appPid = $null
-    $appRunning = $false
+  if ($appRunning -and (Get-PidAgeSeconds -ProcessId $appPid) -gt 25) {
+    $localHealthy = Test-LocalHealth
+    if (-not $localHealthy) {
+      Write-ServiceLog "App pid=$appPid failed first local health check; retrying before restart"
+      Start-Sleep -Seconds 3
+      $localHealthy = Test-LocalHealth
+    }
+
+    if (-not $localHealthy) {
+      Write-Host "Codex window remote app is running but unhealthy; restarting it."
+      Write-ServiceLog "App pid=$appPid failed confirmed local health check; restarting"
+      Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile -Kind "app"
+      $appPid = $null
+      $appRunning = $false
+    }
   }
 
-  if ($tunnelRunning -and $appRunning -and (Get-PidAgeSeconds -ProcessId $tunnelPid) -gt 35 -and -not (Test-PublicHealth)) {
-    Write-Host "Cloudflare tunnel is running but public health failed; restarting it."
-    Write-ServiceLog "Tunnel pid=$tunnelPid failed public health check; restarting"
-    Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile
-    $tunnelPid = $null
-    $tunnelRunning = $false
+  if (
+    $tunnelRunning -and
+    $appRunning -and
+    (Get-PidAgeSeconds -ProcessId $tunnelPid) -gt 35 -and
+    (Get-PidAgeSeconds -ProcessId $appPid) -gt 35
+  ) {
+    $publicHealthy = Test-PublicHealth
+    if (-not $publicHealthy) {
+      Write-ServiceLog "Tunnel pid=$tunnelPid failed first public health check; retrying before restart"
+      Start-Sleep -Seconds 5
+      $publicHealthy = Test-PublicHealth
+    }
+
+    if (-not $publicHealthy) {
+      Write-Host "Cloudflare tunnel is running but public health failed; restarting it."
+      Write-ServiceLog "Tunnel pid=$tunnelPid failed confirmed public health check; restarting"
+      Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile -Kind "tunnel"
+      $tunnelPid = $null
+      $tunnelRunning = $false
+    }
   }
 
   if ($appRunning -and $tunnelRunning) {
@@ -460,6 +530,7 @@ function Start-Remote {
 
   Start-ManagedProcess `
     -Name "Codex window remote app" `
+    -Kind "app" `
     -PidPath $AppPidFile `
     -FilePath $nodeExe `
     -Arguments @($ServerEntry) `
@@ -470,6 +541,7 @@ function Start-Remote {
 
   Start-ManagedProcess `
     -Name "Cloudflare tunnel" `
+    -Kind "tunnel" `
     -PidPath $TunnelPidFile `
     -FilePath $cloudflaredExe `
     -Arguments @("--config", $CloudflaredConfig, "tunnel", "run", $TunnelName) `
@@ -479,19 +551,34 @@ function Start-Remote {
   Write-Host "Public URL: https://$PublicHost"
 }
 
+function Turn-Off-ControlRoomLed {
+  try {
+    Sync-ProjectControlToken
+    $headers = @{}
+    if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_TOKEN)) {
+      $headers["x-control-token"] = $env:CONTROL_TOKEN
+    }
+    Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8787/api/control-room/led/off" -Headers $headers -TimeoutSec 4 | Out-Null
+    Write-ServiceLog "Turned off Control Room macro-pad LED before stopping the app"
+  } catch {
+    Write-ServiceLog "Could not turn off Control Room macro-pad LED before app stop: $($_.Exception.Message)"
+  }
+}
+
 function Stop-Remote {
   Ensure-Directories
+  Turn-Off-ControlRoomLed
   Disable-Remote
-  Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile
-  Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile
+  Stop-PidFile -Name "Cloudflare tunnel" -Path $TunnelPidFile -Kind "tunnel"
+  Stop-PidFile -Name "Codex window remote app" -Path $AppPidFile -Kind "app"
 }
 
 function Show-Status {
   Ensure-Directories
   $appPid = Read-Pid -Path $AppPidFile
   $tunnelPid = Read-Pid -Path $TunnelPidFile
-  $appRunning = Test-Pid -ProcessId $appPid
-  $tunnelRunning = Test-Pid -ProcessId $tunnelPid
+  $appRunning = Test-ManagedPid -ProcessId $appPid -Kind "app"
+  $tunnelRunning = Test-ManagedPid -ProcessId $tunnelPid -Kind "tunnel"
   $watchdogInstalled = Test-WatchdogTaskInstalled
   $startupCmdExists = Test-Path -LiteralPath $StartupCmd
   $remoteDisabled = Test-RemoteDisabled
@@ -513,12 +600,20 @@ function Show-Status {
   }
 }
 
+function Install-StartupCommand {
+  $command = "@echo off`r`nwscript.exe //B `"$WatchdogScript`"`r`n"
+  Set-Content -LiteralPath $StartupCmd -Value $command -Encoding ascii
+  Write-Host "Installed startup fallback: $StartupCmd"
+  Write-ServiceLog "Installed startup fallback $StartupCmd"
+}
+
 function Install-StartupTask {
   $action = New-ScheduledTaskAction `
     -Execute "wscript.exe" `
     -Argument "//B `"$WatchdogScript`"" `
     -WorkingDirectory $ProjectRoot
   $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
+  $startupTrigger = New-ScheduledTaskTrigger -AtStartup
   $watchdogTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -543,32 +638,31 @@ function Install-StartupTask {
     Register-ScheduledTask `
       -TaskName $TaskName `
       -Action $action `
-      -Trigger @($logonTrigger, $watchdogTrigger) `
+      -Trigger @($startupTrigger, $logonTrigger, $watchdogTrigger) `
       -Principal $principal `
       -Settings $settings `
       -Description "Keeps the Codex Window Remote app and Cloudflare tunnel running." `
       -Force | Out-Null
 
-    Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
     Write-Host "Installed watchdog task: $TaskName"
     Write-ServiceLog "Installed watchdog scheduled task $TaskName"
     Update-WatchdogTaskSettings
+    Install-StartupCommand
   } catch {
     Write-ServiceLog "Scheduled task install failed: $($_.Exception.Message)"
     $taskRun = "wscript.exe //B `"$WatchdogScript`""
     & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO 1 /TR $taskRun /F | Out-Host
     if ($LASTEXITCODE -eq 0) {
-      Remove-Item -LiteralPath $StartupCmd -Force -ErrorAction SilentlyContinue
       Write-Host "Installed watchdog task with schtasks.exe: $TaskName"
       Write-ServiceLog "Installed watchdog scheduled task with schtasks.exe $TaskName"
       Update-WatchdogTaskSettings
+      Install-StartupCommand
       return
     }
 
     Write-ServiceLog "schtasks.exe install failed with exit code $LASTEXITCODE"
-    $command = "@echo off`r`nwscript.exe //B `"$WatchdogScript`"`r`n"
-    Set-Content -LiteralPath $StartupCmd -Value $command -Encoding ascii
-    Write-Host "Scheduled task unavailable; installed startup command: $StartupCmd"
+    Install-StartupCommand
+    Write-Host "Scheduled task unavailable; the startup fallback will launch the watchdog at logon."
   }
 }
 

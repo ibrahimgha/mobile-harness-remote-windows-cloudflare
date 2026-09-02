@@ -3,6 +3,10 @@ credentials-file: C:/Users/ibrah/.cloudflared/d7585ebe-ef27-4d6f-a22c-cd9a8caedd
 protocol: http2
 
 ingress:
+  - hostname: unc-Ibrahim-HP.bit68-infra.com
+    service: http://localhost:6768
   - hostname: mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com
-    service: http://localhost:8787
+    service: http://127.0.0.1:8787
+  - hostname: ibrahim-hp-ssh.bit68-infra.com
+    service: ssh://localhost:22
   - service: http_status:404

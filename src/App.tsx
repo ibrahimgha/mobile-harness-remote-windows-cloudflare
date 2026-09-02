@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleX,
   Clock3,
   Copy,
@@ -26,7 +28,9 @@ import {
   Mic,
   MonitorUp,
   Paperclip,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -55,6 +59,8 @@ import {
   useState
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import { clipboardAttachmentFiles } from "./clipboardAttachments";
+import { advanceCompletionGlow, type CompletionGlowTracker } from "./controlRoomCompletion";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
@@ -74,8 +80,22 @@ import {
   nextLiveThinkingStatus,
   type LiveThinkingStatus
 } from "./liveThinking";
-import { applySidebarOrder, captureSidebarOrder, type SidebarOrderSnapshot } from "./sidebarOrder";
+import {
+  applySidebarOrder,
+  captureSidebarOrder,
+  nextProjectCollapseState,
+  type SidebarOrderSnapshot
+} from "./sidebarOrder";
 import { messageHtmlSchema } from "./messageHtml";
+import {
+  adjacentPowerSettingIndex,
+  resolveControlRoomShortcut,
+  type ControlRoomShortcutFeedback
+} from "./controlRoomShortcuts";
+import { ShortcutControlOverlay, useShortcutControlOverlay } from "./ShortcutControlOverlay";
+import { ChatSwitchOverlay, useChatSwitchOverlay } from "./ChatSwitchOverlay";
+import { DictationRecordingOverlay } from "./DictationRecordingOverlay";
+import type { VoiceAudioMetrics } from "./VoiceOrb";
 
 type BridgeState = {
   access: {
@@ -118,6 +138,7 @@ type CodexUsage = {
   updatedAt: string;
   fiveHour?: CodexUsageWindow;
   weekly?: CodexUsageWindow;
+  resetCreditsAvailable?: number;
 };
 
 type UsageRefreshResult = {
@@ -219,6 +240,7 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
   voiceNoteMimeType?: string;
   model?: string;
   reasoningEffort?: CodexRunSettings["reasoningEffort"];
+  speed?: CodexRunSettings["speed"];
 };
 
 type VisibleChatMessage = ChatTranscriptMessage & {
@@ -369,33 +391,19 @@ type DictationVoiceNote = {
   mimeType: string;
 };
 
-type SpeechRecognitionAlternativeLike = {
-  transcript: string;
-  confidence?: number;
-};
-
-type SpeechRecognitionResultLike = ArrayLike<SpeechRecognitionAlternativeLike> & {
-  isFinal: boolean;
-};
-
-type SpeechRecognitionLike = EventTarget & {
-  continuous: boolean;
-  interimResults: boolean;
-  maxAlternatives: number;
-  lang: string;
-  onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResultLike> }) => void) | null;
-  onerror: ((event: { error?: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-};
-
-type DictationCleanupResult = {
+type DictationTranscriptionResult = {
   ok: boolean;
   text?: string;
-  source?: "codex" | "browser";
+  source?: "openai";
   message?: string;
+};
+
+type PendingDictationAudio = {
+  blob: Blob;
+  chatId: string;
+  draft: string;
+  selection: TextSelection;
+  mode: "insert" | "send";
 };
 
 type PromptReceipt = {
@@ -462,6 +470,7 @@ type ChatMessageViewMode = "final" | "codex";
 
 const tokenKey = "control-token";
 const controlRoomParams = new URLSearchParams(window.location.search);
+const notificationChatId = controlRoomParams.get("chat")?.trim() ?? "";
 const controlRoomSlotId = controlRoomParams.get("control-room-slot")?.trim() ?? "";
 const controlRoomParentOrigin = controlRoomParams.get("control-room-origin")?.trim() ?? "";
 const isControlRoomTile = controlRoomParams.get("control-room-tile") === "1" && Boolean(controlRoomSlotId);
@@ -484,8 +493,8 @@ const activeJobsCacheKey = "active-jobs-cache-v1";
 const selectedChatIdKey = controlRoomSlotId ? `selected-chat-id:${controlRoomSlotId}` : "selected-chat-id";
 const controlRoomMenuOpenKey = controlRoomSlotId ? `menu-open:${controlRoomSlotId}` : "";
 const chatMessageViewModesKey = "chat-message-view-modes-v1";
-const defaultChatMessageViewMode: ChatMessageViewMode = "codex";
-const chatMessageViewModeOrder: ChatMessageViewMode[] = ["codex", "final"];
+const defaultChatMessageViewMode: ChatMessageViewMode = "final";
+const chatMessageViewModeOrder: ChatMessageViewMode[] = ["final", "codex"];
 const maxCachedChatHistories = 20;
 const maxCachedChatStorageBytes = 2 * 1024 * 1024;
 const maxCachedChatBytes = 160 * 1024;
@@ -500,6 +509,9 @@ const shortcutInstructionSyncIntervalMs = 3000;
 const backgroundSyncIntervalMs = 5000;
 const activeJobSyncIntervalMs = 4000;
 const sessionActivitySyncIntervalMs = 4000;
+const controlRoomBackgroundSyncIntervalMs = 30_000;
+const controlRoomActiveJobSyncIntervalMs = 10_000;
+const controlRoomSessionActivitySyncIntervalMs = 30_000;
 const socketReconnectMs = 1500;
 const socketWatchdogMs = 5000;
 const socketConnectTimeoutMs = 12000;
@@ -689,21 +701,26 @@ function formatElapsedSeconds(startValue: string | undefined, endValue: string |
   return `${minutes}:${paddedSeconds}`;
 }
 
-function formatDate(value: string) {
+function formatDate(value: string, compact = false) {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
     return "";
   }
 
-  return date.toLocaleString(undefined, {
-    year: "numeric",
+  const options: Intl.DateTimeFormatOptions = {
     month: "numeric",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     hour12: true
-  });
+  };
+
+  if (!compact) {
+    options.year = "numeric";
+  }
+
+  return date.toLocaleString(undefined, options);
 }
 
 function messageAgeSeconds(createdAt: string, nowMs: number) {
@@ -723,7 +740,7 @@ function formatMessageAge(createdAt: string, nowMs: number) {
 }
 
 function messageRunSettingsLabel(message: VisibleChatMessage, options: CodexRunSettingsOptions | undefined) {
-  if (!message.model && !message.reasoningEffort) {
+  if (!message.model && !message.reasoningEffort && message.kind !== "user_prompt") {
     return "";
   }
 
@@ -731,7 +748,8 @@ function messageRunSettingsLabel(message: VisibleChatMessage, options: CodexRunS
     ? options?.modelCapabilities?.[message.model]?.label ?? settingLabel(message.model)
     : "Default";
   const reasoningLabel = message.reasoningEffort ? settingLabel(message.reasoningEffort) : "Default";
-  return `${modelLabel} · ${reasoningLabel}`;
+  const speedLabel = message.speed === "priority" ? "Fast" : message.speed === "default" ? "Standard" : "Speed unknown";
+  return `${modelLabel} · ${reasoningLabel} · ${speedLabel}`;
 }
 
 function responseRunDuration(messages: ChatTranscriptMessage[], responseIndex: number) {
@@ -824,48 +842,6 @@ function previewText(text: string, fallback: string) {
   return normalized.length > 84 ? `${normalized.slice(0, 81)}...` : normalized;
 }
 
-function cleanDictatedPrompt(text: string) {
-  return text
-    .replace(/\bnew line\b/gi, "\n")
-    .replace(/\bnew paragraph\b/gi, "\n\n")
-    .replace(/\bcomma\b/gi, ",")
-    .replace(/\bperiod\b/gi, ".")
-    .replace(/\bfull stop\b/gi, ".")
-    .replace(/\bquestion mark\b/gi, "?")
-    .replace(/\bexclamation mark\b/gi, "!")
-    .replace(/\s+([,.?!])/g, "$1")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function bestSpeechRecognitionTranscript(result: SpeechRecognitionResultLike | undefined) {
-  if (!result?.length) {
-    return "";
-  }
-
-  let best = result[0];
-  for (let index = 1; index < result.length; index += 1) {
-    const candidate = result[index];
-    if ((candidate?.confidence ?? -1) > (best?.confidence ?? -1)) {
-      best = candidate;
-    }
-  }
-
-  return best?.transcript?.trim() ?? "";
-}
-
-function speechRecognitionConstructor() {
-  const candidate = window as typeof window & {
-    SpeechRecognition?: new () => SpeechRecognitionLike;
-    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-  };
-
-  return candidate.SpeechRecognition ?? candidate.webkitSpeechRecognition;
-}
-
 function supportedAudioMimeType() {
   if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
     return "";
@@ -934,7 +910,7 @@ function createOptimisticPromptMessages(
   createdAt: string,
   messageId = optimisticPromptId(createdAt),
   voiceNote?: DictationVoiceNote,
-  runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort">
+  runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">
 ) {
   const messages: ChatTranscriptMessage[] = [];
 
@@ -959,7 +935,8 @@ function createOptimisticPromptMessages(
     text,
     createdAt,
     model: runSettings?.model,
-    reasoningEffort: runSettings?.reasoningEffort
+    reasoningEffort: runSettings?.reasoningEffort,
+    speed: runSettings?.speed
   });
 
   return messages;
@@ -1317,7 +1294,7 @@ function cachedAtMs(value: string) {
 }
 
 function cachedChatMode(item: CachedChatHistory): ChatMessageViewMode {
-  return isChatMessageViewMode(item.mode) ? item.mode : "codex";
+  return isChatMessageViewMode(item.mode) ? item.mode : defaultChatMessageViewMode;
 }
 
 function cachedChatCanSatisfyMode(item: CachedChatHistory, mode: ChatMessageViewMode) {
@@ -1782,7 +1759,8 @@ function jobRunSettingsLabel(job: CodexRunJob, options: CodexRunSettingsOptions 
     ? options?.modelCapabilities?.[job.settings.model]?.label ?? settingLabel(job.settings.model)
     : "Default";
   const reasoningLabel = job.settings?.reasoningEffort ? settingLabel(job.settings.reasoningEffort) : "Default";
-  return `${modelLabel} · ${reasoningLabel}`;
+  const speedLabel = job.settings?.speed === "priority" ? "Fast" : job.settings?.speed === "default" ? "Standard" : "Speed unknown";
+  return `${modelLabel} · ${reasoningLabel} · ${speedLabel}`;
 }
 
 function deliveryLabel(state: BridgeState | null) {
@@ -2274,15 +2252,69 @@ const FormattedMessage = memo(function FormattedMessage({
 });
 
 function VoiceNotePlayer({ message }: { message: VisibleChatMessage }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
   if (!message.voiceNoteUrl) {
     return <div className="message-empty">Voice note unavailable.</div>;
   }
 
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) void audio.play();
+    else audio.pause();
+  };
+
+  const seek = (value: string) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const nextTime = Number(value);
+    audio.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  };
+
+  const progress = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+
   return (
     <div className="voice-note-player">
-      <audio controls src={message.voiceNoteUrl}>
-        Voice note
-      </audio>
+      <audio
+        ref={audioRef}
+        src={message.voiceNoteUrl}
+        preload="metadata"
+        onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={(event) => {
+          event.currentTarget.currentTime = 0;
+          setPlaying(false);
+          setCurrentTime(0);
+        }}
+      />
+      <button
+        className="voice-note-play-button"
+        type="button"
+        onClick={togglePlayback}
+        aria-label={playing ? "Pause voice recording" : "Play voice recording"}
+        title={playing ? "Pause" : "Play"}
+      >
+        {playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
+      </button>
+      <input
+        className="voice-note-progress"
+        type="range"
+        min="0"
+        max={Math.max(duration, 0.01)}
+        step="0.01"
+        value={Math.min(currentTime, Math.max(duration, 0.01))}
+        onChange={(event) => seek(event.currentTarget.value)}
+        aria-label="Voice recording position"
+        style={{ "--voice-progress": `${progress}%` } as CSSProperties}
+      />
     </div>
   );
 }
@@ -3225,8 +3257,8 @@ const codexPowerSettings: Array<{
   effortLabel: string;
 }> = [
   { model: "gpt-5.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium" },
-  { model: "gpt-5.6-luna", reasoningEffort: "high", modelLabel: "Luna", effortLabel: "High" },
-  { model: "gpt-5.6-terra", reasoningEffort: "medium", modelLabel: "Terra", effortLabel: "Medium" },
+  { model: "gpt-5.6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max" },
+  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Light" },
   { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium" },
   { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High" },
   { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "Sol", effortLabel: "Ultra" }
@@ -3254,9 +3286,14 @@ function UsageBar({
   const resetLabel = resetExpired
     ? "Last reported"
     : resetDate && !Number.isNaN(resetDate.getTime())
-      ? label === "Weekly"
-        ? resetDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-        : resetDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
+      ? resetDate.toLocaleString(undefined, {
+          weekday: "short",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit"
+        })
       : "Waiting for Codex usage data";
   const title = !usage
     ? `${label} usage unavailable`
@@ -3572,6 +3609,10 @@ function RunSettingsPanel({
       <div className="usage-meters" aria-label="Codex usage limits">
         <UsageBar label="5 hours" usage={usage?.fiveHour} refreshing={usageRefreshing} onRefresh={onRefreshUsage} />
         <UsageBar label="Weekly" usage={usage?.weekly} />
+        <div className="usage-reset-credits">
+          <span>Resets available</span>
+          <strong>{usage?.resetCreditsAvailable ?? "—"}</strong>
+        </div>
       </div>
     </section>
   );
@@ -3665,6 +3706,9 @@ function RunBoard({
 export function App() {
   const initialChatSelection = useMemo(() => {
     if (isFreshControlRoomStart) return { id: null, chat: null };
+    if (notificationChatId) {
+      return { id: notificationChatId, chat: getCachedChatHistory(notificationChatId) };
+    }
     const storedChatId = readStoredSelectedChatId();
     const storedChat = storedChatId ? getCachedChatHistory(storedChatId) : null;
     const fallbackChat = storedChat ?? (!storedChatId ? newestCachedChatHistory() : null);
@@ -3676,6 +3720,13 @@ export function App() {
   }, []);
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
+
+  useEffect(() => {
+    if (!notificationChatId) return;
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("chat");
+    window.history.replaceState(window.history.state, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+  }, []);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
     const saved = localStorage.getItem(collapsedProjectsKey);
 
@@ -3694,6 +3745,7 @@ export function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
+  const controlRoomVerificationRef = useRef<{ token: string; promise: Promise<void> } | null>(null);
   const [state, setState] = useState<BridgeState | null>(null);
   const [chatIndex, setChatIndex] = useState<ChatIndex | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(initialChatSelection.id);
@@ -3764,15 +3816,26 @@ export function App() {
   const customKeyboardEnabled = false;
   const [customKeyboardOpen, setCustomKeyboardOpen] = useState(false);
   const [customKeyboardMounted, setCustomKeyboardMounted] = useState(false);
+  const [dictationStarting, setDictationStarting] = useState(false);
   const [dictationRecording, setDictationRecording] = useState(false);
   const [dictationProcessing, setDictationProcessing] = useState(false);
+  const [dictationOverlayExitRequested, setDictationOverlayExitRequested] = useState(false);
+  const [dictationRetryAvailable, setDictationRetryAvailable] = useState(false);
   const [durationNow, setDurationNow] = useState(Date.now());
+  const shortcutOverlay = useShortcutControlOverlay();
+  const chatSwitchOverlay = useChatSwitchOverlay();
   const [liveThinkingDisplay, setLiveThinkingDisplay] = useState<{ runKey: string; status: LiveThinkingStatus }>({
     runKey: "",
     status: "Thinking"
   });
   const [scrollDistanceFromBottom, setScrollDistanceFromBottom] = useState(0);
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
+  const completionGlowTrackerRef = useRef<CompletionGlowTracker>({ chatId: null, pendingJobIds: [] });
+  const shortcutPressedCodesRef = useRef(new Set<string>());
+  const shortcutPowerIndexRef = useRef(-1);
+  const shortcutFastEnabledRef = useRef(false);
+  const pendingChatShortcutRef = useRef<{ chatId: string } | null>(null);
+  const chatShortcutCommitTimerRef = useRef<number | undefined>(undefined);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
@@ -3800,17 +3863,26 @@ export function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const dictationStreamRef = useRef<MediaStream | null>(null);
   const dictationChunksRef = useRef<Blob[]>([]);
-  const dictationRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const dictationFinalTranscriptRef = useRef("");
-  const dictationTranscriptRef = useRef("");
   const dictationChatIdRef = useRef<string | null>(null);
   const dictationDraftSnapshotRef = useRef("");
   const dictationDraftSelectionRef = useRef<TextSelection>({ start: 0, end: 0 });
+  const dictationSubmitModeRef = useRef<"insert" | "send">("insert");
+  const pendingDictationAudioRef = useRef<PendingDictationAudio | null>(null);
   const dictationSessionRef = useRef(0);
+  const dictationStartingRef = useRef(false);
   const dictationBarsRef = useRef<HTMLDivElement | null>(null);
   const dictationAudioContextRef = useRef<AudioContext | null>(null);
   const dictationAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const dictationAudioResumeHandlerRef = useRef<(() => void) | null>(null);
   const dictationWaveformFrameRef = useRef<number | undefined>(undefined);
+  const dictationOverlayExitTimerRef = useRef<number | undefined>(undefined);
+  const dictationAudioMetricsRef = useRef<VoiceAudioMetrics>({
+    amplitude: 0,
+    bass: 0,
+    mid: 0,
+    treble: 0,
+    peak: 0
+  });
   const chatShouldAutoScrollRef = useRef(true);
   const forceNextChatScrollRef = useRef(false);
   const preserveChatScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
@@ -3820,6 +3892,12 @@ export function App() {
   const chatMessageViewModesRef = useRef<Record<string, ChatMessageViewMode>>(chatMessageViewModes);
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const notificationStatusRef = useRef<RemoteNotificationState>("default");
+  useEffect(
+    () => () => {
+      if (dictationOverlayExitTimerRef.current !== undefined) window.clearTimeout(dictationOverlayExitTimerRef.current);
+    },
+    []
+  );
   const recordKeyboardTrace = useCallback((event: KeyboardTraceData) => {
     keyboardTraceSequenceRef.current += 1;
     keyboardTraceBufferRef.current.push({
@@ -4192,9 +4270,48 @@ export function App() {
       (state?.runner.recentJobs ?? []).filter((job) => job.chatId === selectedChatId)
     );
   }, [chatJobs, selectedChatId, state?.runner.recentJobs]);
+
+  useEffect(() => {
+    if (!isControlRoomTile || window.parent === window) return;
+
+    const advanced = advanceCompletionGlow(completionGlowTrackerRef.current, selectedChatId, selectedJobs);
+    completionGlowTrackerRef.current = advanced.tracker;
+
+    if (advanced.completedJobId && selectedChatId) {
+      window.parent.postMessage(
+        {
+          type: "codex-control-room-task-complete",
+          slotId: controlRoomSlotId,
+          chatId: selectedChatId,
+          jobId: advanced.completedJobId
+        },
+        controlRoomParentOrigin || "*"
+      );
+    }
+  }, [selectedChatId, selectedJobs]);
+
+  useEffect(() => {
+    if (!isControlRoomTile || window.parent === window) return;
+
+    const reportControlRoomInteraction = () => {
+      window.parent.postMessage(
+        { type: "codex-control-room-active", slotId: controlRoomSlotId },
+        controlRoomParentOrigin || "*"
+      );
+      window.parent.postMessage(
+        { type: "codex-control-room-task-complete-dismiss", slotId: controlRoomSlotId },
+        controlRoomParentOrigin || "*"
+      );
+    };
+
+    window.addEventListener("pointerdown", reportControlRoomInteraction, true);
+    return () => window.removeEventListener("pointerdown", reportControlRoomInteraction, true);
+  }, []);
   const selectedChatMessageViewMode = selectedChatId ? (chatMessageViewModes[selectedChatId] ?? defaultChatMessageViewMode) : defaultChatMessageViewMode;
   const selectedChatMessageViewMeta = chatMessageViewModeMeta(selectedChatMessageViewMode);
   const projectOptions = useMemo(() => chatIndex?.projects ?? [], [chatIndex?.projects]);
+  const allProjectsCollapsed =
+    projectOptions.length > 0 && projectOptions.every((project) => collapsedProjects.has(project.projectPath));
   const normalizedSidebarSearch = sidebarSearch.trim().toLowerCase();
 
   useEffect(() => {
@@ -4754,7 +4871,7 @@ export function App() {
           icon: "/icon-192.png",
           badge: "/apple-touch-icon.png",
           data: {
-            url: "/",
+            url: payload.chatId ? `/?chat=${encodeURIComponent(payload.chatId)}` : "/",
             chatId: payload.chatId,
             jobId: payload.jobId
           }
@@ -4950,6 +5067,20 @@ export function App() {
     []
   );
 
+  const verifyControlRoomToken = useCallback((value: string) => {
+    const current = controlRoomVerificationRef.current;
+    if (current?.token === value) return current.promise;
+
+    const promise = verifyToken(value);
+    controlRoomVerificationRef.current = { token: value, promise };
+    void promise.finally(() => {
+      if (controlRoomVerificationRef.current?.promise === promise) {
+        controlRoomVerificationRef.current = null;
+      }
+    });
+    return promise;
+  }, [verifyToken]);
+
   useEffect(() => {
     if (!isControlRoomTile || window.parent === window) {
       return;
@@ -4962,7 +5093,9 @@ export function App() {
           type: "codex-control-room-status",
           slotId: controlRoomSlotId,
           status,
-          serverName
+          serverName,
+          projectName: selectedChatForActions?.projectName ?? "",
+          chatTitle: selectedChatForActions?.title ?? ""
         },
         targetOrigin
       );
@@ -4986,13 +5119,13 @@ export function App() {
         return;
       }
 
-      void verifyToken(message.token);
+      void verifyControlRoomToken(message.token);
     };
 
     window.addEventListener("message", receiveControlRoomAuthentication);
     notifyParent(authenticated ? "authenticated" : authError ? "unauthorized" : "ready", state?.server.name);
     return () => window.removeEventListener("message", receiveControlRoomAuthentication);
-  }, [authError, authenticated, state?.server.name, token, verifyToken]);
+  }, [authError, authenticated, selectedChatForActions?.projectName, selectedChatForActions?.title, state?.server.name, token, verifyControlRoomToken]);
 
   const loadChats = useCallback(async () => {
     if (!authenticated) {
@@ -6097,7 +6230,7 @@ export function App() {
     createdAt: string,
     messageId = optimisticPromptId(createdAt),
     voiceNote?: DictationVoiceNote,
-    runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort">
+    runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">
   ) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
@@ -6212,7 +6345,7 @@ export function App() {
         }
 
         if (token) {
-          await verifyToken(token);
+          await (isControlRoomTile ? verifyControlRoomToken(token) : verifyToken(token));
           return;
         }
 
@@ -6224,7 +6357,7 @@ export function App() {
     }
 
     void bootstrap();
-  }, [token, verifyToken]);
+  }, [token, verifyControlRoomToken, verifyToken]);
 
   useEffect(() => {
     void loadChats();
@@ -6237,7 +6370,10 @@ export function App() {
     }
 
     void loadSessionActivity();
-    const interval = window.setInterval(() => void loadSessionActivity(), sessionActivitySyncIntervalMs);
+    const interval = window.setInterval(
+      () => void loadSessionActivity(),
+      isControlRoomTile ? controlRoomSessionActivitySyncIntervalMs : sessionActivitySyncIntervalMs
+    );
     return () => window.clearInterval(interval);
   }, [authenticated, loadSessionActivity]);
 
@@ -6403,7 +6539,6 @@ export function App() {
       }
 
       dictationSessionRef.current += 1;
-      dictationRecognitionRef.current?.abort();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
       }
@@ -6848,7 +6983,8 @@ export function App() {
         if (job) {
           rememberJob(job);
 
-          if (job.chatId === selectedChatIdRef.current) {
+          const jobReachedTerminalState = job.status === "completed" || job.status === "failed" || job.status === "stopped";
+          if (job.chatId === selectedChatIdRef.current && (!isControlRoomTile || jobReachedTerminalState)) {
             void loadChatJobs(job.chatId);
             void loadChatDetail(job.chatId, true);
           }
@@ -6930,10 +7066,10 @@ export function App() {
           void loadChatJobs(queuedChatId);
         }
       }
-    }, backgroundSyncIntervalMs);
+    }, isControlRoomTile && socketLive ? controlRoomBackgroundSyncIntervalMs : backgroundSyncIntervalMs);
 
     return () => window.clearInterval(interval);
-  }, [authenticated, loadChatDetail, loadChatJobs, loadState, queuedServerJobs]);
+  }, [authenticated, loadChatDetail, loadChatJobs, loadState, queuedServerJobs, socketLive]);
 
   async function restoreQueuedJobToComposer(job: CodexRunJob) {
     if (job.status !== "queued") {
@@ -7032,7 +7168,7 @@ export function App() {
       void loadChats();
       void loadChatJobs(selectedChatId);
       void loadChatDetail(selectedChatId, true);
-    }, activeJobSyncIntervalMs);
+    }, isControlRoomTile ? controlRoomActiveJobSyncIntervalMs : activeJobSyncIntervalMs);
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadChats, selectedChatId, selectedJob]);
@@ -7042,7 +7178,7 @@ export function App() {
     await verifyToken(loginToken.trim());
   }
 
-  function addAttachments(files: FileList | null) {
+  function addAttachments(files: ArrayLike<File> | null) {
     if (!files?.length) {
       return;
     }
@@ -7333,6 +7469,13 @@ export function App() {
   }
 
   function resetDictationWaveformBars() {
+    const metrics = dictationAudioMetricsRef.current;
+    metrics.amplitude = 0;
+    metrics.bass = 0;
+    metrics.mid = 0;
+    metrics.treble = 0;
+    metrics.peak = 0;
+
     dictationBarsRef.current?.querySelectorAll("i").forEach((bar) => {
       bar.style.setProperty("--bar-level", "0.25");
     });
@@ -7347,6 +7490,13 @@ export function App() {
     dictationAudioSourceRef.current?.disconnect();
     dictationAudioSourceRef.current = null;
 
+    const resumeHandler = dictationAudioResumeHandlerRef.current;
+    if (resumeHandler) {
+      document.removeEventListener("visibilitychange", resumeHandler);
+      window.removeEventListener("pageshow", resumeHandler);
+      dictationAudioResumeHandlerRef.current = null;
+    }
+
     const audioContext = dictationAudioContextRef.current;
     dictationAudioContextRef.current = null;
     if (audioContext && audioContext.state !== "closed") {
@@ -7356,45 +7506,104 @@ export function App() {
     resetDictationWaveformBars();
   }
 
-  function startDictationWaveform(stream: MediaStream) {
+  function primeDictationAudioContext() {
     stopDictationWaveform();
 
     const AudioContextCtor =
       window.AudioContext ?? (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 
     if (!AudioContextCtor) {
-      return;
+      return null;
     }
 
     try {
       const audioContext = new AudioContextCtor();
+      dictationAudioContextRef.current = audioContext;
+      void audioContext.resume().catch(() => undefined);
+      return audioContext;
+    } catch {
+      return null;
+    }
+  }
+
+  function startDictationWaveform(stream: MediaStream, primedAudioContext: AudioContext | null) {
+    const AudioContextCtor =
+      window.AudioContext ?? (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (!primedAudioContext && !AudioContextCtor) {
+      return;
+    }
+
+    try {
+      const audioContext = primedAudioContext ?? (AudioContextCtor ? new AudioContextCtor() : null);
+      if (!audioContext) return;
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
 
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.78;
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+      const waveformData = new Uint8Array(analyser.fftSize);
       source.connect(analyser);
 
       dictationAudioContextRef.current = audioContext;
       dictationAudioSourceRef.current = source;
-      void audioContext.resume().catch(() => undefined);
+      const resumeAudio = () => {
+        if (document.visibilityState === "visible" && audioContext.state !== "running") {
+          void audioContext.resume().catch(() => undefined);
+        }
+      };
+      dictationAudioResumeHandlerRef.current = resumeAudio;
+      document.addEventListener("visibilitychange", resumeAudio);
+      window.addEventListener("pageshow", resumeAudio);
+      resumeAudio();
 
       const update = () => {
-        analyser.getByteFrequencyData(data);
+        analyser.getByteFrequencyData(frequencyData);
+        analyser.getByteTimeDomainData(waveformData);
+
+        let squaredTotal = 0;
+        let waveformPeak = 0;
+        for (const sample of waveformData) {
+          const normalized = (sample - 128) / 128;
+          squaredTotal += normalized * normalized;
+          waveformPeak = Math.max(waveformPeak, Math.abs(normalized));
+        }
+
+        const rms = Math.sqrt(squaredTotal / waveformData.length);
+        const bandAverage = (minimumHz: number, maximumHz: number) => {
+          const hertzPerBin = audioContext.sampleRate / analyser.fftSize;
+          const start = Math.max(1, Math.floor(minimumHz / hertzPerBin));
+          const end = Math.min(frequencyData.length, Math.ceil(maximumHz / hertzPerBin));
+          let total = 0;
+          for (let index = start; index < end; index += 1) total += frequencyData[index] ?? 0;
+          return total / Math.max(1, end - start) / 180;
+        };
+
+        const metrics = dictationAudioMetricsRef.current;
+        const amplitudeTarget = Math.min(1, Math.max(0, (rms - 0.012) * 5.8 + waveformPeak * 0.24));
+        const easeMetric = (current: number, target: number, attack: number, release: number) =>
+          current + (target - current) * (target > current ? attack : release);
+        // Keep the orb responsive in both directions: these values settle a
+        // microphone change in roughly 100ms at the analyser's frame rate.
+        metrics.amplitude = easeMetric(metrics.amplitude, amplitudeTarget, 0.4, 0.4);
+        metrics.peak = easeMetric(metrics.peak, Math.min(1, waveformPeak * 1.45), 0.4, 0.4);
+        metrics.bass = easeMetric(metrics.bass, Math.min(1, bandAverage(55, 260)), 0.24, 0.08);
+        metrics.mid = easeMetric(metrics.mid, Math.min(1, bandAverage(260, 2_200)), 0.22, 0.09);
+        metrics.treble = easeMetric(metrics.treble, Math.min(1, bandAverage(2_200, 8_500)), 0.2, 0.1);
 
         const bars = Array.from(dictationBarsRef.current?.querySelectorAll("i") ?? []);
         const barCount = bars.length;
         if (barCount) {
-          const bucketSize = Math.max(2, Math.floor((data.length * 0.72) / barCount));
+          const bucketSize = Math.max(2, Math.floor((frequencyData.length * 0.72) / barCount));
 
           bars.forEach((bar, index) => {
             const start = index * bucketSize;
-            const end = Math.min(data.length, start + bucketSize);
+            const end = Math.min(frequencyData.length, start + bucketSize);
             let total = 0;
 
             for (let dataIndex = start; dataIndex < end; dataIndex += 1) {
-              total += data[dataIndex] ?? 0;
+              total += frequencyData[dataIndex] ?? 0;
             }
 
             const average = total / Math.max(1, end - start);
@@ -7418,49 +7627,100 @@ export function App() {
     dictationStreamRef.current = null;
   }
 
-  function currentDictationTranscript() {
-    return cleanDictatedPrompt(dictationTranscriptRef.current || dictationFinalTranscriptRef.current);
-  }
+  function insertDictationTranscript(pending: PendingDictationAudio, transcript: string) {
+    const selection = normalizeTextSelection(pending.draft, pending.selection);
+    const before = pending.draft.slice(0, selection.start);
+    const after = pending.draft.slice(selection.end);
+    const insertion = `${before && !/\s$/.test(before) ? " " : ""}${transcript}${after && !/^\s/.test(after) ? " " : ""}`;
+    const mutation = insertTextAtSelection(pending.draft, selection, insertion);
+    setDraftForChat(pending.chatId, mutation.text);
 
-  async function waitForDictationTranscript(timeoutMs = 2200) {
-    const startedAt = Date.now();
-    let bestTranscript = currentDictationTranscript();
-
-    while (Date.now() - startedAt < timeoutMs) {
-      await delay(120);
-      const nextTranscript = currentDictationTranscript();
-
-      if (nextTranscript) {
-        bestTranscript = nextTranscript;
-      }
+    if (selectedChatIdRef.current === pending.chatId) {
+      latestDraftRef.current = mutation.text;
+      window.requestAnimationFrame(() => {
+        const editor = composerEditorRef.current;
+        if (!editor || editor.dataset.chatId !== pending.chatId) return;
+        syncComposerEditorText(editor, mutation.text);
+        composerSelectionRef.current = mutation.selection;
+        setComposerExpanded(composerShouldExpand(editor));
+        editor.focus();
+        restoreComposerSelection(editor, mutation.text, mutation.selection);
+      });
     }
-
-    return bestTranscript;
   }
 
-  async function improveDictationTranscript(chatId: string, rawTranscript: string) {
-    setNotice("Improving transcription...");
+  async function transcribeDictation(pending: PendingDictationAudio) {
+    pendingDictationAudioRef.current = pending;
+    setDictationRetryAvailable(false);
+    setDictationProcessing(true);
+    setNotice("Transcribing recording with conversation context...");
 
     try {
-      const result = await apiFetch<DictationCleanupResult>(`/api/chats/${encodeURIComponent(chatId)}/dictation/clean`, {
-        method: "POST",
-        body: JSON.stringify({
-          rawTranscript,
-          draftContext: dictationDraftSnapshotRef.current,
-          language: navigator.language || "en-US"
-        })
-      });
-      const cleaned = cleanDictatedPrompt(result.text ?? rawTranscript);
-      return cleaned || rawTranscript;
+      const result = await apiFetch<DictationTranscriptionResult>(
+        `/api/chats/${encodeURIComponent(pending.chatId)}/dictation/transcribe`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": pending.blob.type || "audio/webm",
+            "x-dictation-language": navigator.language || "en-US",
+            "x-dictation-draft": encodeURIComponent(pending.draft.slice(-2_000))
+          },
+          body: pending.blob
+        }
+      );
+      const transcript = result.text?.trim() ?? "";
+      if (!transcript) throw new Error("No speech was transcribed. Try recording again.");
+
+      if (pending.mode === "send") {
+        const voiceNoteUrl = await readBlobAsDataUrl(pending.blob).catch(() => URL.createObjectURL(pending.blob));
+        const accepted = await sendPrompt({
+          textOverride: transcript,
+          voiceNote: { url: voiceNoteUrl, mimeType: pending.blob.type || "audio recording" },
+          chatIdOverride: pending.chatId,
+          preserveDraft: true
+        });
+        if (!accepted) throw new Error("Prompt could not be sent");
+      } else {
+        insertDictationTranscript(pending, transcript);
+        setNotice("Transcription inserted. Review it, then send when ready.");
+      }
+      pendingDictationAudioRef.current = null;
     } catch (error) {
-      setNotice(error instanceof Error ? `${error.message}; using browser transcript` : "Using browser transcript");
-      return rawTranscript;
+      pendingDictationAudioRef.current = pending;
+      setDictationRetryAvailable(true);
+      setNotice(error instanceof Error ? `${error.message}. Recording kept for retry.` : "Transcription failed. Recording kept for retry.");
+    } finally {
+      setDictationOverlayExitRequested(true);
+      if (dictationOverlayExitTimerRef.current !== undefined) window.clearTimeout(dictationOverlayExitTimerRef.current);
+      dictationOverlayExitTimerRef.current = window.setTimeout(() => {
+        dictationOverlayExitTimerRef.current = undefined;
+        setDictationOverlayExitRequested(false);
+      }, 460);
+      setDictationProcessing(false);
     }
   }
 
-  function stopDictation() {
-    dictationRecognitionRef.current?.stop();
-    dictationRecognitionRef.current = null;
+  function retryDictationTranscription() {
+    const pending = pendingDictationAudioRef.current;
+    if (pending && !dictationProcessing) void transcribeDictation(pending);
+  }
+
+  function stopDictation(mode: "insert" | "send" = "send") {
+    dictationSubmitModeRef.current = mode;
+
+    if (dictationStartingRef.current) {
+      dictationSessionRef.current += 1;
+      dictationStartingRef.current = false;
+      stopDictationTracks();
+      mediaRecorderRef.current = null;
+      dictationChatIdRef.current = null;
+      dictationDraftSnapshotRef.current = "";
+      dictationDraftSelectionRef.current = { start: 0, end: 0 };
+      setDictationStarting(false);
+      setDictationRecording(false);
+      setDictationProcessing(false);
+      return;
+    }
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
@@ -7473,12 +7733,14 @@ export function App() {
     stopDictationTracks();
     dictationChatIdRef.current = null;
     dictationDraftSnapshotRef.current = "";
+    dictationStartingRef.current = false;
+    setDictationStarting(false);
     setDictationRecording(false);
     setDictationProcessing(false);
   }
 
   function cancelDictation() {
-    if (!dictationRecording) {
+    if (!dictationStartingRef.current && !dictationRecording) {
       return;
     }
 
@@ -7489,11 +7751,9 @@ export function App() {
       ? { chatId, text: draftSnapshot, selection: selectionSnapshot }
       : null;
 
-    // Invalidate speech and recorder callbacks before stopping either API. Some browsers
-    // dispatch their final events asynchronously, and a cancelled recording must never send.
+    // Invalidate recorder callbacks before stopping; a cancelled recording must never send.
     dictationSessionRef.current += 1;
-    dictationRecognitionRef.current?.abort();
-    dictationRecognitionRef.current = null;
+    dictationStartingRef.current = false;
 
     const recorder = mediaRecorderRef.current;
     mediaRecorderRef.current = null;
@@ -7503,13 +7763,14 @@ export function App() {
 
     stopDictationTracks();
     dictationChunksRef.current = [];
-    dictationFinalTranscriptRef.current = "";
-    dictationTranscriptRef.current = "";
+    pendingDictationAudioRef.current = null;
     dictationChatIdRef.current = null;
     dictationDraftSnapshotRef.current = "";
     dictationDraftSelectionRef.current = { start: 0, end: 0 };
+    setDictationStarting(false);
     setDictationRecording(false);
     setDictationProcessing(false);
+    setDictationRetryAvailable(false);
 
     if (composerSnapshot) {
       setDraftForChat(composerSnapshot.chatId, composerSnapshot.text);
@@ -7520,7 +7781,15 @@ export function App() {
   }
 
   async function startDictation() {
-    if (!selectedChatId || sending || dictationRecording || dictationProcessing) {
+    if (
+      singleChatAccess ||
+      !selectedChatId ||
+      sending ||
+      dictationStartingRef.current ||
+      dictationRecording ||
+      dictationProcessing ||
+      dictationOverlayExitRequested
+    ) {
       return;
     }
 
@@ -7529,20 +7798,41 @@ export function App() {
       return;
     }
 
-    const SpeechRecognition = speechRecognitionConstructor();
-
-    if (!SpeechRecognition) {
-      setNotice("Speech transcription is not supported in this browser.");
-      return;
-    }
-
     const composerSnapshot = preserveComposerForTransientFocus();
+    const dictationChatId = selectedChatId;
+    const draftSnapshot = composerSnapshot?.chatId === dictationChatId ? composerSnapshot.text : draft;
+    const selectionSnapshot =
+      composerSnapshot?.chatId === dictationChatId
+        ? composerSnapshot.selection
+        : normalizeTextSelection(draftSnapshot, composerSelectionRef.current);
     const dictationSessionId = dictationSessionRef.current + 1;
+    const dictationStartingVisualAt = performance.now();
     dictationSessionRef.current = dictationSessionId;
+    dictationStartingRef.current = true;
+    dictationChatIdRef.current = dictationChatId;
+    dictationDraftSnapshotRef.current = draftSnapshot;
+    dictationDraftSelectionRef.current = selectionSnapshot;
+    setDictationStarting(true);
+    setDictationRecording(false);
+    setDictationProcessing(false);
+    // Prime Web Audio synchronously inside the initiating tap. iOS may leave an
+    // AudioContext created after getUserMedia resolves permanently suspended.
+    const primedAudioContext = primeDictationAudioContext();
 
     try {
-      const dictationChatId = selectedChatId;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Yield through a paint before requesting the microphone. The overlay and
+      // its fade should respond to the tap immediately, even when permissions or
+      // device initialization take several seconds.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+      if (dictationSessionRef.current !== dictationSessionId) {
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: { ideal: 2 },
+          sampleRate: { ideal: 48_000 }
+        }
+      });
       if (dictationSessionRef.current !== dictationSessionId) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -7550,61 +7840,13 @@ export function App() {
 
       const mimeType = supportedAudioMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      const recognition = new SpeechRecognition();
-      const draftSnapshot = composerSnapshot?.chatId === dictationChatId ? composerSnapshot.text : draft;
-      const selectionSnapshot =
-        composerSnapshot?.chatId === dictationChatId
-          ? composerSnapshot.selection
-          : normalizeTextSelection(draftSnapshot, composerSelectionRef.current);
 
       dictationStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
-      dictationRecognitionRef.current = recognition;
       dictationChunksRef.current = [];
-      dictationFinalTranscriptRef.current = "";
-      dictationTranscriptRef.current = "";
-      dictationChatIdRef.current = dictationChatId;
-      dictationDraftSnapshotRef.current = draftSnapshot;
-      dictationDraftSelectionRef.current = selectionSnapshot;
-      startDictationWaveform(stream);
-
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 5;
-      recognition.lang = navigator.language || "en-US";
-      recognition.onresult = (event) => {
-        if (dictationSessionRef.current !== dictationSessionId) {
-          return;
-        }
-
-        let interim = "";
-
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          const result = event.results[index];
-          const transcript = bestSpeechRecognitionTranscript(result);
-
-          if (result?.isFinal) {
-            dictationFinalTranscriptRef.current = `${dictationFinalTranscriptRef.current} ${transcript}`.trim();
-          } else {
-            interim = `${interim} ${transcript}`.trim();
-          }
-        }
-
-        const cleaned = cleanDictatedPrompt(`${dictationFinalTranscriptRef.current} ${interim}`.trim());
-        dictationTranscriptRef.current = cleaned;
-      };
-      recognition.onerror = (event) => {
-        if (dictationSessionRef.current !== dictationSessionId) {
-          return;
-        }
-
-        setNotice(event.error ? `Dictation error: ${event.error}` : "Dictation error");
-      };
-      recognition.onend = () => {
-        if (dictationSessionRef.current === dictationSessionId && dictationRecognitionRef.current === recognition) {
-          dictationRecognitionRef.current = null;
-        }
-      };
+      pendingDictationAudioRef.current = null;
+      setDictationRetryAvailable(false);
+      startDictationWaveform(stream, primedAudioContext);
 
       recorder.addEventListener("dataavailable", (event) => {
         if (dictationSessionRef.current === dictationSessionId && event.data.size > 0) {
@@ -7623,13 +7865,13 @@ export function App() {
 
           mediaRecorderRef.current = null;
           stopDictationTracks();
+          dictationStartingRef.current = false;
+          setDictationStarting(false);
           setDictationRecording(false);
 
-          const rawTranscript = await waitForDictationTranscript();
           const targetChatId = dictationChatIdRef.current;
-
-          if (!rawTranscript || !targetChatId) {
-            setNotice("No speech was transcribed. Try recording again.");
+          if (!blob.size || !targetChatId) {
+            setNotice("No audio was recorded. Try recording again.");
             dictationChatIdRef.current = null;
             dictationDraftSnapshotRef.current = "";
             dictationDraftSelectionRef.current = { start: 0, end: 0 };
@@ -7637,28 +7879,36 @@ export function App() {
             return;
           }
 
-          const transcript = await improveDictationTranscript(targetChatId, rawTranscript);
-
-          const voiceNoteUrl = await readBlobAsDataUrl(blob).catch(() => URL.createObjectURL(blob));
-          const voiceNote = {
-            url: voiceNoteUrl,
-            mimeType: blob.type || "audio recording"
+          const pending: PendingDictationAudio = {
+            blob,
+            chatId: targetChatId,
+            draft: dictationDraftSnapshotRef.current,
+            selection: dictationDraftSelectionRef.current,
+            mode: dictationSubmitModeRef.current
           };
-
-          try {
-            await sendPrompt({ textOverride: transcript, voiceNote, chatIdOverride: targetChatId, preserveDraft: true });
-          } finally {
-            dictationChatIdRef.current = null;
-            dictationDraftSnapshotRef.current = "";
-            dictationDraftSelectionRef.current = { start: 0, end: 0 };
-            setDictationProcessing(false);
-          }
+          dictationChatIdRef.current = null;
+          dictationDraftSnapshotRef.current = "";
+          dictationDraftSelectionRef.current = { start: 0, end: 0 };
+          await transcribeDictation(pending);
         },
         { once: true }
       );
 
+      // Keep the starting state visible long enough for the entrance fade and
+      // one complete 1 Hz opacity pulse. Slow permission/device startup
+      // naturally satisfies this without adding any further delay.
+      const remainingStartingVisualMs = Math.max(0, 1_000 - (performance.now() - dictationStartingVisualAt));
+      if (remainingStartingVisualMs > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, remainingStartingVisualMs));
+      }
+      if (dictationSessionRef.current !== dictationSessionId) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       recorder.start();
-      recognition.start();
+      dictationStartingRef.current = false;
+      setDictationStarting(false);
       setDictationRecording(true);
       setNotice("Recording dictation...");
     } catch (error) {
@@ -7668,15 +7918,163 @@ export function App() {
 
       stopDictationTracks();
       mediaRecorderRef.current = null;
-      dictationRecognitionRef.current = null;
+      dictationStartingRef.current = false;
       dictationChatIdRef.current = null;
       dictationDraftSnapshotRef.current = "";
       dictationDraftSelectionRef.current = { start: 0, end: 0 };
+      setDictationStarting(false);
       setDictationRecording(false);
       setDictationProcessing(false);
       setNotice(error instanceof Error ? error.message : "Could not start dictation");
     }
   }
+
+  useEffect(() => {
+    const settings = state?.runner.settings;
+    const options = state?.runner.settingsOptions;
+    const powerSettings = codexPowerSettings.filter((setting) => {
+      if (!options?.models.includes(setting.model)) return false;
+      const capability = options.modelCapabilities?.[setting.model];
+      return !capability || capability.reasoningEfforts.includes(setting.reasoningEffort);
+    });
+    const selectedIndex = powerSettings.findIndex(
+      (setting) => setting.model === settings?.model && setting.reasoningEffort === settings?.reasoningEffort
+    );
+    if (!settingsSaving && selectedIndex >= 0) shortcutPowerIndexRef.current = selectedIndex;
+    if (!settingsSaving && settings) shortcutFastEnabledRef.current = settings.speed === "priority";
+
+    const report = (feedback: ControlRoomShortcutFeedback) => {
+      shortcutOverlay.show(feedback);
+    };
+
+    const commitPendingChat = () => {
+      window.clearTimeout(chatShortcutCommitTimerRef.current);
+      chatShortcutCommitTimerRef.current = undefined;
+      const pending = pendingChatShortcutRef.current;
+      if (!pending) return;
+      pendingChatShortcutRef.current = null;
+      chatSwitchOverlay.commit();
+      selectChat(pending.chatId);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      shortcutPressedCodesRef.current.add(event.code);
+      shortcutPressedCodesRef.current.add(event.key.toLowerCase());
+      const action = resolveControlRoomShortcut(event, shortcutPressedCodesRef.current);
+      if (!action) return;
+      if ((dictationStarting || dictationRecording || dictationProcessing) && action !== "mic-toggle") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (action === "scroll-up" || action === "scroll-down") {
+        const scroller = resolveScrollElement(chatContentRef.current);
+        if (!scroller) return;
+        const distance = Math.max(96, Math.min(240, Math.round(scroller.clientHeight * 0.24)));
+        scroller.scrollBy({ top: action === "scroll-up" ? -distance : distance, left: 0, behavior: "auto" });
+        updateScrollDebugPosition(scroller);
+        chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
+        return;
+      }
+
+      if (action === "chat-cycle") {
+        const currentChatId = pendingChatShortcutRef.current?.chatId ?? selectedChatId;
+        const project = chatIndex?.projects.find((candidate) =>
+          candidate.chats.some((chat) => chat.id === currentChatId)
+        );
+        if (!project?.chats.length || !currentChatId) {
+          report({ action: "unavailable", label: "Chat unavailable", detail: "Select a project chat first" });
+          return;
+        }
+        const currentIndex = Math.max(0, project.chats.findIndex((chat) => chat.id === currentChatId));
+        const selectedIndex = (currentIndex + 1) % project.chats.length;
+        const previousIndex = (selectedIndex - 1 + project.chats.length) % project.chats.length;
+        const nextIndex = (selectedIndex + 1) % project.chats.length;
+        const targetChat = project.chats[selectedIndex];
+        pendingChatShortcutRef.current = { chatId: targetChat.id };
+        chatSwitchOverlay.show({
+          projectName: project.projectName,
+          previousTitle: project.chats[previousIndex].title,
+          selectedTitle: targetChat.title,
+          nextTitle: project.chats[nextIndex].title
+        });
+        window.clearTimeout(chatShortcutCommitTimerRef.current);
+        chatShortcutCommitTimerRef.current = window.setTimeout(commitPendingChat, 450);
+        return;
+      }
+
+      if (action === "model-left" || action === "model-right") {
+        if (!settings || powerSettings.length < 2) {
+          report({ action: "unavailable", label: "Model unavailable", detail: "No selectable model range" });
+          return;
+        }
+        const direction = action === "model-left" ? "left" : "right";
+        const currentIndex = shortcutPowerIndexRef.current >= 0 ? shortcutPowerIndexRef.current : selectedIndex;
+        const nextIndex = adjacentPowerSettingIndex(currentIndex, direction, powerSettings.length);
+        const next = powerSettings[nextIndex];
+        if (!next || nextIndex === currentIndex) {
+          const current = powerSettings[Math.max(currentIndex, 0)];
+          report({ action, label: current ? powerSettingLabel(current) : "Model limit", detail: `${direction} edge of model range` });
+          return;
+        }
+        shortcutPowerIndexRef.current = nextIndex;
+        report({ action, label: powerSettingLabel(next), detail: `Model selection moved ${direction}` });
+        void updateRunSettings({ model: next.model, reasoningEffort: next.reasoningEffort });
+        return;
+      }
+
+      if (action === "fast-toggle") {
+        if (!settings || !options?.speeds.includes("priority")) {
+          report({ action: "unavailable", label: "Fast unavailable", detail: "This model does not support fast mode" });
+          return;
+        }
+        const enabling = !shortcutFastEnabledRef.current;
+        shortcutFastEnabledRef.current = enabling;
+        report({ action: enabling ? "fast-on" : "fast-off", label: enabling ? "Fast mode on" : "Fast mode off", detail: "Run speed updated" });
+        void updateRunSettings({ speed: enabling ? "priority" : "default" });
+        return;
+      }
+
+      if (dictationRecording) {
+        report({ action: "mic-sending", label: "Sending prompt", detail: "Recording stopped and submitted" });
+        stopDictation();
+      } else if (singleChatAccess || !selectedChatId || sending || dictationStarting || dictationProcessing) {
+        report({
+          action: "unavailable",
+          label: "Mic unavailable",
+          detail: dictationStarting ? "Microphone is starting" : dictationProcessing ? "Transcription in progress" : "Select an idle chat first"
+        });
+      } else {
+        report({ action: "mic-recording", label: "Mic recording", detail: "Press Ctrl + B + 1 again to send" });
+        void startDictation();
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      const releasedKey = event.key.toLowerCase();
+      if (
+        pendingChatShortcutRef.current &&
+        (["Digit2", "KeyB", "ControlLeft", "ControlRight"].includes(event.code) || ["2", "b", "control"].includes(releasedKey))
+      ) commitPendingChat();
+      shortcutPressedCodesRef.current.delete(event.code);
+      shortcutPressedCodesRef.current.delete(event.key.toLowerCase());
+    };
+    const clearPressedCodes = () => {
+      shortcutPressedCodesRef.current.clear();
+      commitPendingChat();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", clearPressedCodes);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", clearPressedCodes);
+      window.clearTimeout(chatShortcutCommitTimerRef.current);
+    };
+  }, [chatIndex?.projects, chatIsNearBottom, chatSwitchOverlay.commit, chatSwitchOverlay.show, dictationProcessing, dictationRecording, dictationStarting, resolveScrollElement, selectedChatId, sending, settingsSaving, shortcutOverlay.show, state?.runner.settings, state?.runner.settingsOptions, updateRunSettings, updateScrollDebugPosition]);
 
   async function sendPrompt(
     options: {
@@ -7694,7 +8092,7 @@ export function App() {
     const outgoingAttachments = options.voiceNote ? [] : pendingAttachments;
 
     if (sending || !targetChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
-      return;
+      return false;
     }
 
     const optimisticAt = new Date().toISOString();
@@ -7779,6 +8177,7 @@ export function App() {
       }
       void loadState();
       void loadChatJobs(targetChatId);
+      return true;
     } catch (error) {
       let acceptedJob: CodexRunJob | undefined;
 
@@ -7829,7 +8228,7 @@ export function App() {
         setNotice(acceptedDisposition === "queued" ? "Queued on server for this chat" : "Prompt sent to target laptop");
         void loadState();
         void loadChatJobs(targetChatId);
-        return;
+        return true;
       }
 
       if (!options.preserveDraft) {
@@ -7852,6 +8251,7 @@ export function App() {
         clearPromptReceipt(receiptId);
       }
       setNotice(error instanceof Error ? error.message : "Prompt failed");
+      return false;
     } finally {
       setSending(false);
     }
@@ -7870,7 +8270,7 @@ export function App() {
       return;
     }
 
-    if (sending || dictationProcessing || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
+    if (sending || dictationStarting || dictationProcessing || !selectedChatId || (!draft.trim() && !pendingAttachments.length)) {
       return;
     }
 
@@ -7918,6 +8318,7 @@ export function App() {
       event.nativeEvent.isComposing ||
       window.matchMedia("(pointer: coarse)").matches ||
       sending ||
+      dictationStarting ||
       dictationRecording ||
       dictationProcessing ||
       !selectedChatId ||
@@ -7965,6 +8366,11 @@ export function App() {
     });
   }
 
+  function toggleAllProjects() {
+    const projectPaths = projectOptions.map((project) => project.projectPath);
+    setCollapsedProjects((current) => nextProjectCollapseState(current, projectPaths));
+  }
+
   if (checkingAuth) {
     return (
       <main className="auth-shell">
@@ -8004,7 +8410,20 @@ export function App() {
   }
 
   return (
-    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${singleChatAccess ? "is-single-chat" : ""}`}>
+    <main className={`remote-shell ${menuOpen ? "is-menu-open" : ""} ${singleChatAccess ? "is-single-chat" : ""} ${isControlRoomTile ? "is-control-room-tile" : ""} ${dictationStarting || dictationRecording ? "is-dictation-recording" : ""}`}>
+      <ShortcutControlOverlay feedback={shortcutOverlay.feedback} visible={shortcutOverlay.visible} />
+      <ChatSwitchOverlay preview={chatSwitchOverlay.preview} visible={chatSwitchOverlay.visible} committing={chatSwitchOverlay.committing} />
+      {!singleChatAccess && (dictationStarting || dictationRecording || dictationProcessing || dictationOverlayExitRequested) ? (
+        <DictationRecordingOverlay
+          projectName={selectedChatForActions?.projectName ?? ""}
+          chatTitle={selectedChatForActions?.title ?? ""}
+          audioMetricsRef={dictationAudioMetricsRef}
+          phase={dictationProcessing || dictationOverlayExitRequested ? "processing" : dictationRecording ? "recording" : "starting"}
+          exitRequested={dictationOverlayExitRequested}
+          onCancel={cancelDictation}
+          onSend={() => stopDictation("send")}
+        />
+      ) : null}
       {!singleChatAccess ? (
       <aside className="chat-sidebar" aria-label="Project chats">
         <div className="sidebar-header">
@@ -8021,6 +8440,16 @@ export function App() {
             </div>
           </div>
           <div className="sidebar-actions">
+            <button
+              className={`icon-button ${allProjectsCollapsed ? "is-active" : ""}`}
+              type="button"
+              onClick={toggleAllProjects}
+              aria-label={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+              aria-pressed={allProjectsCollapsed}
+              title={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+            >
+              {allProjectsCollapsed ? <ChevronsDown size={18} /> : <ChevronsUp size={18} />}
+            </button>
             <button
               className={`icon-button ${projectActionMode === "project" ? "is-active" : ""}`}
               type="button"
@@ -8507,6 +8936,18 @@ export function App() {
               ) : null}
               {visibleMessageItems.length ? (
                 visibleMessageItems.map(({ message, renderKey }, index) => {
+                  const precedingMessage = visibleMessageItems[index - 1]?.message;
+                  const followingMessage = visibleMessageItems[index + 1]?.message;
+                  const attachedVoiceNote =
+                    message.kind === "user_prompt" &&
+                    precedingMessage?.kind === "voice_note" &&
+                    precedingMessage.createdAt === message.createdAt
+                      ? precedingMessage
+                      : message.kind === "user_prompt" &&
+                          followingMessage?.kind === "voice_note" &&
+                          followingMessage.createdAt === message.createdAt
+                        ? followingMessage
+                        : null;
                   const runDuration = message.isRunFailure ? "" : responseRunDuration(visibleMessages, index);
                   const runSettingsLabel =
                     message.role === "user" || isFinalCodexMessage(message)
@@ -8526,6 +8967,14 @@ export function App() {
                     );
                   }
 
+                  if (
+                    message.kind === "voice_note" &&
+                    ((followingMessage?.kind === "user_prompt" && followingMessage.createdAt === message.createdAt) ||
+                      (precedingMessage?.kind === "user_prompt" && precedingMessage.createdAt === message.createdAt))
+                  ) {
+                    return null;
+                  }
+
                   return (
                     <div className={`chat-message-group ${message.isLiveThinking ? "is-live-thinking-group" : ""}`} data-render-key={renderKey} key={renderKey}>
                       {message.isLiveThinking ? (
@@ -8539,7 +8988,8 @@ export function App() {
                       <article className={chatMessageClassName(message)} data-render-key={renderKey}>
                         {!message.isLiveThinking ? (
                           <div className="bubble-meta">
-                            <time>{formatDate(message.createdAt)}</time>
+                            <time className="bubble-time-full" dateTime={message.createdAt}>{formatDate(message.createdAt)}</time>
+                            <time className="bubble-time-compact" dateTime={message.createdAt}>{formatDate(message.createdAt, true)}</time>
                             {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
                             {runDuration ? (
                               <span className="bubble-duration" title="Run duration">
@@ -8555,14 +9005,17 @@ export function App() {
                         {message.isLiveThinking && !message.text ? null : message.kind === "voice_note" ? (
                           <VoiceNotePlayer message={message} />
                         ) : (
-                          <FormattedMessage
-                            text={message.text}
-                            emptyText={chatMessageEmptyText(message)}
-                            token={token}
-                            basePath={selectedChat.projectPath}
-                            onOpenLocalTextFile={openLocalTextFile}
-                            onOpenLocalPdfFile={openLocalPdfFile}
-                          />
+                          <>
+                            <FormattedMessage
+                              text={message.text}
+                              emptyText={chatMessageEmptyText(message)}
+                              token={token}
+                              basePath={selectedChat.projectPath}
+                              onOpenLocalTextFile={openLocalTextFile}
+                              onOpenLocalPdfFile={openLocalPdfFile}
+                            />
+                            {attachedVoiceNote ? <VoiceNotePlayer message={attachedVoiceNote} /> : null}
+                          </>
                         )}
                       </article>
                       {showFinalFallbackSeparator ? (
@@ -8704,42 +9157,33 @@ export function App() {
             />
           )}
           <div className={`composer-field ${singleChatAccess ? "is-single-chat" : ""}`}>
-            {!singleChatAccess && dictationRecording ? (
-              <button
-                className="dictation-cancel-button"
-                type="button"
-                onClick={cancelDictation}
-                aria-label="Cancel voice recording"
-                title="Cancel voice recording"
-              >
-                <X size={18} />
-              </button>
-            ) : (
-              <button
-                className="attach-button"
-                type="button"
-                onPointerDown={preserveComposerForTransientFocus}
-                onClick={openAttachmentPicker}
-                disabled={!selectedChatId || sending || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
-                aria-label="Attach files"
-                title="Attach files"
-              >
-                <Paperclip size={18} />
-              </button>
-            )}
+            <button
+              className="attach-button"
+              type="button"
+              onPointerDown={preserveComposerForTransientFocus}
+              onClick={openAttachmentPicker}
+              disabled={!selectedChatId || sending || dictationStarting || dictationRecording || dictationProcessing || pendingAttachments.length >= maxAttachmentFiles}
+              aria-label="Attach files"
+              title="Attach files"
+            >
+              <Paperclip size={18} />
+            </button>
             {!singleChatAccess ? (
               <button
-                className={`dictation-button ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
+                className={`dictation-button ${dictationStarting ? "is-starting" : ""} ${dictationRecording ? "is-recording" : ""} ${dictationProcessing ? "is-processing" : ""}`}
                 type="button"
-                onClick={() => void startDictation()}
-                disabled={!selectedChatId || sending || dictationRecording || dictationProcessing}
-                aria-label={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
-                title={dictationProcessing ? "Processing dictation" : dictationRecording ? "Recording" : "Start dictation"}
+                onClick={() => {
+                  if (dictationRetryAvailable) retryDictationTranscription();
+                  else void startDictation();
+                }}
+                disabled={!selectedChatId || sending || dictationStarting || dictationRecording || dictationProcessing || dictationOverlayExitRequested}
+                aria-label={dictationStarting ? "Starting microphone" : dictationProcessing ? "Processing dictation" : dictationRetryAvailable ? "Retry transcription" : "Start dictation"}
+                title={dictationStarting ? "Starting microphone" : dictationProcessing ? "Processing dictation" : dictationRetryAvailable ? "Retry saved recording" : "Start dictation"}
               >
-                {dictationProcessing ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
+                {dictationStarting || dictationProcessing || dictationRetryAvailable ? <Loader2 className={dictationStarting || dictationProcessing ? "spin" : ""} size={18} /> : <Mic size={18} />}
               </button>
             ) : null}
-            {!singleChatAccess && (dictationRecording || dictationProcessing) ? (
+            {!singleChatAccess && dictationProcessing ? (
               <DictationWaveform processing={dictationProcessing} barsRef={dictationBarsRef} />
             ) : (
               <div
@@ -8777,6 +9221,14 @@ export function App() {
                 }}
                 onPaste={(event) => {
                   event.preventDefault();
+                  const pastedFiles = clipboardAttachmentFiles(event.clipboardData);
+
+                  if (pastedFiles.length > 0) {
+                    addAttachments(pastedFiles);
+                    rememberComposerSelection(event.currentTarget);
+                    return;
+                  }
+
                   const pastedText = event.clipboardData.getData("text/plain");
                   const selection = insertIntoComposer(
                     event.currentTarget,
@@ -8793,9 +9245,9 @@ export function App() {
               type="button"
               onPointerDown={sendPromptFromPointer}
               onClick={sendPromptFromClick}
-              disabled={!selectedChatId || dictationProcessing || sending || (!dictationRecording && !draft.trim() && !pendingAttachments.length)}
-              aria-label={dictationRecording ? "Stop and send dictation" : "Send prompt"}
-              title={dictationRecording ? "Stop and send dictation" : "Send prompt"}
+              disabled={!selectedChatId || dictationStarting || dictationRecording || dictationProcessing || sending || (!draft.trim() && !pendingAttachments.length)}
+              aria-label="Send prompt"
+              title="Send prompt"
             >
               {sending || dictationProcessing ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
               Send

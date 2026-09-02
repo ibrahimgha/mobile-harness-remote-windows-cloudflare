@@ -6,7 +6,7 @@ Each workspace has an independent display-power control. Turning a display off r
 
 The control room remembers its grid, machine assignments, terminated and display-off states, tracker/chat modes, selected chat, side-menu state, and native window size, position, and maximized state. Relaunching restores the previous operating layout; invalid off-screen window coordinates safely fall back to the centered default.
 
-Any square can load and remember a custom HTTP or HTTPS dashboard URL. Custom dashboard squares retain reload, display-off, terminate, URL-edit, and open-separately controls, while the Codex statistics toggle is intentionally omitted. The remote site must permit iframe embedding through its own CSP and `X-Frame-Options` headers.
+Any square can load and remember a custom HTTP or HTTPS dashboard URL; bare domains automatically use HTTPS. Custom dashboard squares retain reload, display-off, terminate, URL-edit, and open-separately controls, while the Codex statistics toggle is intentionally omitted. The Windows WebView2 wrapper grants the trusted Control Room origin additional frame-ancestor permission for direct and nested external pages, allowing sites that normally reject iframes to load without proxying or changing their origin, cookies, authentication, scripts, APIs, or WebSockets. This compatibility behavior is confined to the installed Windows app; ordinary browsers continue to enforce each site's framing policy.
 
 Install or refresh the app and its encrypted machine credentials:
 
@@ -48,3 +48,11 @@ https://mobile-harness-remote-windows-cloudflare-ibrahim-hp.bit68-infra.com/cont
 ```
 
 Machine tokens are posted from the native wrapper into the page at runtime; they are never placed in iframe URLs.
+
+## Macro-pad completion light
+
+The local server controls the `SIDE-KEYBOARD` macro pad at USB `VID_0816/PID_2475`. It keeps the LEDs off while no Control Room square has a completion glow. A green breathing effect starts when any open Control Room instance has one or more glowing squares and stops after the final glow is dismissed.
+
+Each Control Room window sends a five-second heartbeat. The server removes a window after 15 seconds without a heartbeat, so closing or crashing a window cannot leave the completion light active for long. Stopping the service also sends an off command before Node exits.
+
+Set `CONTROL_ROOM_LED_ENABLED=false` in `.env` to disable hardware control. Inspect the current aggregate state with authenticated `GET /api/control-room/led`.

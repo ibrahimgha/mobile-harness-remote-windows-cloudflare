@@ -7,6 +7,17 @@ const logDir = path.resolve(process.cwd(), process.env.LOG_DIR?.trim() || "logs"
 const auditLogPath = path.join(logDir, "bridge-events.jsonl");
 const defaultPromptPreviewLength = 240;
 const maxAuditReadLimit = 5000;
+const defaultAuditReadChunkBytes = 256 * 1024;
+const defaultAuditMaxScanBytes = 32 * 1024 * 1024;
+
+type AuditReadCache = {
+  size: number;
+  mtimeMs: number;
+  limit: number;
+  entries: BridgeEvent[];
+};
+
+let auditReadCache: AuditReadCache | null = null;
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) {
@@ -54,8 +65,52 @@ export async function readAuditEvents(limit: number): Promise<BridgeEvent[]> {
   const safeLimit = Math.max(1, Math.min(maxAuditReadLimit, Math.trunc(limit) || 50));
 
   try {
-    const data = await fs.readFile(auditLogPath, "utf8");
-    const lines = data.trimEnd().split(/\r?\n/);
+    const stat = await fs.stat(auditLogPath);
+    if (
+      auditReadCache &&
+      auditReadCache.size === stat.size &&
+      auditReadCache.mtimeMs === stat.mtimeMs &&
+      auditReadCache.limit >= safeLimit
+    ) {
+      return auditReadCache.entries.slice(0, safeLimit);
+    }
+
+    const chunkBytes = parsePositiveInt(process.env.AUDIT_READ_CHUNK_BYTES, defaultAuditReadChunkBytes);
+    const maxScanBytes = Math.max(
+      chunkBytes,
+      parsePositiveInt(process.env.AUDIT_MAX_SCAN_BYTES, defaultAuditMaxScanBytes)
+    );
+    const handle = await fs.open(auditLogPath, "r");
+    const chunks: Buffer[] = [];
+    let end = stat.size;
+    let scannedBytes = 0;
+    let newlineCount = 0;
+
+    try {
+      while (end > 0 && scannedBytes < maxScanBytes && newlineCount <= safeLimit) {
+        const length = Math.min(chunkBytes, end, maxScanBytes - scannedBytes);
+        const start = end - length;
+        const buffer = Buffer.allocUnsafe(length);
+        const { bytesRead } = await handle.read(buffer, 0, length, start);
+        const chunk = buffer.subarray(0, bytesRead);
+        chunks.unshift(chunk);
+
+        for (const byte of chunk) {
+          if (byte === 10) newlineCount += 1;
+        }
+
+        scannedBytes += bytesRead;
+        end = start;
+        if (bytesRead === 0) break;
+      }
+    } finally {
+      await handle.close();
+    }
+
+    const lines = Buffer.concat(chunks).toString("utf8").trimEnd().split(/\r?\n/);
+    // When scanning starts in the middle of a large JSONL record, that first
+    // fragment is incomplete and must not be reported as a parse error.
+    if (end > 0) lines.shift();
     const entries: BridgeEvent[] = [];
 
     for (let index = lines.length - 1; index >= 0 && entries.length < safeLimit; index -= 1) {
@@ -77,6 +132,12 @@ export async function readAuditEvents(limit: number): Promise<BridgeEvent[]> {
       }
     }
 
+    auditReadCache = {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      limit: safeLimit,
+      entries
+    };
     return entries;
   } catch (error) {
     if (isMissingFileError(error)) {

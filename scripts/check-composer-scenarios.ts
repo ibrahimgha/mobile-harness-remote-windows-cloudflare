@@ -7,6 +7,7 @@ import {
   type TextMutation,
   type TextSelection
 } from "../src/composerEditing.js";
+import { clipboardAttachmentFiles } from "../src/clipboardAttachments.js";
 
 type ComposerSnapshot = TextMutation & { chatId: string };
 
@@ -80,6 +81,30 @@ class ComposerScenario {
 }
 
 const phrase = "the quick brown fox jumps over the lazy dog";
+
+const directClipboardFile = { name: "requirements.pdf" } as File;
+assert.deepEqual(
+  clipboardAttachmentFiles({
+    files: [directClipboardFile] as unknown as FileList,
+    items: [{ kind: "file", getAsFile: () => ({ name: "duplicate.pdf" }) as File }] as unknown as DataTransferItemList
+  }),
+  [directClipboardFile],
+  "clipboardData.files should become attachments without duplicating matching item entries"
+);
+
+const screenshotFile = { name: "image.png", type: "image/png" } as File;
+assert.deepEqual(
+  clipboardAttachmentFiles({
+    files: [] as unknown as FileList,
+    items: [
+      { kind: "string", getAsFile: () => null },
+      { kind: "file", getAsFile: () => screenshotFile }
+    ] as unknown as DataTransferItemList
+  }),
+  [screenshotFile],
+  "clipboard image items should become screenshot attachments"
+);
+
 const rapid = new ComposerScenario();
 rapid.typeWithOverlappingTouches(phrase.repeat(5));
 assert.equal(rapid.text, phrase.repeat(5), "reversed release order must not transpose or drop rapid keys");

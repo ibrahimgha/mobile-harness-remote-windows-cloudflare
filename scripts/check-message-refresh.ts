@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
 import { parseSessionFile, resolveTranscriptTailBytes } from "../server/codexSessions.js";
+import { attachPromptRunSettings } from "../server/promptRunSettings.js";
+import { createHash } from "node:crypto";
+import type { ChatDetail, CodexRunJob } from "../server/types.js";
 
 type TestMessage = {
   id: string;
@@ -46,20 +49,48 @@ assert.deepEqual(
 
 assert.deepEqual(
   preserveOptimisticRunSettings(
-    { id: "server-prompt", model: undefined, reasoningEffort: undefined },
-    { model: "gpt-5.6-sol", reasoningEffort: "ultra" }
+    { id: "server-prompt", model: undefined, reasoningEffort: undefined, speed: undefined },
+    { model: "gpt-5.6-sol", reasoningEffort: "ultra", speed: "priority" }
   ),
-  { id: "server-prompt", model: "gpt-5.6-sol", reasoningEffort: "ultra" },
-  "the first server echo must not erase optimistic model metadata"
+  { id: "server-prompt", model: "gpt-5.6-sol", reasoningEffort: "ultra", speed: "priority" },
+  "the first server echo must not erase optimistic model, reasoning, or speed metadata"
 );
 assert.deepEqual(
   preserveOptimisticRunSettings(
-    { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low" },
-    { model: "gpt-5.6-sol", reasoningEffort: "ultra" }
+    { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low", speed: "default" },
+    { model: "gpt-5.6-sol", reasoningEffort: "ultra", speed: "priority" }
   ),
-  { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low" },
+  { id: "server-prompt", model: "gpt-5.6-terra", reasoningEffort: "low", speed: "default" },
   "authoritative server metadata must replace optimistic settings when present"
 );
+
+const submittedText = "Ship the exact prompt metadata";
+const submittedAt = "2026-07-10T00:00:00.000Z";
+const settings = { model: "gpt-5.6-sol", reasoningEffort: "high" as const, speed: "priority" as const, updatedAt: submittedAt };
+const chat = {
+  id: "chat-settings",
+  messages: [
+    { id: "prompt", role: "user" as const, kind: "user_prompt" as const, label: "You", text: submittedText, createdAt: submittedAt },
+    { id: "reply", role: "assistant" as const, kind: "assistant_final" as const, isFinal: true, text: "Done", createdAt: "2026-07-10T00:00:05.000Z" }
+  ]
+} as ChatDetail;
+const job = {
+  id: "job-settings",
+  chatId: chat.id,
+  projectPath: "C:\\work",
+  status: "completed",
+  kind: "prompt",
+  createdAt: submittedAt,
+  promptPreview: submittedText,
+  promptHash: createHash("sha256").update(submittedText).digest("hex"),
+  textLength: submittedText.length,
+  command: [],
+  settings,
+  logPaths: { stdout: "out", stderr: "err", lastMessage: "last" }
+} as CodexRunJob;
+const enriched = attachPromptRunSettings(chat, [job]);
+assert.equal(enriched.messages[0]?.speed, "priority", "the exact submitted speed is restored onto a reloaded prompt");
+assert.equal(enriched.messages[1]?.speed, "priority", "the response retains the speed of its prompt turn");
 
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-remote-history-"));
 const sessionPath = path.join(temporaryDirectory, "session.jsonl");

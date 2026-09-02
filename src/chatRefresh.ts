@@ -6,6 +6,7 @@ export type TranscriptWindowItem = {
 type RunSettingsMessageFields = {
   model?: string;
   reasoningEffort?: string;
+  speed?: string;
 };
 
 export function preserveOptimisticRunSettings<T extends RunSettingsMessageFields>(
@@ -15,7 +16,8 @@ export function preserveOptimisticRunSettings<T extends RunSettingsMessageFields
   return {
     ...serverMessage,
     model: serverMessage.model ?? optimisticMessage.model,
-    reasoningEffort: serverMessage.reasoningEffort ?? optimisticMessage.reasoningEffort
+    reasoningEffort: serverMessage.reasoningEffort ?? optimisticMessage.reasoningEffort,
+    speed: serverMessage.speed ?? optimisticMessage.speed
   };
 }
 

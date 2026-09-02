@@ -21,6 +21,7 @@ assert.equal(scopedRequestAllowed("GET", "/api/chats", access), true);
 assert.equal(scopedRequestAllowed("GET", "/api/chats/selected-chat", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/prompt", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/files", access), true);
+assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/dictation/transcribe", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/fork", access), false);
 assert.equal(scopedRequestAllowed("PATCH", "/api/chats/selected-chat", access), false);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/dictation/clean", access), false);
