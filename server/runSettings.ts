@@ -17,6 +17,14 @@ const legacyReasoningEfforts: CodexReasoningEffort[] = ["none", "minimal", "low"
 const speeds: CodexRunSpeed[] = ["default", "priority"];
 const fallbackModelCapabilities: CodexModelCapability[] = [
   {
+    model: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    description: "Frontier agentic coding model for complex, demanding work.",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    speeds
+  },
+  {
     model: "gpt-5.6-sol",
     label: "GPT-5.6-Sol",
     description: "Latest frontier agentic coding model.",
@@ -245,8 +253,8 @@ function normalizeRunSettings(input: Partial<CodexRunSettings>): CodexRunSetting
 
 function defaultSettings(): CodexRunSettings {
   return normalizeRunSettings({
-    model: process.env.CODEX_RUN_MODEL?.trim() || "default",
-    reasoningEffort: (process.env.CODEX_RUN_REASONING_EFFORT?.trim() as CodexReasoningEffort) || "xhigh",
+    model: process.env.CODEX_RUN_MODEL?.trim() || "gpt-5.6-sol",
+    reasoningEffort: (process.env.CODEX_RUN_REASONING_EFFORT?.trim() as CodexReasoningEffort) || "medium",
     speed: (process.env.CODEX_RUN_SPEED?.trim() as CodexRunSpeed) || "default",
     updatedAt: nowIso()
   });

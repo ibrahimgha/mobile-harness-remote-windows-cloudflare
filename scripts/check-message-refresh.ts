@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
+import { restoredPrependScrollTop } from "../src/chatScroll.js";
 import { parseSessionFile, resolveTranscriptTailBytes } from "../server/codexSessions.js";
 import { attachPromptRunSettings } from "../server/promptRunSettings.js";
 import { createHash } from "node:crypto";
@@ -13,6 +14,36 @@ type TestMessage = {
   createdAt: string;
   text: string;
 };
+
+assert.equal(
+  restoredPrependScrollTop(
+    { scrollHeight: 1_000, scrollTop: 200, anchorOffset: 40 },
+    200,
+    1_500,
+    540
+  ),
+  700,
+  "prepending history must retain the visible message offset"
+);
+assert.equal(
+  restoredPrependScrollTop(
+    { scrollHeight: 1_000, scrollTop: 200, anchorOffset: 40 },
+    700,
+    1_500,
+    40
+  ),
+  700,
+  "native browser scroll anchoring must not be applied twice"
+);
+assert.equal(
+  restoredPrependScrollTop(
+    { scrollHeight: 1_000, scrollTop: 200 },
+    200,
+    1_500
+  ),
+  700,
+  "scroll-height preservation remains available when no message anchor is visible"
+);
 
 const sameItem = (a: TestMessage, b: TestMessage) =>
   a.id === b.id || (a.createdAt === b.createdAt && a.text === b.text);

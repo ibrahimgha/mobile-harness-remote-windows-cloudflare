@@ -33,7 +33,7 @@ assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes t
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(
   appSource,
-  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna"[\s\S]*gpt-5\.6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max"[\s\S]*gpt-5\.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Light"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol"[\s\S]*gpt-5\.6-sol", reasoningEffort: "ultra", modelLabel: "Sol"/,
+  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium"[\s\S]*gpt-5\.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Low"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High"[\s\S]*gpt-6-astra", reasoningEffort: "medium", modelLabel: "Astra", effortLabel: "Medium"[\s\S]*gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max"/,
   "the shared power slider keeps the requested preset order in both settings surfaces"
 );
 assert.match(appSource, /isControlRoomTile \? "is-control-room-tile"/, "embedded squares identify themselves for tile-specific composer layering");
@@ -104,13 +104,16 @@ try {
   const options = getRunSettingsOptions();
 
   assert(options.models.includes("gpt-5.6-sol"));
+  assert(options.models.includes("gpt-6-astra"), "Astra remains available when the local cache is incomplete");
   assert(options.models.includes("gpt-5.6-terra"), "fallback models remain available when the local cache is incomplete");
+  assert.deepEqual(options.modelCapabilities["gpt-6-astra"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-sol"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-luna"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-sol"]?.speeds, ["default", "priority"]);
 
   assert.equal(getRunSettings().reasoningEffort, "medium", "unsupported persisted effort falls back to the model default");
   assert.equal(updateRunSettings({ model: "gpt-5.6-sol", reasoningEffort: "ultra" }).reasoningEffort, "ultra");
+  assert.equal(updateRunSettings({ model: "gpt-6-astra", reasoningEffort: "max" }).reasoningEffort, "max");
   assert.deepEqual(
     updateRunSettings({ model: "gpt-5.4-mini", speed: "priority" }),
     {

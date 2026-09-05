@@ -65,6 +65,11 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
+import {
+  capturePrependScrollSnapshot,
+  restorePrependScrollSnapshot,
+  type PrependScrollSnapshot
+} from "./chatScroll";
 import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
 import {
   correctAlternatingSingleKeyCadence,
@@ -3257,11 +3262,11 @@ const codexPowerSettings: Array<{
   effortLabel: string;
 }> = [
   { model: "gpt-5.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium" },
-  { model: "gpt-5.6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max" },
-  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Light" },
+  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Low" },
   { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium" },
   { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High" },
-  { model: "gpt-5.6-sol", reasoningEffort: "ultra", modelLabel: "Sol", effortLabel: "Ultra" }
+  { model: "gpt-6-astra", reasoningEffort: "medium", modelLabel: "Astra", effortLabel: "Medium" },
+  { model: "gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max" }
 ];
 
 function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {
@@ -3885,7 +3890,8 @@ export function App() {
   });
   const chatShouldAutoScrollRef = useRef(true);
   const forceNextChatScrollRef = useRef(false);
-  const preserveChatScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const preserveChatScrollRef = useRef<PrependScrollSnapshot | null>(null);
+  const loadingMoreMessagesRef = useRef(false);
   const menuOpenRef = useRef(menuOpen);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
   const chatTurnLimitsRef = useRef<Record<string, number>>({});
@@ -4685,6 +4691,7 @@ export function App() {
   const liveThinkingStatus =
     liveThinkingDisplay.runKey === liveThinkingRunKey ? liveThinkingDisplay.status : "Thinking";
   const lastVisibleMessageKey = visibleMessageItems.at(-1)?.renderKey ?? "";
+  const firstVisibleMessageKey = visibleMessageItems.at(0)?.renderKey ?? "";
   const chatShellIsLoading =
     loadingDetail || (loadingChats && !selectedChat) || Boolean(authenticated && selectedChatId && !selectedChat && !chatIndex);
   const topbarTitle = selectedChat?.title ?? selectedChatSummary?.title ?? (chatShellIsLoading ? "Loading chat" : "Select a chat");
@@ -5388,6 +5395,13 @@ export function App() {
       const turns = Math.max(1, requestedTurns ?? chatTurnLimitsRef.current[chatId] ?? defaultChatTurns);
       const preserveExistingMessages = quiet && requestedMode === undefined;
 
+      // A normal polling request must not supersede an explicit history-page request.
+      // Otherwise the older messages can arrive after the saved scroll position has
+      // already been consumed, which leaves the reader at the new top of the thread.
+      if (quiet && requestedTurns === undefined && loadingMoreMessagesRef.current && selectedChatIdRef.current === chatId) {
+        return;
+      }
+
       if (!quiet) {
         setLoadingDetail(!cachedDetail);
       }
@@ -5714,13 +5728,9 @@ export function App() {
     const nextLimit = currentLimit + chatTurnPageSize;
     const scroller = chatContentRef.current;
 
-    preserveChatScrollRef.current = scroller
-      ? {
-          scrollHeight: scroller.scrollHeight,
-          scrollTop: scroller.scrollTop
-        }
-      : null;
+    preserveChatScrollRef.current = scroller ? capturePrependScrollSnapshot(scroller, chatId) : null;
 
+    loadingMoreMessagesRef.current = true;
     setLoadingMoreMessages(true);
     setChatTurnLimits((current) => {
       const next = { ...current, [chatId]: nextLimit };
@@ -5732,6 +5742,7 @@ export function App() {
       await loadChatDetail(chatId, true, nextLimit);
       requestChatScroll(false);
     } finally {
+      loadingMoreMessagesRef.current = false;
       setLoadingMoreMessages(false);
     }
   }, [authenticated, loadChatDetail, loadingMoreMessages, requestChatScroll, selectedChat?.messagePage?.visibleTurns]);
@@ -6685,25 +6696,28 @@ export function App() {
     const preservedScroll = preserveChatScrollRef.current;
 
     if (preservedScroll) {
-      preserveChatScrollRef.current = null;
-
       const restorePosition = () => {
         const nextScroller = chatContentRef.current;
-        if (!nextScroller) {
+        if (!nextScroller || preservedScroll.chatId !== selectedChatIdRef.current) {
           return;
         }
 
-        nextScroller.scrollTop = preservedScroll.scrollTop + (nextScroller.scrollHeight - preservedScroll.scrollHeight);
+        restorePrependScrollSnapshot(nextScroller, preservedScroll);
         updateScrollDebugPosition(nextScroller);
         chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
       };
 
+      preserveChatScrollRef.current = null;
       const firstFrame = window.requestAnimationFrame(() => {
         restorePosition();
         window.requestAnimationFrame(restorePosition);
       });
+      const layoutFallback = window.setTimeout(restorePosition, 100);
 
-      return () => window.cancelAnimationFrame(firstFrame);
+      return () => {
+        window.cancelAnimationFrame(firstFrame);
+        window.clearTimeout(layoutFallback);
+      };
     }
 
     const shouldScroll = forceNextChatScrollRef.current || chatShouldAutoScrollRef.current || chatIsNearBottom(scroller);
@@ -6731,6 +6745,7 @@ export function App() {
     chatIsNearBottom,
     chatScrollVersion,
     chatShellIsLoading,
+    firstVisibleMessageKey,
     lastVisibleMessageKey,
     scrollChatToBottom,
     selectedChatId,
