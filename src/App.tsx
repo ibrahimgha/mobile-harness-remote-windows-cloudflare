@@ -3425,6 +3425,9 @@ function RunSettingsPanel({
   const previewPowerSetting = powerSettings[safePowerPreviewIndex];
   const powerPercent = powerSettings.length > 1 ? (safePowerPreviewIndex / (powerSettings.length - 1)) * 100 : 0;
   const powerFillWidth = `calc(${powerPercent}% + ${14 - powerPercent * 0.28}px)`;
+  const solLowIndex = Math.max(0, powerSettings.findIndex((setting) => setting.model === "gpt-5.6-sol" && setting.reasoningEffort === "low"));
+  const opaquePowerPercent = powerSettings.length > 1 ? (solLowIndex / (powerSettings.length - 1)) * 100 : 0;
+  const opaquePowerEnd = `calc(${opaquePowerPercent}% + ${14 - opaquePowerPercent * 0.28}px)`;
   const fastModeSupported = availableSpeeds.includes("priority");
   const fastModeEnabled = current.speed === "priority";
   const ultraSelected = previewPowerSetting?.reasoningEffort === "ultra";
@@ -3480,7 +3483,15 @@ function RunSettingsPanel({
     <div className="run-settings-power-row" data-ultra={ultraSelected}>
       <div className="run-settings-power-slider">
         <span className="run-settings-power-track" aria-hidden="true">
-          <span className="run-settings-power-fill" style={{ width: powerFillWidth }} />
+          <span
+            className="run-settings-power-fill"
+            style={{ clipPath: `inset(0 calc(100% - ${powerFillWidth}) 0 0)` }}
+          >
+            <span
+              className="run-settings-power-tint"
+              style={{ backgroundImage: `linear-gradient(to right, #1594e8 ${opaquePowerEnd}, rgba(21, 148, 232, 0.35) 100%)` }}
+            />
+          </span>
           {powerSettings.map((setting, index) => {
             const tickPercent = powerSettings.length > 1 ? (index / (powerSettings.length - 1)) * 100 : 0;
             const tickLeft = `calc(${tickPercent}% + ${14 - tickPercent * 0.28}px)`;

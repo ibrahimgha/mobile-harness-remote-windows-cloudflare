@@ -386,17 +386,18 @@ p {
 
 .run-settings-power-fill {
   position: absolute;
-  inset-block: -1px;
-  inset-inline-start: -1px;
-  min-width: 15px;
+  inset: -1px;
   border-radius: 12px 0 0 12px;
   background: linear-gradient(rgba(0, 24, 32, 0.38), rgba(0, 24, 32, 0.38)),
     url("/voice-orb-water-test.gif?v=04587e6f071c") center / cover;
-  transition: width 180ms cubic-bezier(0.23, 1, 0.32, 1), background-color 180ms ease;
+  /* Keep the GIF and tint aligned to the whole track, revealing only the fill. */
+  transition: clip-path 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.run-settings-power-row[data-ultra="true"] .run-settings-power-fill {
-  background: linear-gradient(90deg, #3297e7, #7558dc);
+.run-settings-power-tint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .run-settings-power-tick {
