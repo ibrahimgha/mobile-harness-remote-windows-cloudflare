@@ -365,9 +365,6 @@ p {
   align-items: center;
   gap: 6px;
   min-height: 32px;
-  border-radius: 12px;
-  background: linear-gradient(rgba(0, 24, 32, 0.38), rgba(0, 24, 32, 0.38)),
-    url("/voice-orb-water-test.gif?v=04587e6f071c") center / cover;
 }
 
 .run-settings-power-slider {
@@ -393,7 +390,8 @@ p {
   inset-inline-start: -1px;
   min-width: 15px;
   border-radius: 12px 0 0 12px;
-  background: rgba(21, 148, 232, 0.42);
+  background: linear-gradient(rgba(0, 24, 32, 0.38), rgba(0, 24, 32, 0.38)),
+    url("/voice-orb-water-test.gif?v=04587e6f071c") center / cover;
   transition: width 180ms cubic-bezier(0.23, 1, 0.32, 1), background-color 180ms ease;
 }
 
@@ -408,7 +406,7 @@ p {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
   transform: translate(-50%, -50%);
   transition: background-color 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 120ms ease;
 }
@@ -2163,8 +2161,7 @@ p {
   height: 32px;
   align-items: center;
   overflow: hidden;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  color: var(--ink);
   font-size: 0.72rem;
   font-weight: 760;
   line-height: 1;
@@ -4832,8 +4829,7 @@ p {
     align-items: center;
     justify-content: flex-start;
     overflow: hidden;
-    color: #fff;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    color: var(--ink);
     font-size: 0.72rem;
     font-weight: 760;
     line-height: 1;
