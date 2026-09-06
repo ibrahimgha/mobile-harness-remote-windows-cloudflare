@@ -52,7 +52,7 @@ assert.match(appSource, /new Promise\(\(resolve\) => window\.setTimeout\(resolve
 assert.match(appSource, /catch\(\(\) => apiFetch<BridgeState>\("\/api\/state"\)/, "tap refresh falls back while an older backend waits to restart");
 assert.match(
   appSource,
-  /\{advancedVisible \? \([\s\S]{0,2600}<div className="run-settings-grid">[\s\S]{0,2600}\) : null\}\s*<div className="usage-meters"/,
+  /\{advancedVisible \? \(\s*<div className="run-settings-grid">[\s\S]*?<\/div>\s*\) : null\}\s*<div className="usage-meters"/,
   "usage meters remain outside the Advanced-only settings content"
 );
 assert.match(serverSource, /const usageRefreshIntervalMs = 60_000;/, "usage refreshes once per minute");

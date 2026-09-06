@@ -65,6 +65,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
+import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import {
   capturePrependScrollSnapshot,
   restorePrependScrollSnapshot,
@@ -3367,7 +3368,7 @@ function UsageBar({
   );
 }
 
-function RunSettingsPanel({
+export function RunSettingsPanel({
   settings,
   options,
   usage,
@@ -3375,6 +3376,8 @@ function RunSettingsPanel({
   busy,
   onChange,
   onRefreshUsage,
+  powerBarTheme,
+  onPowerBarThemeChange,
   compactOnly = false
 }: {
   settings?: CodexRunSettings;
@@ -3384,6 +3387,8 @@ function RunSettingsPanel({
   busy: boolean;
   onChange: (patch: Partial<Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">>) => void;
   onRefreshUsage?: () => void;
+  powerBarTheme: PowerBarTheme;
+  onPowerBarThemeChange: (theme: PowerBarTheme) => void;
   compactOnly?: boolean;
 }) {
   const current = settings ?? {
@@ -3480,16 +3485,16 @@ function RunSettingsPanel({
     : `${available.modelCapabilities?.[current.model]?.label ?? settingLabel(current.model)} ${settingLabel(current.reasoningEffort)}`;
 
   const compactPowerControl = compactModeAvailable ? (
-    <div className="run-settings-power-row" data-ultra={ultraSelected}>
+    <div className="run-settings-power-row" data-ultra={ultraSelected} data-bar-theme={powerBarTheme}>
       <div className="run-settings-power-slider">
         <span className="run-settings-power-track" aria-hidden="true">
           <span
             className="run-settings-power-fill"
-            style={{ clipPath: `inset(0 calc(100% - ${powerFillWidth}) 0 0)` }}
+            style={{ clipPath: `inset(0 calc(100% - ${powerFillWidth}) 0 0)`, backgroundImage: powerBarTexture(powerBarTheme) }}
           >
             <span
               className="run-settings-power-tint"
-              style={{ backgroundImage: `linear-gradient(to right, #1594e8 ${opaquePowerEnd}, rgba(21, 148, 232, 0.35) 100%)` }}
+              style={{ backgroundImage: powerBarTint(powerBarTheme, opaquePowerEnd) }}
             />
           </span>
           {powerSettings.map((setting, index) => {
@@ -3619,6 +3624,29 @@ function RunSettingsPanel({
               ))}
             </select>
             </label>
+          <details className="run-settings-appearance">
+            <summary>Appearance</summary>
+            <label>
+              <span>Model bar style</span>
+              <select
+                aria-label="Model bar style"
+                value={powerBarTheme}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  if (isPowerBarTheme(next)) onPowerBarThemeChange(next);
+                }}
+              >
+                {Object.entries(powerBarThemes).map(([key, theme]) => (
+                  <option key={key} value={key}>{theme.label}</option>
+                ))}
+              </select>
+            </label>
+            <span
+              className="run-settings-style-preview"
+              aria-hidden="true"
+              style={{ backgroundImage: `${powerBarTint(powerBarTheme, "20%")}, ${powerBarTexture(powerBarTheme)}` }}
+            />
+          </details>
         </div>
       ) : null}
 
@@ -3736,6 +3764,7 @@ export function App() {
   }, []);
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
+  const [powerBarTheme, setPowerBarTheme] = usePowerBarTheme(controlRoomSlotId);
 
   useEffect(() => {
     if (!notificationChatId) return;
@@ -8520,6 +8549,8 @@ export function App() {
         </div>
 
         <RunSettingsPanel
+          powerBarTheme={powerBarTheme}
+          onPowerBarThemeChange={setPowerBarTheme}
           settings={state?.runner.settings}
           options={state?.runner.settingsOptions}
           usage={state?.runner.usage}
@@ -9175,6 +9206,8 @@ export function App() {
             </div>
           ) : (
             <RunSettingsPanel
+              powerBarTheme={powerBarTheme}
+              onPowerBarThemeChange={setPowerBarTheme}
               compactOnly
               settings={state?.runner.settings}
               options={state?.runner.settingsOptions}
