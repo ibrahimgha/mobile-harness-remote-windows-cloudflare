@@ -1,0 +1,12 @@
+/* Keep iOS focus and repeated taps from magnifying the sidebar search.
+   Leave pinch zoom available for accessibility. This small standalone fix can
+   also be published without rebuilding unrelated in-progress frontend work. */
+.sidebar-search input {
+  font-size: 16px !important;
+}
+
+.sidebar-search,
+.sidebar-search input,
+.sidebar-search button {
+  touch-action: manipulation;
+}
