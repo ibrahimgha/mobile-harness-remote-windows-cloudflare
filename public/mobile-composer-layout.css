@@ -1,0 +1,11 @@
+/* Reserve the real composer height instead of scrolling messages behind it.
+   Keep the editor's own scrolling and draft contents untouched. */
+@media (max-width: 920px) {
+  .chat-workspace .chat-content {
+    grid-row: 5 / 6;
+  }
+
+  .chat-workspace .composer {
+    margin-top: 0;
+  }
+}
