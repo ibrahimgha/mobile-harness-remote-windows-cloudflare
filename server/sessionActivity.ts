@@ -38,6 +38,7 @@ const lifecycleMarkers = [
   { value: '"type":"task_complete"', kind: "terminal" as const },
   { value: '"type":"task_cancelled"', kind: "terminal" as const },
   { value: '"type":"task_canceled"', kind: "terminal" as const },
+  { value: '"type":"turn_aborted"', kind: "terminal" as const },
   { value: '"type":"turn.completed"', kind: "terminal" as const },
   { value: '"type":"turn.failed"', kind: "terminal" as const }
 ];
@@ -193,8 +194,8 @@ async function readLatestRun(file: RecentSessionFile): Promise<ActiveSessionRun 
   return null;
 }
 
-async function collectRecentSessionFiles(): Promise<RecentSessionFile[]> {
-  if (recentFilesCache && recentFilesCache.expiresAt > Date.now()) {
+async function collectRecentSessionFiles(force = false): Promise<RecentSessionFile[]> {
+  if (!force && recentFilesCache && recentFilesCache.expiresAt > Date.now()) {
     return recentFilesCache.files;
   }
 
@@ -246,8 +247,8 @@ async function collectRecentSessionFiles(): Promise<RecentSessionFile[]> {
   return files;
 }
 
-export async function listActiveSessionRuns(): Promise<ActiveSessionRun[]> {
-  const files = await collectRecentSessionFiles();
+export async function listActiveSessionRuns(force = false): Promise<ActiveSessionRun[]> {
+  const files = await collectRecentSessionFiles(force);
   const runs = await Promise.all(
     files.map(async (file) => {
       const cached = fileCache.get(file.filePath);

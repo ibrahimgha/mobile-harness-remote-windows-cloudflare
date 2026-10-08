@@ -16,6 +16,12 @@ assert.deepEqual(activeRunFromSessionText(chatId, started), {
 });
 assert.equal(activeRunFromSessionText(chatId, `${started}\n${completed}`), null);
 assert.equal(activeRunFromSessionText(chatId, `${started}\n${failed}`), null);
+const aborted = '{"timestamp":"2026-07-19T07:49:35.687Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted"}}';
+assert.equal(activeRunFromSessionText(chatId, `${started}\n${aborted}`), null,
+  "native interruption ends activity so a restored resume is not blocked by its own old run");
+assert.deepEqual(activeRunFromSessionText(chatId, `${started}\n${aborted}\n${started}`), {
+  chatId, startedAt: "2026-07-19T07:47:35.000Z"
+}, "a newer turn after an interruption remains active");
 assert.deepEqual(activeRunFromSessionText(chatId, `${completed}\n${started}`), {
   chatId,
   startedAt: "2026-07-19T07:47:35.000Z"
