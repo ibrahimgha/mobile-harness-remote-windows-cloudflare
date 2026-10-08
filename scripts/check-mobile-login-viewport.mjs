@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_CORE || "playwright-core");
-const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8") + readFileSync(new URL("../public/mobile-login-viewport.css", import.meta.url), "utf8");
+// Production emits the compiled stylesheet after the public patch links.
+const css = readFileSync(new URL("../public/mobile-login-viewport.css", import.meta.url), "utf8") + readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });

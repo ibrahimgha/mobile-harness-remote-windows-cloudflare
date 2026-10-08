@@ -1,6 +1,6 @@
 /* The root already follows visualViewport on phones. Login must fit that root,
    not insist on a full 100dvh layout beneath the keyboard. */
-.auth-shell {
+#root .auth-shell {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -13,13 +13,13 @@
   scroll-padding-block: 18px;
 }
 
-.auth-shell > .auth-panel,
-.auth-shell > .spin {
+#root .auth-shell > .auth-panel,
+#root .auth-shell > .spin {
   flex-shrink: 0;
   margin-block: auto;
 }
 
-.auth-row input {
+#root .auth-row input {
   font-size: 16px;
   scroll-margin-block: 18px;
 }
