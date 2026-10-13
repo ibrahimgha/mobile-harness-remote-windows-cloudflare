@@ -4747,16 +4747,7 @@ export function App() {
         ? runFailureMessages.filter((message) => (Date.parse(message.createdAt) || 0) >= firstTranscriptMs)
         : runFailureMessages;
 
-      return [...transcriptMessages, ...scopedRunFailures]
-        .sort((a, b) => {
-          const byTime = (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0);
-
-          if (byTime !== 0) {
-            return byTime;
-          }
-
-          return a.id.localeCompare(b.id);
-        });
+      return [...transcriptMessages, ...scopedRunFailures];
     },
     [runFailureMessages, transcriptMessages]
   );
