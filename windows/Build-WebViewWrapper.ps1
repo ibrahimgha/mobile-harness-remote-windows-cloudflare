@@ -175,6 +175,7 @@ internal sealed class MainForm : Form
   private DateTime driveFreeSampledAt = DateTime.MinValue;
   private const int ActivateControlRoomMessage = 0x8001;
   private const int RouteKnobMessage = 0x8002;
+  private const int DismissCompletionGlowsMessage = 0x8003;
   private const int WmHotkey = 0x0312;
   private const int WmKeyDown = 0x0100;
   private const int WmSystemKeyDown = 0x0104;
@@ -242,6 +243,9 @@ internal sealed class MainForm : Form
   [DllImport("user32.dll")]
   private static extern IntPtr SendMessage(IntPtr windowHandle, int message, IntPtr wParam, IntPtr lParam);
 
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern bool PostMessage(IntPtr windowHandle, int message, IntPtr wParam, IntPtr lParam);
+
   private static string PhysicalLocalAppData()
   {
     Guid localAppData = new Guid("F1B32785-6FBA-4FCF-9D55-7B8E7F157091");
@@ -304,6 +308,20 @@ internal sealed class MainForm : Form
 
   protected override void WndProc(ref Message message)
   {
+    if (message.Msg == DismissCompletionGlowsMessage)
+    {
+      if (webView.CoreWebView2 != null)
+      {
+        var serializer = new JavaScriptSerializer();
+        webView.CoreWebView2.PostWebMessageAsJson(serializer.Serialize(new
+        {
+          type = "codex-control-room-pad-action",
+          action = "dismiss-all-completion-glows"
+        }));
+      }
+      message.Result = new IntPtr(1);
+      return;
+    }
     if (message.Msg == WmHotkey)
     {
       int hotkeyId = message.WParam.ToInt32();
@@ -635,6 +653,11 @@ internal sealed class MainForm : Form
       try
       {
         BeginInvoke((Action)AcknowledgeCompletionLight);
+        int virtualKey = Marshal.ReadInt32(lParam);
+        if (virtualKey == 0x11 || virtualKey == 0xA2 || virtualKey == 0xA3)
+        {
+          BeginInvoke((Action)DismissAllControlRoomCompletionGlows);
+        }
       }
       catch
       {
@@ -655,6 +678,13 @@ internal sealed class MainForm : Form
       type = "codex-control-room-pad-action",
       action = "acknowledge-completion-light"
     }));
+  }
+
+  private void DismissAllControlRoomCompletionGlows()
+  {
+    // Send asynchronously: a busy room must not block input or other rooms.
+    foreach (IntPtr windowHandle in FindOpenControlRoomWindows().Values)
+      PostMessage(windowHandle, DismissCompletionGlowsMessage, IntPtr.Zero, IntPtr.Zero);
   }
 
   private void RememberActiveControlRoom()

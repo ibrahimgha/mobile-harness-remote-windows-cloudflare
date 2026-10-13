@@ -3,6 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { stripRemotePromptContext } from "./remotePromptContext.js";
+import { splitNotificationMetadata } from "../shared/notificationCopy.js";
+import { splitConfirmationMetadata } from "../shared/confirmation.js";
 import type { ChatDetail, ChatMessageExcerpt, ChatMessageViewMode, ChatProjectGroup, ChatSummary, ChatTranscriptMessage } from "./types.js";
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
@@ -144,6 +147,11 @@ function isPromptText(text: string): boolean {
   if (!trimmed) {
     return false;
   }
+
+  // Native skill inputs are persisted as context-only user messages by Codex.
+  // Keep the actual prompt, pagination, voice notes, and last-prompt preview aligned.
+  if (/^<skill>\s*<name>[^<]+<\/name>\s*<path>[^<]+<\/path>[\s\S]*<\/skill>$/.test(trimmed)) return false;
+  if (/^<recommended_plugins>[\s\S]*<\/recommended_plugins>\s*<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) return false;
 
   return !trimmed.startsWith("<environment_context>");
 }
@@ -877,7 +885,9 @@ export async function parseSessionFile(
         return;
       }
 
-      const text = textFromContent(payload.content);
+      const rawText = textFromContent(payload.content);
+      const confirmation = payload.role === "assistant" ? splitConfirmationMetadata(rawText) : undefined;
+      const text = payload.role === "user" ? stripRemotePromptContext(rawText) : splitNotificationMetadata(confirmation?.text ?? rawText).text;
 
       if (payload.role === "user" && isPromptText(text)) {
         lastPrompt = { text, createdAt: timestamp };
@@ -919,6 +929,7 @@ export async function parseSessionFile(
         }
 
         const assistantMessage: ChatTranscriptMessage = {
+          confirmationHint: confirmation?.hint,
           id: transcriptId(isFinalAnswer ? "assistant_final" : "assistant_commentary", timestamp, transcriptMessages.length),
           role: "assistant",
           kind: isFinalAnswer ? "assistant_final" : "assistant_commentary",

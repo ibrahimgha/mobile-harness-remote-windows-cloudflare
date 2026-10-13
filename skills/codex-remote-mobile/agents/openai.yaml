@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Remote Mobile"
+  short_description: "Mobile responses, voice context, and visible handoffs"
+  default_prompt: "Use $codex-remote-mobile for phone-friendly results and visible worker handoffs."

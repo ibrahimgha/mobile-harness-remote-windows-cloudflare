@@ -19,13 +19,12 @@
     - Show non-renderable files as attachments with filename, type, size when available, and a reliable download action.
     - Serve all viewers and downloads through authenticated same-origin routes.
     - Keep screenshot/image rendering stable and separate from file-download handling.
-- [x] Implement steering as stop current worker, then run queued prompt
-  - Approach prompt:
-    - Treat a steer as stopping the current running worker for that chat.
-    - Prioritize the selected queued prompt server-side.
-    - After the stopped worker exits, let the existing server queue scheduler start the selected queued prompt.
-    - Do not spawn a parallel `codex exec resume` process in the same chat.
-    - Add tests proving steering rejects cross-chat stop behavior and targets only the selected chat.
+- [x] Replace stop-and-restart steering with native active-turn steering
+  - Use `codex app-server` over private stdio and `turn/steer` with the expected turn ID.
+  - Keep the current process, turn, model, reasoning, and speed; leave mismatched-settings prompts queued.
+  - Keep explicit Stop (`turn/interrupt`) separate; never stop or launch another worker to steer.
+  - Persist input reservations and confirmations, deduplicate retries, and hold uncertain delivery after restart.
+  - Test protocol/lifecycle, wrong-thread events, queue recovery, duplicate taps, native Stop, and completion accounting.
 - [x] Stop only the running worker for the current chat
   - Approach prompt:
     - Add a stop button for an active running worker.

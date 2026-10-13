@@ -21,6 +21,10 @@ import {
 } from "./accessTokens.js";
 import { CodexBridge } from "./codexBridge.js";
 import { CodexRunner } from "./codexRunner.js";
+import { ConfirmationDecisions, confirmationForChat } from "./confirmations.js";
+import { ConfirmationTable } from "./confirmationTable.js";
+import { startConfirmationInbox } from "./confirmationInbox.js";
+import { isQueueOrder } from "../shared/queueOrder.js";
 import { clearSessionCache, getChat, listChats } from "./codexSessions.js";
 import { getCachedCodexUsage, refreshCodexUsage } from "./codexUsage.js";
 import { transcribeAudioWithOpenAI } from "./audioTranscription.js";
@@ -34,7 +38,9 @@ import {
   startProjectChat,
   type ProjectChatStartResult
 } from "./projectStarter.js";
-import { getRunSettings, getRunSettingsOptions, updateRunSettings } from "./runSettings.js";
+import { getRunSettings, getRunSettingsOptions, PromptSettingsError, settingsForPrompt, updateRunSettings } from "./runSettings.js";
+import { ensureRemoteSkill } from "./remoteSkill.js";
+import { promptInputSource } from "./remotePromptContext.js";
 import { forkChatSession, renameChatSession } from "./sessionForker.js";
 import { listActiveSessionRuns, recordSessionRunTerminal } from "./sessionActivity.js";
 import type { BridgeEvent, BridgeState, ChatMessageViewMode, CodexRunJob, CodexRunSettings, ShortcutInstructionFile, UploadedPromptFile } from "./types.js";
@@ -79,8 +85,17 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const bridge = new CodexBridge({ enabled: controlEnabled, targetTitle });
+const remoteSkill = ensureRemoteSkill();
+const confirmationDecisions = new ConfirmationDecisions();
+const confirmationTable = new ConfirmationTable();
 const runner = new CodexRunner({
   getRunSettings,
+  remoteSkill,
+  getExternalActiveRuns: listActiveSessionRuns,
+  onExternalJobsChange: () => {
+    clearSessionCache();
+    pushState();
+  },
   onJobChange(job, event) {
     clearSessionCache();
     pushEvent(event === "failed" ? "error" : "action", job.message ?? `Codex run ${event}`, {
@@ -346,7 +361,8 @@ function startChatInBackground(options: {
         projectName: options.projectName,
         prompt: options.prompt,
         createDirectory: options.createDirectory,
-        settings: getRunSettings()
+        settings: getRunSettings(),
+        remoteSkill
       });
 
       task.status = "completed";
@@ -833,7 +849,9 @@ function filteredSettingsOptions(access: RemoteAccess) {
 
 function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
   const recentJobs =
-    access.mode === "single-chat" ? runner.recentJobs.filter((job) => job.chatId === access.chatId) : runner.recentJobs;
+    access.mode === "single-chat" ? runner.recentJobs.filter((job) =>
+      job.chatId === access.chatId && (!access.visibleAfter || job.createdAt >= access.visibleAfter)
+    ) : runner.recentJobs;
   const activeJobs = recentJobs.filter((job) => job.status === "running").length;
   const queuedJobs = recentJobs.filter((job) => job.status === "queued").length;
 
@@ -846,7 +864,8 @@ function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
             chatTitle: access.chatTitle,
             projectName: access.projectName,
             projectPath: access.projectPath,
-            settings: access.settings
+            settings: access.settings,
+            visibleAfter: access.visibleAfter
           }
         : { mode: "full" },
     bridge: {
@@ -866,6 +885,7 @@ function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
     },
     runner: {
       mode: runner.mode,
+      skill: { name: remoteSkill.name, path: remoteSkill.path },
       cliPath: runner.cliPath,
       bypassSandbox: runner.bypassSandbox,
       skipGitRepoCheck: runner.skipGitRepoCheck,
@@ -873,11 +893,14 @@ function getState(access: RemoteAccess = { mode: "full" }): BridgeState {
       settingsOptions: filteredSettingsOptions(access),
       activeJobs: access.mode === "single-chat" ? activeJobs : runner.activeJobs,
       queuedJobs: access.mode === "single-chat" ? queuedJobs : runner.queuedJobs,
+      queueReordering: true,
       recentJobs,
       usage: access.mode === "single-chat" ? null : getCachedCodexUsage()
     },
     recentEvents:
-      access.mode === "single-chat" ? events.filter((event) => event.detail?.chatId === access.chatId) : events
+      access.mode === "single-chat" ? events.filter((event) =>
+        event.detail?.chatId === access.chatId && (!access.visibleAfter || event.createdAt >= access.visibleAfter)
+      ) : events
   };
 }
 
@@ -1541,7 +1564,7 @@ app.post("/api/notifications/test", requireControlAuth, async (req, res) => {
 
 app.get("/api/jobs", requireControlAuth, (_req, res) => {
   const access = requestAccess(res);
-  const jobs = access.mode === "single-chat" ? runner.recentJobs.filter((job) => job.chatId === access.chatId) : runner.recentJobs;
+  const jobs = access.mode === "single-chat" ? runner.recentJobs.filter((job) => job.chatId === access.chatId && (!access.visibleAfter || job.createdAt >= access.visibleAfter)) : runner.recentJobs;
   res.json({
     ok: true,
     mode: runner.mode,
@@ -1569,7 +1592,10 @@ app.get("/api/chats/:id/jobs", requireControlAuth, async (req, res) => {
     res.json({
       ok: true,
       chatId,
-      jobs: await runner.reconcileChatJobs(chatId)
+      jobs: [...runner.externalJobs.filter((job) => job.chatId === chatId), ...await runner.reconcileChatJobs(chatId)].filter((job) => {
+        const access = requestAccess(res);
+        return access.mode === "full" || !access.visibleAfter || job.createdAt >= access.visibleAfter;
+      })
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load command queue";
@@ -1612,7 +1638,13 @@ app.post("/api/chats/:id/jobs/:jobId/stop", requireControlAuth, (req, res) => {
 app.delete("/api/chats/:id/queued-prompts/:jobId", requireControlAuth, (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
-  const cancelled = runner.cancelQueuedJob(jobId, chatId);
+  let cancelled;
+  try {
+    cancelled = runner.cancelQueuedJob(jobId, chatId);
+  } catch (error) {
+    res.status(409).json({ ok: false, message: error instanceof Error ? error.message : "Prompt is being steered" });
+    return;
+  }
 
   if (!cancelled) {
     res.status(404).json({ ok: false, message: "Queued prompt not found" });
@@ -1632,8 +1664,27 @@ app.delete("/api/chats/:id/queued-prompts/:jobId", requireControlAuth, (req, res
     message: "Queued prompt moved back to composer",
     chatId,
     job: cancelled.job,
-    text: cancelled.text
+    text: cancelled.job.composerText ?? cancelled.text,
+    attachments: cancelled.job.attachments ?? []
   });
+});
+
+app.post("/api/chats/:id/queued-prompts/reorder", requireControlAuth, (req, res) => {
+  const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const { jobIds, expectedOrder } = req.body ?? {};
+  if (!isQueueOrder(jobIds) || !isQueueOrder(expectedOrder)) {
+    res.status(400).json({ ok: false, message: "Supply the new and expected queue orders as unique job IDs." });
+    return;
+  }
+  try {
+    const jobs = runner.reorderQueuedJobs(chatId, jobIds, expectedOrder);
+    pushEvent("action", "Queued prompt order saved", {
+      action: "chat-prompt-queue-reorder", chatId, jobIds, request: requestContext(req)
+    });
+    res.json({ ok: true, message: "Queue order saved", chatId, jobs });
+  } catch (error) {
+    res.status(409).json({ ok: false, message: error instanceof Error ? error.message : "Could not reorder the queue" });
+  }
 });
 
 app.post("/api/chats/:id/queued-prompts/:jobId/prioritize", requireControlAuth, (req, res) => {
@@ -1662,44 +1713,23 @@ app.post("/api/chats/:id/queued-prompts/:jobId/prioritize", requireControlAuth, 
   });
 });
 
-app.post("/api/chats/:id/queued-prompts/:jobId/steer", requireControlAuth, (req, res) => {
+app.post("/api/chats/:id/queued-prompts/:jobId/steer", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
-  const result = runner.steerQueuedJob(jobId, chatId);
-
-  if (!result) {
-    res.status(404).json({ ok: false, message: "Queued prompt not found" });
-    return;
-  }
-
-  if (result.hadRunningJob && !result.stoppedJob) {
-    res.status(409).json({
-      ok: false,
-      message: "Queued prompt was prioritized, but the running worker could not be stopped",
-      chatId,
-      job: result.job
+  try {
+    const result = await runner.steerQueuedJob(jobId, chatId);
+    if (!result) {
+      res.status(404).json({ ok: false, message: "Queued prompt not found" });
+      return;
+    }
+    const message = result.steered ? "Steering accepted by the active Codex turn" : "The previous turn ended; queued prompt will run next";
+    pushEvent("action", message, {
+      action: "chat-prompt-queue-steer", chatId, jobId, request: requestContext(req), job: result.job
     });
-    return;
+    res.json({ ok: true, message, chatId, job: result.job, activeJob: result.activeJob });
+  } catch (error) {
+    res.status(409).json({ ok: false, message: error instanceof Error ? error.message : "Could not steer the active turn" });
   }
-
-  pushEvent("action", "Queued prompt will steer by stopping the current worker", {
-    action: "chat-prompt-queue-steer",
-    chatId,
-    jobId,
-    request: requestContext(req),
-    job: result.job,
-    stoppedJob: result.stoppedJob
-  });
-
-  res.json({
-    ok: true,
-    message: result.stoppedJob
-      ? "Stopping current worker; queued prompt will run next"
-      : "Queued prompt moved to run next",
-    chatId,
-    job: result.job,
-    stoppedJob: result.stoppedJob
-  });
 });
 
 app.get("/api/chats", requireControlAuth, async (req, res) => {
@@ -1711,10 +1741,12 @@ app.get("/api/chats", requireControlAuth, async (req, res) => {
       return;
     }
 
-    const projects = index.projects
-      .map((project) => ({
-        ...project,
-        chats: project.chats.filter((chat) => chat.id === access.chatId)
+      const projects = index.projects
+        .map((project) => ({
+          ...project,
+          chats: project.chats.filter((chat) => chat.id === access.chatId).map((chat) => access.visibleAfter ? ({
+            ...chat, createdAt: access.visibleAfter, lastPromptPreview: "", lastResponsePreview: "", hasResponse: false
+          }) : chat)
       }))
       .filter((project) => project.chats.length > 0);
     res.json({ projects, totalChats: projects.reduce((count, project) => count + project.chats.length, 0) });
@@ -1849,12 +1881,56 @@ app.post("/api/projects", requireControlAuth, async (req, res) => {
   }
 });
 
+const confirmationVersions = new Map<string, string>();
+let confirmationScan: Promise<void> | undefined;
+let confirmationScanAt: string | null = null;
+let confirmationScanError: string | null = null;
+function refreshConfirmationTable() {
+  if (confirmationScan) return confirmationScan;
+  confirmationScan = (async () => {
+    const index = await listChats();
+    const audit = (await readAuditEvents(5000)).map(event => event.detail?.job).filter((job): job is CodexRunJob => Boolean(job));
+    for (const summary of index.projects.flatMap(project => project.chats)) {
+      const jobs = runner.jobsForChat(summary.id);
+      const version = JSON.stringify([summary.updatedAt, jobs.map(job => [job.id, job.status])]);
+      if (confirmationVersions.get(summary.id) === version) continue;
+      await confirmationDecisions.exclusive(summary.id, async () => {
+        const chat = await getChat(summary.id, { detailTurns: 1, messageMode: "final" });
+        if (!chat) return;
+        const enriched = attachPromptRunSettings(chat, [...jobs, ...audit]);
+        const pending = confirmationForChat(enriched, jobs);
+        confirmationTable.sync(enriched, jobs, pending ? confirmationDecisions.get(chat.id, pending.id) : undefined);
+        confirmationVersions.set(summary.id, version);
+      });
+    }
+    confirmationScanAt = new Date().toISOString();
+    confirmationScanError = null;
+  })().catch(error => { confirmationScanError = error instanceof Error ? error.message : "Confirmation indexing failed"; })
+    .finally(() => { confirmationScan = undefined; });
+  return confirmationScan;
+}
+
+app.get("/api/acknowledgments", requireControlAuth, async (req, res) => {
+  const pending = req.query.pending;
+  if (pending !== undefined && !['true','false','1','0'].includes(String(pending))) {
+    res.status(400).json({ ok: false, message: "Invalid pending value" }); return;
+  }
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  if (!Number.isInteger(limit) || !Number.isInteger(offset)) { res.status(400).json({ok:false,message:"Invalid pagination"}); return; }
+  if (req.query.refresh === "1") await refreshConfirmationTable();
+  const rows = confirmationTable.list(pending===undefined?undefined:pending==='true'||pending==='1', typeof req.query.cid === "string" ? req.query.cid : undefined, limit, offset);
+  res.json({ acknowledgments: rows.map(row=>({...row,pending:Boolean(row.pending)})), limit, offset, lastScannedAt: confirmationScanAt, scanning: Boolean(confirmationScan), scanError: confirmationScanError });
+});
+
+
 app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const turns = Number(Array.isArray(req.query.turns) ? req.query.turns[0] : req.query.turns);
   const messageMode = chatMessageViewModeFromQuery(req.query.mode);
 
   try {
+    const access = requestAccess(res);
     const chat = await getChat(chatId, {
       detailTurns: Number.isFinite(turns) ? turns : undefined,
       messageMode
@@ -1869,7 +1945,28 @@ app.get("/api/chats/:id", requireControlAuth, async (req, res) => {
     const auditedJobs = auditEvents
       .map((event) => event.detail?.job)
       .filter((job): job is CodexRunJob => Boolean(job));
-    res.json(attachPromptRunSettings(chat, [...runner.jobsForChat(chatId), ...auditedJobs]));
+    const enriched = attachPromptRunSettings(chat, [...runner.jobsForChat(chatId), ...auditedJobs]);
+    const pending = confirmationForChat(enriched, runner.jobsForChat(chatId));
+    const stored = confirmationTable.sync(enriched, runner.jobsForChat(chatId), pending ? confirmationDecisions.get(chatId, pending.id) : undefined);
+    if (stored) {
+      enriched.pendingConfirmation = { id: String(stored.id), reply: String(stored.word), summary: String(stored.summary),
+        model: pending!.model, reasoningEffort: pending!.reasoningEffort };
+    }
+      if (access.mode === "single-chat" && access.visibleAfter) {
+        enriched.messages = enriched.messages.filter((message) => message.createdAt >= access.visibleAfter!);
+        const lastPrompt = [...enriched.messages].reverse().find((message) => message.role === "user");
+        const lastResponse = [...enriched.messages].reverse().find((message) => message.role === "assistant");
+        enriched.lastPrompt = lastPrompt ? { text: lastPrompt.text, createdAt: lastPrompt.createdAt } : null;
+        enriched.lastResponse = lastResponse ? { text: lastResponse.text, createdAt: lastResponse.createdAt } : null;
+        enriched.hasResponse = Boolean(lastResponse);
+        enriched.messagePage = {
+          visibleTurns: enriched.messages.filter((message) => message.role === "user").length,
+          totalTurns: enriched.messages.filter((message) => message.role === "user").length,
+          hasMore: false
+        };
+        delete enriched.pendingConfirmation;
+      }
+      res.json(enriched);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load Codex chat";
 
@@ -2270,6 +2367,72 @@ app.post("/api/chats/:id/dictation/transcribe", requireControlAuth, async (req, 
   }
 });
 
+app.post("/api/chats/:id/confirmation", requireControlAuth, async (req, res) => {
+  const chatId = String(req.params.id);
+  const id = req.body?.id;
+  const action = req.body?.action;
+  if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id) || !["accept", "dismiss"].includes(action)) {
+    res.status(400).json({ ok: false, message: "Invalid confirmation action" });
+    return;
+  }
+  try {
+    await confirmationDecisions.exclusive(chatId, async () => {
+      const previous = confirmationDecisions.get(chatId, id);
+      const clientRequestId = `confirmation-${id}`;
+      const accepted = runner.jobForClientRequest(chatId, clientRequestId) ?? previous?.job;
+      if (accepted) {
+        confirmationTable.set(chatId, id, "accepted", accepted.id);
+        if (action === "dismiss") { res.status(409).json({ok:false,message:"This confirmation was already accepted"}); return; }
+        res.status(202).json({ ok: true, job: accepted, disposition: accepted.status === "queued" ? "queued" : "started", message: "Confirmation already accepted" });
+        return;
+      }
+      if (previous?.status === "dismissed" && action === "dismiss") {
+        res.json({ ok: true });
+        return;
+      }
+      if (previous) {
+        res.status(409).json({ ok: false, message: previous.status === "sending" ? "Confirmation delivery is being reconciled. Check the chat before retrying." : "This confirmation was already dismissed" });
+        return;
+      }
+      clearSessionCache();
+      const chat = await getChat(chatId);
+      if (!chat) { res.status(404).json({ ok: false, message: "Chat not found" }); return; }
+      const auditedJobs = (await readAuditEvents(5000)).map((event) => event.detail?.job).filter((job): job is CodexRunJob => Boolean(job));
+      await runner.refreshExternalActivity(true);
+      const current = confirmationForChat(attachPromptRunSettings(chat, [...runner.jobsForChat(chatId), ...auditedJobs]), runner.jobsForChat(chatId));
+      confirmationTable.sync(attachPromptRunSettings(chat, [...runner.jobsForChat(chatId), ...auditedJobs]), runner.jobsForChat(chatId), current ? confirmationDecisions.get(chatId, current.id) : undefined);
+      if (!current || current.id !== id) {
+        res.status(409).json({ ok: false, message: "The chat has changed; this confirmation is no longer current" });
+        return;
+      }
+      if (action === "dismiss") {
+        confirmationDecisions.set(chatId, id, "dismissed");
+        confirmationTable.set(chatId, id, "dismissed");
+        res.json({ ok: true });
+        return;
+      }
+      const access = requestAccess(res);
+      if (access.mode === "single-chat" && (current.settings.model !== access.settings.model || current.settings.reasoningEffort !== access.settings.reasoningEffort)) {
+        res.status(409).json({ ok: false, message: "This worker's settings differ from this shared chat's locked settings" });
+        return;
+      }
+      const settings = settingsForPrompt(current.settings);
+      const disposition = runner.willQueueBehindExistingJob(chatId) ? "queued" : "started";
+      confirmationDecisions.set(chatId, id, "sending");
+      confirmationTable.set(chatId, id, "sending");
+      const job = runner.enqueue({ chatId, projectPath: chat.projectPath, clientRequestId,
+        text: current.reply, composerText: current.reply, attachments: [], inputSource: "typed",
+        promptPreview: current.reply, promptHash: String(summarizePrompt(current.reply).promptHash),
+        textLength: current.reply.length, settings });
+      confirmationDecisions.set(chatId, id, "accepted", job);
+      confirmationTable.set(chatId, id, "accepted", job.id);
+      res.status(202).json({ ok: true, job, disposition, message: disposition === "queued" ? "Confirmation queued" : "Confirmation sent" });
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Could not submit confirmation" });
+  }
+});
+
 app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const text = typeof req.body?.text === "string" ? req.body.text : "";
@@ -2311,7 +2474,21 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
     }
 
     const promptSummary = summarizePrompt(text);
+    const composerText = typeof req.body?.composerText === "string" ? req.body.composerText : undefined;
+    const attachments = Array.isArray(req.body?.attachments)
+      ? (req.body.attachments as unknown[]).filter((value): value is UploadedPromptFile => {
+          if (!value || typeof value !== "object") return false;
+          const file = value as Partial<UploadedPromptFile>;
+          return typeof file.name === "string" && typeof file.originalName === "string"
+            && typeof file.type === "string" && typeof file.size === "number" && file.size >= 0
+            && typeof file.path === "string" && typeof file.relativePath === "string"
+            && typeof file.uploadedAt === "string" && text.includes(file.path);
+        }).slice(0, maxUploadFiles)
+      : undefined;
 
+    // Reserve threads held by Codex clients outside this Remote before deciding
+    // whether the new prompt can start or must remain safely queued.
+    await runner.refreshExternalActivity(true);
     const disposition = runner.willQueueBehindExistingJob(chatId) ? "queued" : "started";
     const job = runner.enqueue({
       clientRequestId: clientRequestId || undefined,
@@ -2321,7 +2498,10 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       promptPreview: String(promptSummary.promptPreview ?? ""),
       promptHash: String(promptSummary.promptHash ?? ""),
       textLength: Number(promptSummary.textLength ?? text.trimEnd().length),
-      settings: requestAccess(res).mode === "single-chat" ? (requestAccess(res) as SingleChatRemoteAccess).settings : undefined
+      composerText,
+      attachments,
+      settings: requestAccess(res).mode === "single-chat" ? (requestAccess(res) as SingleChatRemoteAccess).settings : settingsForPrompt(req.body?.settings),
+      inputSource: promptInputSource(req.body?.inputSource)
     });
 
     pushEvent("action", "Prompt queued for exact Codex session on target laptop", {
@@ -2336,7 +2516,7 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
 
     res.status(202).json({
       ok: true,
-      message: "Prompt accepted on target laptop; only earlier commands in the same chat can delay it",
+      message: "Prompt accepted on target laptop; any active command in the same chat will delay it",
       disposition,
       job
     });
@@ -2348,16 +2528,22 @@ app.post("/api/chats/:id/prompt", requireControlAuth, async (req, res) => {
       request: requestContext(req),
       error: describeError(error)
     });
-    res.status(500).json({ ok: false, message });
+    res.status(error instanceof PromptSettingsError ? 400 : 500).json({ ok: false, message });
   }
 });
 
 app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
   const chatId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const clientRequestId = typeof req.body?.clientRequestId === "string" ? req.body.clientRequestId.trim().slice(0, 200) : "";
+  let savedJob: CodexRunJob | undefined;
 
   if (!text.trim()) {
     res.status(400).json({ ok: false, message: "Text is empty" });
+    return;
+  }
+  if (!clientRequestId) {
+    res.status(400).json({ ok: false, message: "clientRequestId is required for safe steering retries. Reuse the same ID when retrying this input." });
     return;
   }
 
@@ -2375,21 +2561,30 @@ app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
     }
 
     const promptSummary = summarizePrompt(text);
-
-    pushEvent("error", "Steering rejected because Codex CLI cannot attach to an in-flight run", {
-      action: "chat-prompt-steer-rejected",
-      chatId,
-      route: "POST /api/chats/:id/steer",
-      request: requestContext(req),
-      projectPath: chat.projectPath,
-      ...promptSummary
+    const existing = clientRequestId ? runner.jobForClientRequest(chatId, clientRequestId) : undefined;
+    if (!existing && !runner.hasNativeRunningJob(chatId)) {
+      res.status(409).json({ ok: false, message: "No native active turn is available to steer. The prompt was not sent." });
+      return;
+    }
+    const job = existing ?? runner.enqueue({
+      clientRequestId: clientRequestId || undefined,
+      chatId, projectPath: chat.projectPath, text: text.trimEnd(),
+      promptPreview: String(promptSummary.promptPreview ?? ""),
+      promptHash: String(promptSummary.promptHash ?? ""),
+      textLength: text.trimEnd().length,
+      settings: requestAccess(res).mode === "single-chat" ? (requestAccess(res) as SingleChatRemoteAccess).settings : settingsForPrompt(req.body?.settings),
+      inputSource: promptInputSource(req.body?.inputSource)
     });
-
-    res.status(409).json({
-      ok: false,
-      message:
-        "Steering is disabled because the current Codex CLI backend cannot attach to an in-flight run. The prompt was not sent; keep it queued until the running task finishes."
+    savedJob = job;
+    const result = await runner.steerQueuedJob(job.id, chatId);
+    if (!result) {
+      res.status(409).json({ ok: false, message: "Prompt is no longer queued for steering", job });
+      return;
+    }
+    pushEvent("action", "Native steering accepted", {
+      action: "chat-prompt-steer", chatId, request: requestContext(req), ...promptSummary, job: result.job
     });
+    res.status(202).json({ ok: true, message: "Input accepted by Codex", disposition: result.steered ? "steered" : "started", job: result.job });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not send steering prompt";
     pushEvent("error", message, {
@@ -2398,7 +2593,7 @@ app.post("/api/chats/:id/steer", requireControlAuth, async (req, res) => {
       request: requestContext(req),
       error: describeError(error)
     });
-    res.status(500).json({ ok: false, message });
+    res.status(error instanceof PromptSettingsError ? 400 : 409).json({ ok: false, message, job: savedJob, disposition: savedJob ? "saved" : "not-sent" });
   }
 });
 
@@ -2514,6 +2709,14 @@ wss.on("connection", (socket: WebSocket) => {
 });
 
 const socketHeartbeat = setInterval(maintainSockets, socketHeartbeatMs);
+server.once("listening", () => {
+  const stopInbox = startConfirmationInbox(confirmationTable, `http://127.0.0.1:${port}`, controlToken || [...controlTokens][0] || "");
+  server.once("close", stopInbox);
+});
+void refreshConfirmationTable();
+const confirmationTimer = setInterval(() => void refreshConfirmationTable(), 30000);
+confirmationTimer.unref();
+server.on("close", () => clearInterval(confirmationTimer));
 server.on("close", () => clearInterval(socketHeartbeat));
 server.on("close", () => controlRoomLed.stop());
 void refreshUsageAndPushState();

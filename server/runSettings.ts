@@ -25,6 +25,22 @@ const fallbackModelCapabilities: CodexModelCapability[] = [
     speeds
   },
   {
+    model: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
+    description: "Near-Astra performance for complex work at a lower cost.",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
+    speeds
+  },
+  {
+    model: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    description: "Fast and cost-efficient model for focused, high-volume work.",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    speeds
+  },
+  {
     model: "gpt-5.6-sol",
     label: "GPT-5.6-Sol",
     description: "Latest frontier agentic coding model.",
@@ -307,4 +323,22 @@ export function updateRunSettings(patch: Partial<CodexRunSettings>): CodexRunSet
   });
   saveSettings(cachedSettings);
   return getRunSettings();
+}
+
+/** Per-prompt overrides leave the Remote's global model slider untouched. */
+export class PromptSettingsError extends Error {}
+
+export function settingsForPrompt(value: unknown): CodexRunSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PromptSettingsError("Prompt settings must be an object");
+  const patch = value as Partial<CodexRunSettings>;
+  const current = getRunSettings();
+  const selected = { ...current, ...patch, updatedAt: nowIso() };
+  const capability = getRunSettingsOptions().modelCapabilities[selected.model];
+  if (!capability?.reasoningEfforts) throw new PromptSettingsError("Requested prompt model is not available on this Remote");
+  if (patch.reasoningEffort === undefined && !capability.reasoningEfforts.includes(selected.reasoningEffort)) selected.reasoningEffort = capability.defaultReasoningEffort;
+  if (patch.speed === undefined && !capability.speeds.includes(selected.speed)) selected.speed = "default";
+  if (!capability.reasoningEfforts.includes(selected.reasoningEffort)) throw new PromptSettingsError("Requested reasoning level is not available for this model");
+  if (!capability.speeds.includes(selected.speed)) throw new PromptSettingsError("Requested speed is not available for this model");
+  return { model: selected.model, reasoningEffort: selected.reasoningEffort, speed: selected.speed, updatedAt: selected.updatedAt };
 }

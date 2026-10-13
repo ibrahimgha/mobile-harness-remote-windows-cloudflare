@@ -65,7 +65,7 @@ $remoteConfig = "/home/$DisplayUser/.config/codex-control-room-native"
 $remoteBin = "/home/$DisplayUser/.local/bin"
 $remoteAutostart = "/home/$DisplayUser/.config/autostart"
 
-ssh $Target "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libwebkit2gtk-4.1-0 && sudo install -d -o $DisplayUser -g $DisplayUser -m 700 '$remoteBase' '$remoteConfig' '$remoteBin' '$remoteAutostart'"
+ssh $Target "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-cairo python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libwebkit2gtk-4.1-0 && sudo install -d -o $DisplayUser -g $DisplayUser -m 700 '$remoteBase' '$remoteConfig' '$remoteBin' '$remoteAutostart'"
 scp (Join-Path $root "native\rpi-control-room\control_room.py") "${Target}:/tmp/codex-control-room-native.py"
 scp (Join-Path $root "native\rpi-control-room\codex-control-room-native.desktop") "${Target}:/tmp/codex-control-room-native.desktop"
 scp (Join-Path $root "native\rpi-control-room\control-room.svg") "${Target}:/tmp/control-room.svg"

@@ -48,12 +48,15 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   TouchEvent as ReactTouchEvent,
   isValidElement,
+  lazy,
   memo,
+  Suspense,
   type CSSProperties,
   type ReactNode,
   type Ref,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -64,14 +67,26 @@ import { advanceCompletionGlow, type CompletionGlowTracker } from "./controlRoom
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
-import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "./chatRefresh";
+import { mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
+import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
+import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
+const PdfDocumentViewer = lazy(() => import("./PdfDocumentViewer").then((module) => ({ default: module.PdfDocumentViewer })));
+import type { PendingConfirmation } from "../shared/confirmation";
 import {
+  animateTranscriptScroll,
+  scrollTranscriptToTop,
   capturePrependScrollSnapshot,
-  restorePrependScrollSnapshot,
-  type PrependScrollSnapshot
+  keepPrependScrollAnchor,
+  type TranscriptScrollAnimation,
+  type PrependScrollSnapshot,
+  type PrependScrollKeeper
 } from "./chatScroll";
-import { composerInputId, readChatDraft, writeChatDraft } from "./chatDrafts";
+import { composerInputId, readChatDraft, readChatDraftSource, writeChatDraft, writeChatDraftSource } from "./chatDrafts";
+import { notificationCopy } from "../shared/notificationCopy";
+import { clearNotificationTarget, installNotificationNavigation, readNotificationTarget, type NotificationTarget } from "./notificationNavigation";
+import { installStatusBarScrollBridge, supportsStatusBarScrollBridge } from "./statusBarScroll";
+import { installMobileViewport } from "./mobileViewport";
 import {
   correctAlternatingSingleKeyCadence,
   deleteTextBackward,
@@ -93,6 +108,7 @@ import {
   type SidebarOrderSnapshot
 } from "./sidebarOrder";
 import { messageHtmlSchema } from "./messageHtml";
+import { messageBubbleContent } from "./messageAttachments";
 import {
   adjacentPowerSettingIndex,
   resolveControlRoomShortcut,
@@ -101,7 +117,9 @@ import {
 import { ShortcutControlOverlay, useShortcutControlOverlay } from "./ShortcutControlOverlay";
 import { ChatSwitchOverlay, useChatSwitchOverlay } from "./ChatSwitchOverlay";
 import { DictationRecordingOverlay } from "./DictationRecordingOverlay";
+import { ReorderableQueue } from "./ReorderableQueue";
 import type { VoiceAudioMetrics } from "./VoiceOrb";
+import { AudioFilePlayer, isAudioFile } from "./AudioFilePlayer";
 
 type BridgeState = {
   access: {
@@ -125,9 +143,10 @@ type BridgeState = {
     clients: number;
   };
   runner: {
-    mode: "codex-cli" | "simulation";
+    mode: "codex-cli" | "codex-app-server" | "simulation";
     activeJobs: number;
     queuedJobs: number;
+    queueReordering?: boolean;
     recentJobs: CodexRunJob[];
     settings: CodexRunSettings;
     settingsOptions: CodexRunSettingsOptions;
@@ -191,10 +210,15 @@ type BridgeEvent = {
 type CodexRunJob = {
   id: string;
   clientRequestId?: string;
+  inputSource?: "typed" | "voice" | "mixed";
+  notificationSummary?: string;
   chatId: string;
   projectPath: string;
-  status: "queued" | "running" | "completed" | "failed" | "stopped";
+  status: "queued" | "running" | "steered" | "completed" | "failed" | "stopped";
   kind?: "prompt" | "steer";
+  nativeTurnId?: string;
+  steeredIntoJobId?: string;
+  steeringState?: "sending" | "accepted" | "confirmed" | "uncertain";
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;
@@ -267,6 +291,7 @@ type ChatSummary = {
 };
 
 type ChatDetail = {
+  pendingConfirmation?: PendingConfirmation;
   id: string;
   title: string;
   projectName: string;
@@ -363,6 +388,7 @@ type QueuedPromptMutationResult = ApiResult & {
   job: CodexRunJob;
   stoppedJob?: CodexRunJob;
   text?: string;
+  attachments?: UploadedPromptFile[];
 };
 
 type RunSettingsResult = {
@@ -373,7 +399,8 @@ type RunSettingsResult = {
 
 type PendingAttachment = {
   id: string;
-  file: File;
+  file?: File;
+  uploadedFile?: UploadedPromptFile;
 };
 
 type AttachmentUploadStatus = {
@@ -407,6 +434,7 @@ type DictationTranscriptionResult = {
 type PendingDictationAudio = {
   blob: Blob;
   chatId: string;
+  attachments: PendingAttachment[];
   draft: string;
   selection: TextSelection;
   mode: "insert" | "send";
@@ -888,7 +916,7 @@ function queuedJobCanMoveNext(queuedJob: CodexRunJob, job: CodexRunJob | undefin
   const createdMs = Date.parse(queuedJob.createdAt);
   const oldEnough = Number.isFinite(createdMs) ? nowMs - createdMs >= queuedJobMoveNextGuardMs : true;
 
-  return queuedJob.status === "queued" && job?.status === "running" && oldEnough;
+  return queuedJob.status === "queued" && !queuedJob.steeringState && job?.status === "running" && oldEnough;
 }
 
 function optimisticPromptId(createdAt: string) {
@@ -1157,17 +1185,6 @@ function sameJobsForRender(a: CodexRunJob[] | undefined, b: CodexRunJob[]) {
   return current.every((job, index) => jobStableSignature(job) === jobStableSignature(b[index]));
 }
 
-function stableHash(value: string) {
-  let hash = 2166136261;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return (hash >>> 0).toString(36);
-}
-
 function chatMessageStableSignature(message: ChatTranscriptMessage | VisibleChatMessage) {
   return [
     message.role,
@@ -1180,10 +1197,6 @@ function chatMessageStableSignature(message: ChatTranscriptMessage | VisibleChat
     message.voiceNoteMimeType ?? "",
     message.isFinal ? "final" : ""
   ].join("\u001f");
-}
-
-function chatMessageStableRenderKey(message: ChatTranscriptMessage | VisibleChatMessage, occurrence: number) {
-  return `${message.role}-${message.kind ?? "message"}-${stableHash(chatMessageStableSignature(message))}-${occurrence}`;
 }
 
 function formatShortcutInstructions(files: ShortcutInstructionFile[]) {
@@ -1639,13 +1652,7 @@ function completionNotificationCopy(
   job: CodexRunJob,
   chat?: Pick<ChatDetail, "projectName" | "title"> | null
 ) {
-  const projectName = chat?.projectName?.replace(/\s+/g, " ").trim() || projectNameFromPath(job.projectPath);
-  const chatName = chat?.title?.replace(/\s+/g, " ").trim() || previewText(job.promptPreview, `Chat ${job.chatId.slice(0, 8)}`);
-
-  return {
-    title: projectName,
-    body: `${chatName} · ${job.status === "completed" ? "Done" : "Failed"}`
-  };
+  return notificationCopy(job, job.status === "completed" ? "completed" : "failed", { projectName: chat?.projectName, chatName: chat?.title });
 }
 
 function notificationLabel(status: RemoteNotificationState) {
@@ -1678,6 +1685,7 @@ function sortJobsForChat(jobs: CodexRunJob[]) {
     queued: 1,
     failed: 2,
     stopped: 3,
+    steered: 4,
     completed: 4
   };
 
@@ -1709,10 +1717,18 @@ function mergeJobsForChat(current: CodexRunJob[], incoming: CodexRunJob[]) {
     merged.set(job.id, { ...merged.get(job.id), ...job });
   }
 
-  return sortJobsForChat([...merged.values()]).slice(0, 40);
+  return keepRecentChatJobs([...merged.values()]);
+}
+
+function keepRecentChatJobs(jobs: CodexRunJob[]) {
+  // Reordering needs the complete pending queue, including queues longer than the history limit.
+  return sortJobsForChat(jobs).filter((job, index) => isActiveJob(job) || index < 40);
 }
 
 function jobStatusLabel(job: CodexRunJob) {
+  if (job.status === "steered") return "Steered";
+  if (job.steeringState === "sending") return "Sending steering";
+  if (job.steeringState === "uncertain") return "Delivery unconfirmed";
   if (job.status === "queued") {
     return job.queuePosition ? `Queued #${job.queuePosition}` : "Queued";
   }
@@ -2167,7 +2183,7 @@ function CopyButton({
   );
 }
 
-const FormattedMessage = memo(function FormattedMessage({
+export const FormattedMessage = memo(function FormattedMessage({
   text,
   emptyText,
   token,
@@ -2210,6 +2226,16 @@ const FormattedMessage = memo(function FormattedMessage({
             const localPdfFilePath = localPdfFilePathFromHref(href, basePath);
             const localDownloadFilePath = localDownloadFilePathFromHref(href, basePath);
             const label = textFromReactNode(children);
+
+            if (localDownloadFilePath && isAudioFile(localDownloadFilePath)) {
+              return <AudioFilePlayer key={localDownloadFilePath}
+                src={localDownloadUrl(localDownloadFilePath, token, "inline")}
+                downloadUrl={localDownloadUrl(localDownloadFilePath, token)}
+                label={localFileLabel(localDownloadFilePath, label)} />;
+            }
+            if (href && /^https?:\/\//i.test(href) && isAudioFile(href)) {
+              return <AudioFilePlayer key={href} src={href} downloadUrl={href} label={label || "Audio file"} />;
+            }
 
             return localImagePath ? (
               <LocalImageAttachment href={href} label={children} token={token} basePath={basePath} />
@@ -3262,11 +3288,11 @@ const codexPowerSettings: Array<{
   modelLabel: string;
   effortLabel: string;
 }> = [
-  { model: "gpt-5.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium" },
-  { model: "gpt-5.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Low" },
-  { model: "gpt-5.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium" },
-  { model: "gpt-5.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High" },
-  { model: "gpt-6-astra", reasoningEffort: "medium", modelLabel: "Astra", effortLabel: "Medium" },
+  { model: "gpt-6-luna", reasoningEffort: "low", modelLabel: "Luna", effortLabel: "Light" },
+  { model: "gpt-6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max" },
+  { model: "gpt-6.1-sol", reasoningEffort: "low", modelLabel: "Sol 6.1", effortLabel: "Low" },
+  { model: "gpt-6.1-sol", reasoningEffort: "medium", modelLabel: "Sol 6.1", effortLabel: "Medium" },
+  { model: "gpt-6.1-sol", reasoningEffort: "max", modelLabel: "Sol 6.1", effortLabel: "Max" },
   { model: "gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max" }
 ];
 
@@ -3378,6 +3404,8 @@ export function RunSettingsPanel({
   onRefreshUsage,
   powerBarTheme,
   onPowerBarThemeChange,
+  voiceOrbTheme,
+  onVoiceOrbThemeChange,
   compactOnly = false
 }: {
   settings?: CodexRunSettings;
@@ -3389,6 +3417,8 @@ export function RunSettingsPanel({
   onRefreshUsage?: () => void;
   powerBarTheme: PowerBarTheme;
   onPowerBarThemeChange: (theme: PowerBarTheme) => void;
+  voiceOrbTheme: VoiceOrbTheme;
+  onVoiceOrbThemeChange: (theme: VoiceOrbTheme) => void;
   compactOnly?: boolean;
 }) {
   const current = settings ?? {
@@ -3430,7 +3460,7 @@ export function RunSettingsPanel({
   const previewPowerSetting = powerSettings[safePowerPreviewIndex];
   const powerPercent = powerSettings.length > 1 ? (safePowerPreviewIndex / (powerSettings.length - 1)) * 100 : 0;
   const powerFillWidth = `calc(${powerPercent}% + ${14 - powerPercent * 0.28}px)`;
-  const solLowIndex = Math.max(0, powerSettings.findIndex((setting) => setting.model === "gpt-5.6-sol" && setting.reasoningEffort === "low"));
+  const solLowIndex = Math.max(0, powerSettings.findIndex((setting) => setting.model === "gpt-6.1-sol" && setting.reasoningEffort === "low"));
   const opaquePowerPercent = powerSettings.length > 1 ? (solLowIndex / (powerSettings.length - 1)) * 100 : 0;
   const opaquePowerEnd = `calc(${opaquePowerPercent}% + ${14 - opaquePowerPercent * 0.28}px)`;
   const fastModeSupported = availableSpeeds.includes("priority");
@@ -3646,6 +3676,30 @@ export function RunSettingsPanel({
               aria-hidden="true"
               style={{ backgroundImage: `${powerBarTint(powerBarTheme, "20%")}, ${powerBarTexture(powerBarTheme)}` }}
             />
+            <label>
+              <span>Voice animation</span>
+              <select
+                aria-label="Voice animation"
+                value={voiceOrbTheme}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  if (isVoiceOrbTheme(next)) onVoiceOrbThemeChange(next);
+                }}
+              >
+                <option value="random">Random each recording</option>
+                {Object.entries(voiceOrbThemes).map(([key, theme]) => (
+                  <option key={key} value={key}>{theme.label}</option>
+                ))}
+              </select>
+            </label>
+            <img
+              className="run-settings-voice-preview"
+              src={voiceOrbThemes[voiceOrbTheme === "random" ? "water" : voiceOrbTheme].poster}
+              alt=""
+              aria-hidden="true"
+              loading="lazy"
+              draggable={false}
+            />
           </details>
         </div>
       ) : null}
@@ -3753,6 +3807,8 @@ export function App() {
     if (notificationChatId) {
       return { id: notificationChatId, chat: getCachedChatHistory(notificationChatId) };
     }
+    const pendingNotification = !isControlRoomTile ? readNotificationTarget(localStorage) : null;
+    if (pendingNotification) return { id: pendingNotification.chatId, chat: getCachedChatHistory(pendingNotification.chatId) };
     const storedChatId = readStoredSelectedChatId();
     const storedChat = storedChatId ? getCachedChatHistory(storedChatId) : null;
     const fallbackChat = storedChat ?? (!storedChatId ? newestCachedChatHistory() : null);
@@ -3765,13 +3821,8 @@ export function App() {
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [powerBarTheme, setPowerBarTheme] = usePowerBarTheme(controlRoomSlotId);
+  const [voiceOrbTheme, setVoiceOrbTheme] = useVoiceOrbTheme(controlRoomSlotId);
 
-  useEffect(() => {
-    if (!notificationChatId) return;
-    const cleanUrl = new URL(window.location.href);
-    cleanUrl.searchParams.delete("chat");
-    window.history.replaceState(window.history.state, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
-  }, []);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
     const saved = localStorage.getItem(collapsedProjectsKey);
 
@@ -3811,6 +3862,8 @@ export function App() {
   const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
+  const chatJobsRequestIdsRef = useRef(new Map<string, number>());
+  const reorderingChatIdsRef = useRef(new Set<string>());
   const [activeSessionRuns, setActiveSessionRuns] = useState<ActiveSessionRun[]>([]);
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
@@ -3875,13 +3928,14 @@ export function App() {
   });
   const [scrollDistanceFromBottom, setScrollDistanceFromBottom] = useState(0);
   const selectedChatIdRef = useRef<string | null>(initialChatSelection.id);
+  const notificationChatRef = useRef<string | null>(notificationChatId || (!isControlRoomTile ? readNotificationTarget(localStorage)?.chatId : null) || null);
+  const notificationNavigationHandlerRef = useRef<(target: NotificationTarget) => void>(() => {});
   const completionGlowTrackerRef = useRef<CompletionGlowTracker>({ chatId: null, pendingJobIds: [] });
   const shortcutPressedCodesRef = useRef(new Set<string>());
   const shortcutPowerIndexRef = useRef(-1);
   const shortcutFastEnabledRef = useRef(false);
   const pendingChatShortcutRef = useRef<{ chatId: string } | null>(null);
   const chatShortcutCommitTimerRef = useRef<number | undefined>(undefined);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const composerSelectionRef = useRef<TextSelection>({ start: 0, end: 0 });
@@ -3903,8 +3957,6 @@ export function App() {
     globalThis.crypto?.randomUUID?.() ?? "keyboard-" + Date.now() + "-" + Math.random().toString(16).slice(2)
   );
   const scrollButtonLastActivationRef = useRef(0);
-  const activeScrollElementRef = useRef<HTMLElement | null>(null);
-  const lastScrollPointRef = useRef<{ x: number; y: number } | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const dictationStreamRef = useRef<MediaStream | null>(null);
   const dictationChunksRef = useRef<Blob[]>([]);
@@ -3929,8 +3981,13 @@ export function App() {
     peak: 0
   });
   const chatShouldAutoScrollRef = useRef(true);
+  const chatTopRequestedRef = useRef(false);
+  const chatTopScrollAfterRef = useRef(0);
+  const chatScrollAnimationRef = useRef<TranscriptScrollAnimation | null>(null);
   const forceNextChatScrollRef = useRef(false);
   const preserveChatScrollRef = useRef<PrependScrollSnapshot | null>(null);
+  const prependScrollKeeperRef = useRef<PrependScrollKeeper | null>(null);
+  const chatScrollGenerationRef = useRef(0);
   const loadingMoreMessagesRef = useRef(false);
   const menuOpenRef = useRef(menuOpen);
   const activeServerJobIdsByChatRef = useRef<Map<string, Set<string>>>(new Map());
@@ -4406,7 +4463,7 @@ export function App() {
     const jobsById = new Map<string, CodexRunJob>();
 
     for (const job of state?.runner.recentJobs ?? []) {
-      if (job.status === "queued") {
+      if (job.status === "queued" && !chatJobs[job.chatId]) {
         jobsById.set(job.id, job);
       }
     }
@@ -4708,23 +4765,10 @@ export function App() {
     () => messagesForViewMode(timelineMessages, selectedChatMessageViewMode, selectedDisplayJob),
     [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages]
   );
-  const visibleMessageItems = useMemo(() => {
-    const occurrences = new Map<string, number>();
-
-    return visibleMessages.map((message) => {
-      const signature = chatMessageStableSignature(message);
-      const occurrence = occurrences.get(signature) ?? 0;
-      occurrences.set(signature, occurrence + 1);
-
-      // Do not key rendered chat bubbles by backend message.id here. Quiet polling can re-read
-      // identical transcript content with different IDs/metadata, and iOS PWAs visibly repaint
-      // the transcript when React remounts those bubbles every polling tick.
-      return {
-        message,
-        renderKey: chatMessageStableRenderKey(message, occurrence)
-      };
-    });
-  }, [visibleMessages]);
+  const visibleMessageItems = useMemo(
+    () => transcriptRenderItems(visibleMessages, chatMessageStableSignature),
+    [visibleMessages]
+  );
   const liveThinkingMessage = visibleMessages.find((message) => message.isLiveThinking);
   const selectedViewHasLiveThinking = Boolean(liveThinkingMessage);
   const liveThinkingRunKey = liveThinkingMessage ? `${selectedChatId ?? "chat"}:${liveThinkingMessage.id}` : "";
@@ -4808,7 +4852,7 @@ export function App() {
     }
 
     try {
-      setState(await apiFetch<BridgeState>("/api/state"));
+      setState(await apiFetch<BridgeState>("/api/state", { signal: AbortSignal.timeout(10000) }));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load bridge state");
     }
@@ -4854,7 +4898,9 @@ export function App() {
       throw new Error("Notifications are not supported in this browser mode");
     }
 
-    return navigator.serviceWorker.register("/sw.js");
+    const registration = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
+    void registration.update().catch(() => {});
+    return registration;
   }, []);
 
   const refreshNotificationStatus = useCallback(async () => {
@@ -5184,7 +5230,7 @@ export function App() {
       const index = await apiFetch<ChatIndex>("/api/chats");
       setChatIndex(index);
       setSelectedChatId((current) => {
-        const next = current && (isTemporaryChatId(current) || chatIndexContainsChat(index, current))
+        const next = current && (current === notificationChatRef.current || isTemporaryChatId(current) || chatIndexContainsChat(index, current))
           ? current
           : isFreshControlRoomStart
             ? null
@@ -5217,7 +5263,7 @@ export function App() {
     }
   }, [apiFetch, authenticated]);
 
-  const chatIsNearBottom = useCallback((element = activeScrollElementRef.current ?? chatContentRef.current) => {
+  const chatIsNearBottom = useCallback((element = chatContentRef.current) => {
     if (!element) {
       return true;
     }
@@ -5225,104 +5271,9 @@ export function App() {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
   }, []);
 
-  const isScrollableElement = useCallback((element: Element | null | undefined): element is HTMLElement => {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    return element.scrollHeight > element.clientHeight + 1;
-  }, []);
-
-  const isChatScrollElement = useCallback((element: HTMLElement) => {
-    return element === chatContentRef.current || Boolean(element.closest(".chat-workspace"));
-  }, []);
-
-  const findScrollableAncestor = useCallback(
-    (target: EventTarget | Element | null | undefined) => {
-      let current = target instanceof Element ? target : null;
-
-      while (current) {
-        if (isScrollableElement(current) && isChatScrollElement(current)) {
-          return current;
-        }
-
-        current = current.parentElement;
-      }
-
-      return isScrollableElement(chatContentRef.current) ? chatContentRef.current : null;
-    },
-    [isChatScrollElement, isScrollableElement]
-  );
-
-  const findScrollElementAtPoint = useCallback(() => {
-    const point = lastScrollPointRef.current ?? {
-      x: Math.round(window.innerWidth / 2),
-      y: Math.round(window.innerHeight / 2)
-    };
-    const elements = document.elementsFromPoint(point.x, point.y);
-
-    for (const element of elements) {
-      const scroller = findScrollableAncestor(element);
-
-      if (scroller) {
-        return scroller;
-      }
-    }
-
-    return null;
-  }, [findScrollableAncestor]);
-
-  const resolveScrollElement = useCallback(
-    (preferred?: HTMLElement | null) => {
-      if (isScrollableElement(preferred) && isChatScrollElement(preferred)) {
-        return preferred;
-      }
-
-      const active = activeScrollElementRef.current;
-
-      if (active && document.contains(active) && isScrollableElement(active) && isChatScrollElement(active)) {
-        return active;
-      }
-
-      const pointScroller = findScrollElementAtPoint();
-
-      if (pointScroller) {
-        return pointScroller;
-      }
-
-      if (isScrollableElement(chatContentRef.current)) {
-        return chatContentRef.current;
-      }
-
-      const documentScroller = document.scrollingElement;
-      return documentScroller instanceof HTMLElement ? documentScroller : null;
-    },
-    [findScrollElementAtPoint, isScrollableElement]
-  );
-
-  const collectScrollTargets = useCallback(() => {
-    const seen = new Set<HTMLElement>();
-    const targets: HTMLElement[] = [];
-
-    const addTarget = (element: Element | null | undefined) => {
-      if (!isScrollableElement(element) || seen.has(element)) {
-        return;
-      }
-
-      seen.add(element);
-      targets.push(element);
-    };
-
-    addTarget(resolveScrollElement());
-    addTarget(findScrollElementAtPoint());
-    addTarget(chatContentRef.current);
-
-    document.querySelectorAll<HTMLElement>(".chat-content, .chat-thread, .chat-workspace, .remote-shell").forEach((element) => {
-      addTarget(element);
-    });
-
-    return targets;
-  }, [findScrollElementAtPoint, isScrollableElement, resolveScrollElement]);
+  // Explicit chat navigation always uses the same scroll owner. Guessing from
+  // the last touch could select a code block, editor, or the iOS page sentinel.
+  const resolveScrollElement = useCallback((_preferred?: HTMLElement | null) => chatContentRef.current, []);
 
   const updateScrollDebugPosition = useCallback((element?: HTMLElement | null) => {
     const target = resolveScrollElement(element);
@@ -5331,8 +5282,6 @@ export function App() {
       setScrollDistanceFromBottom(0);
       return;
     }
-
-    activeScrollElementRef.current = target;
 
     const maxScrollTop = Math.max(0, target.scrollHeight - target.clientHeight);
     const distanceFromBottom = Math.max(0, Math.round(maxScrollTop - target.scrollTop));
@@ -5347,44 +5296,121 @@ export function App() {
   }, [chatIsNearBottom, resolveScrollElement, updateScrollDebugPosition]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    chatScrollAnimationRef.current?.cancel();
+    chatScrollAnimationRef.current = null;
+    chatTopRequestedRef.current = false;
+    preserveChatScrollRef.current = null;
+    prependScrollKeeperRef.current?.stop();
+    const generation = ++chatScrollGenerationRef.current;
     const refreshScrollPosition = () => {
       updateScrollDebugPosition(resolveScrollElement());
     };
 
-    const performScroll = (nextBehavior: ScrollBehavior) => {
-      const targets = collectScrollTargets();
-
-      for (const element of targets) {
-        const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-        if (nextBehavior === "smooth") {
-          element.scrollTo({ top: maxScrollTop, left: 0, behavior: "smooth" });
-        } else {
-          element.scrollTop = maxScrollTop;
-          element.scrollTo({ top: maxScrollTop, left: 0, behavior: "auto" });
-        }
+    const performScroll = () => {
+      if (generation !== chatScrollGenerationRef.current) return;
+      const element = chatContentRef.current;
+      if (!element) return;
+      const destination = Math.max(0, element.scrollHeight - element.clientHeight);
+      if (behavior === "smooth") {
+        let animation: TranscriptScrollAnimation;
+        animation = animateTranscriptScroll(element, destination, {
+          shouldContinue: () => generation === chatScrollGenerationRef.current,
+          onScroll: refreshScrollPosition,
+          onComplete: () => {
+            if (chatScrollAnimationRef.current === animation) chatScrollAnimationRef.current = null;
+            refreshScrollPosition();
+          }
+        });
+        chatScrollAnimationRef.current = animation.active ? animation : null;
+        return;
       }
-
-      if (!targets.length) {
-        chatEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
-      }
-
+      element.scrollTo({ top: destination, left: element.scrollLeft, behavior: "instant" });
       refreshScrollPosition();
     };
-
-    performScroll(behavior);
-
-    if (behavior === "smooth") {
-      window.requestAnimationFrame(refreshScrollPosition);
-      window.setTimeout(refreshScrollPosition, 300);
-      window.setTimeout(() => performScroll("auto"), 900);
-    } else {
-      window.requestAnimationFrame(() => performScroll("auto"));
-      window.setTimeout(() => performScroll("auto"), 80);
-      window.setTimeout(() => performScroll("auto"), 300);
+    performScroll();
+    if (behavior !== "smooth") {
+      window.requestAnimationFrame(performScroll);
+      window.setTimeout(performScroll, 80);
+      window.setTimeout(performScroll, 300);
     }
 
     chatShouldAutoScrollRef.current = true;
-  }, [collectScrollTargets, resolveScrollElement, updateScrollDebugPosition]);
+  }, [resolveScrollElement, updateScrollDebugPosition]);
+
+  const releaseChatScroll = useCallback(() => {
+    // Touch/wheel/keyboard input is a new navigation intent, not just a reason
+    // to clear the top flag. Cancel every delayed bottom/history correction.
+    chatScrollGenerationRef.current += 1;
+    chatScrollAnimationRef.current?.cancel();
+    chatScrollAnimationRef.current = null;
+    chatTopRequestedRef.current = false;
+    forceNextChatScrollRef.current = false;
+    chatShouldAutoScrollRef.current = false;
+    // While an older page is fetching, keep its intent: loadChatDetail captures
+    // the reader's updated position immediately before inserting that page.
+    if (!loadingMoreMessagesRef.current) preserveChatScrollRef.current = null;
+    prependScrollKeeperRef.current?.stop();
+  }, []);
+
+  const scrollChatToTop = useCallback(() => {
+    // Return to reading the transcript. Leaving a native keyboard focused can
+    // make Safari pan its visual viewport back to the offscreen composer.
+    const focusedEditor = document.activeElement;
+    const editingPrompt = focusedEditor instanceof HTMLElement && focusedEditor.closest(".composer")
+      && focusedEditor.matches("input, textarea, [contenteditable=true]");
+    const nativeStatusTap = document.documentElement.dataset.statusBarScroll === "true";
+    const keyboardDelay = nativeStatusTap ? (editingPrompt ? 450 : 200) : 0;
+    if (editingPrompt) focusedEditor.blur();
+    // Explicit navigation wins over delayed bottom-following and older-message
+    // anchor restoration. Target the transcript, never a nested code block.
+    chatScrollAnimationRef.current?.cancel();
+    chatScrollAnimationRef.current = null;
+    const generation = ++chatScrollGenerationRef.current;
+    forceNextChatScrollRef.current = false;
+    chatShouldAutoScrollRef.current = false;
+    chatTopRequestedRef.current = true;
+    chatTopScrollAfterRef.current = performance.now() + keyboardDelay;
+    preserveChatScrollRef.current = null;
+    prependScrollKeeperRef.current?.stop();
+    const scroller = chatContentRef.current;
+    if (!scroller) return;
+    const performScroll = () => {
+      if (generation !== chatScrollGenerationRef.current || !chatTopRequestedRef.current) return;
+      const remainingDelay = chatTopScrollAfterRef.current - performance.now();
+      if (remainingDelay > 0) {
+        window.setTimeout(performScroll, Math.ceil(remainingDelay));
+        return;
+      }
+      chatTopRequestedRef.current = false;
+      let animation: TranscriptScrollAnimation;
+      animation = animateTranscriptScroll(scroller, 0, {
+        shouldContinue: () => generation === chatScrollGenerationRef.current,
+        onScroll: () => updateScrollDebugPosition(scroller),
+        onComplete: () => {
+          if (chatScrollAnimationRef.current === animation) chatScrollAnimationRef.current = null;
+          updateScrollDebugPosition(scroller);
+        }
+      });
+      chatScrollAnimationRef.current = animation.active ? animation : null;
+    };
+    // Finish the native document animation (or keyboard dismissal) before
+    // changing the transcript. Repeated writes during it corrupt iOS tiles.
+    if (keyboardDelay) window.setTimeout(performScroll, keyboardDelay);
+    else performScroll();
+  }, [updateScrollDebugPosition]);
+
+  useEffect(() => {
+    if (isControlRoomTile || window.top !== window || !window.matchMedia("(pointer: coarse)").matches) return;
+    return installMobileViewport(window);
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated || !selectedChatId || isControlRoomTile || window.top !== window || menuOpen
+      || selectedInstructionFile || selectedPdfFile || dictationStarting || dictationRecording || dictationProcessing
+      || !supportsStatusBarScrollBridge(navigator, window.matchMedia("(display-mode: standalone)").matches)) return;
+    return installStatusBarScrollBridge(window, scrollChatToTop);
+  }, [authenticated, selectedChatId, menuOpen, selectedInstructionFile, selectedPdfFile, dictationStarting,
+    dictationRecording, dictationProcessing, scrollChatToTop]);
 
   useEffect(() => {
     if (!isControlRoomTile || window.parent === window) return;
@@ -5415,7 +5441,11 @@ export function App() {
 
   const requestChatScroll = useCallback((force = true) => {
     if (force) {
+      chatTopRequestedRef.current = false;
       forceNextChatScrollRef.current = true;
+      preserveChatScrollRef.current = null;
+      prependScrollKeeperRef.current?.stop();
+      chatScrollGenerationRef.current += 1;
     }
 
     setChatScrollVersion((version) => version + 1);
@@ -5428,19 +5458,16 @@ export function App() {
       requestedTurns?: number,
       requestedMode?: ChatMessageViewMode
     ) => {
+      // A skipped refresh must not invalidate the in-flight history request.
+      if (quiet && requestedTurns === undefined && loadingMoreMessagesRef.current && selectedChatIdRef.current === chatId) {
+        return false;
+      }
       const requestId = chatDetailRequestRef.current + 1;
       chatDetailRequestRef.current = requestId;
       const messageMode = requestedMode ?? chatMessageViewModesRef.current[chatId] ?? defaultChatMessageViewMode;
       const cachedDetail = getCachedChatHistory(chatId, messageMode);
       const turns = Math.max(1, requestedTurns ?? chatTurnLimitsRef.current[chatId] ?? defaultChatTurns);
       const preserveExistingMessages = quiet && requestedMode === undefined;
-
-      // A normal polling request must not supersede an explicit history-page request.
-      // Otherwise the older messages can arrive after the saved scroll position has
-      // already been consumed, which leaves the reader at the new top of the thread.
-      if (quiet && requestedTurns === undefined && loadingMoreMessagesRef.current && selectedChatIdRef.current === chatId) {
-        return;
-      }
 
       if (!quiet) {
         setLoadingDetail(!cachedDetail);
@@ -5473,7 +5500,15 @@ export function App() {
         );
 
         if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
-          return;
+          return false;
+        }
+
+        // The reader may have scrolled while the page was fetching. Capture the
+        // latest position immediately before committing the expanded transcript.
+        const pendingScroll = preserveChatScrollRef.current;
+        if (requestedTurns !== undefined && pendingScroll?.chatId === chatId) {
+          const scroller = pendingScroll.scroller ?? chatContentRef.current;
+          if (scroller) preserveChatScrollRef.current = capturePrependScrollSnapshot(scroller, chatId);
         }
 
         setSelectedChat((current) => {
@@ -5493,12 +5528,14 @@ export function App() {
         if (!quiet) {
           requestChatScroll();
         }
+        return true;
       } catch (error) {
         if (requestId !== chatDetailRequestRef.current || selectedChatIdRef.current !== chatId) {
-          return;
+          return false;
         }
 
         setNotice(error instanceof Error ? error.message : "Could not load chat");
+        return false;
       } finally {
         if (requestId === chatDetailRequestRef.current && selectedChatIdRef.current === chatId) {
           setLoadingDetail(false);
@@ -5510,11 +5547,15 @@ export function App() {
 
   const loadChatJobs = useCallback(
     async (chatId: string) => {
+      if (reorderingChatIdsRef.current.has(chatId)) return;
+      const requestId = (chatJobsRequestIdsRef.current.get(chatId) ?? 0) + 1;
+      chatJobsRequestIdsRef.current.set(chatId, requestId);
       try {
-        const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`);
+        const result = await apiFetch<ChatJobsResult>(`/api/chats/${encodeURIComponent(chatId)}/jobs`, { signal: AbortSignal.timeout(10000) });
+        if (chatJobsRequestIdsRef.current.get(chatId) !== requestId || reorderingChatIdsRef.current.has(chatId)) return;
         replaceTrackedServerJobsForChat(chatId, result.jobs);
         setChatJobs((current) => {
-          const nextJobs = sortJobsForChat(result.jobs).slice(0, 40);
+          const nextJobs = keepRecentChatJobs(result.jobs);
 
           return sameJobsForRender(current[chatId], nextJobs)
             ? current
@@ -5760,14 +5801,19 @@ export function App() {
   const loadMoreMessages = useCallback(async () => {
     const chatId = selectedChatIdRef.current;
 
-    if (!authenticated || !chatId || loadingMoreMessages) {
+    if (!authenticated || !chatId || loadingMoreMessagesRef.current) {
       return;
     }
 
     const currentLimit = chatTurnLimitsRef.current[chatId] ?? selectedChat?.messagePage?.visibleTurns ?? defaultChatTurns;
     const nextLimit = currentLimit + chatTurnPageSize;
-    const scroller = chatContentRef.current;
+    const scroller = resolveScrollElement(chatContentRef.current);
 
+    prependScrollKeeperRef.current?.stop();
+    chatScrollGenerationRef.current += 1;
+    chatShouldAutoScrollRef.current = false;
+    chatTopRequestedRef.current = false;
+    forceNextChatScrollRef.current = false;
     preserveChatScrollRef.current = scroller ? capturePrependScrollSnapshot(scroller, chatId) : null;
 
     loadingMoreMessagesRef.current = true;
@@ -5779,13 +5825,22 @@ export function App() {
     });
 
     try {
-      await loadChatDetail(chatId, true, nextLimit);
-      requestChatScroll(false);
+      const applied = await loadChatDetail(chatId, true, nextLimit);
+      if (!applied) {
+        if (preserveChatScrollRef.current?.chatId === chatId) preserveChatScrollRef.current = null;
+        setChatTurnLimits((current) => {
+          if (current[chatId] !== nextLimit) return current;
+          const next = { ...current, [chatId]: currentLimit };
+          chatTurnLimitsRef.current = next;
+          return next;
+        });
+      }
     } finally {
       loadingMoreMessagesRef.current = false;
       setLoadingMoreMessages(false);
+      if (selectedChatIdRef.current === chatId) requestChatScroll(false);
     }
-  }, [authenticated, loadChatDetail, loadingMoreMessages, requestChatScroll, selectedChat?.messagePage?.visibleTurns]);
+  }, [authenticated, loadChatDetail, requestChatScroll, resolveScrollElement, selectedChat?.messagePage?.visibleTurns]);
 
   const openRunBoard = useCallback(() => {
     setRunBoardOpen(true);
@@ -6363,7 +6418,16 @@ export function App() {
     setChatActionError("");
   }
 
-  function selectChat(chatId: string) {
+  function selectChat(chatId: string, options: { fromNotification?: boolean } = {}) {
+    if (!options.fromNotification) {
+      notificationChatRef.current = null;
+      clearNotificationTarget(localStorage);
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("chat")) {
+        url.searchParams.delete("chat");
+        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      }
+    }
     setUnreadChatIds((current) => {
       if (!current.has(chatId)) {
         return current;
@@ -6383,6 +6447,36 @@ export function App() {
 
     closeMobileMenuPanels();
   }
+
+  notificationNavigationHandlerRef.current = (target) => {
+    if (state?.access.mode === "single-chat" && state.access.chatId !== target.chatId) {
+      setNotice("This notification targets another chat. Sign in with full Remote access to open it.");
+      throw new Error("Notification target is outside this chat's access");
+    }
+    notificationChatRef.current = target.chatId;
+    const url = new URL(window.location.href);
+    url.searchParams.set("chat", target.chatId);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    rememberSelectedChatId(target.chatId);
+    selectChat(target.chatId, { fromNotification: true });
+    requestChatScroll();
+    if (authenticated) void loadChatDetail(target.chatId, true).then(() => requestChatScroll());
+  };
+
+  useEffect(() => {
+    if (isControlRoomTile || window.top !== window || !("serviceWorker" in navigator)) return;
+    return installNotificationNavigation({ serviceWorker: navigator.serviceWorker, storage: localStorage, onTarget: target => notificationNavigationHandlerRef.current(target) });
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated || !selectedChat || selectedChat.id !== notificationChatRef.current || selectedChat.id !== selectedChatId) return;
+    clearNotificationTarget(localStorage, selectedChat.id);
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("chat") === selectedChat.id) {
+      url.searchParams.delete("chat");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  }, [authenticated, selectedChat, selectedChatId]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -6478,6 +6572,8 @@ export function App() {
     chatShouldAutoScrollRef.current = true;
     forceNextChatScrollRef.current = true;
     preserveChatScrollRef.current = null;
+    prependScrollKeeperRef.current?.stop();
+    chatScrollGenerationRef.current += 1;
     setPendingAttachments([]);
     setAttachmentUploadStatuses({});
   }, [selectedChatId]);
@@ -6727,38 +6823,39 @@ export function App() {
     void loadChatJobs(selectedChatId);
   }, [authenticated, loadChatDetail, loadChatJobs, selectedChatId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
       return;
     }
 
-    const scroller = chatContentRef.current;
+    const scroller = resolveScrollElement(chatContentRef.current);
     const preservedScroll = preserveChatScrollRef.current;
 
-    if (preservedScroll) {
-      const restorePosition = () => {
-        const nextScroller = chatContentRef.current;
-        if (!nextScroller || preservedScroll.chatId !== selectedChatIdRef.current) {
-          return;
-        }
-
-        restorePrependScrollSnapshot(nextScroller, preservedScroll);
-        updateScrollDebugPosition(nextScroller);
-        chatShouldAutoScrollRef.current = chatIsNearBottom(nextScroller);
-      };
-
-      preserveChatScrollRef.current = null;
-      const firstFrame = window.requestAnimationFrame(() => {
-        restorePosition();
-        window.requestAnimationFrame(restorePosition);
-      });
-      const layoutFallback = window.setTimeout(restorePosition, 100);
-
-      return () => {
-        window.cancelAnimationFrame(firstFrame);
-        window.clearTimeout(layoutFallback);
-      };
+    if (chatTopRequestedRef.current && scroller) {
+      if (performance.now() < chatTopScrollAfterRef.current) return;
+      const target = scrollTranscriptToTop(scroller);
+      chatShouldAutoScrollRef.current = false;
+      updateScrollDebugPosition(target);
+      return;
     }
+
+    if (preservedScroll) {
+      // A socket update can render while the older page is still in flight.
+      // Do not consume its anchor until that page has actually been applied.
+      if (loadingMoreMessagesRef.current) return;
+      const nextScroller = preservedScroll.scroller ?? scroller;
+      if (!nextScroller || preservedScroll.chatId !== selectedChatIdRef.current) return;
+      prependScrollKeeperRef.current?.stop();
+      prependScrollKeeperRef.current = keepPrependScrollAnchor(nextScroller, preservedScroll, () => {
+        updateScrollDebugPosition(nextScroller);
+        chatShouldAutoScrollRef.current = false;
+      });
+      preserveChatScrollRef.current = null;
+      forceNextChatScrollRef.current = false;
+      return;
+    }
+
+    if (!forceNextChatScrollRef.current && (loadingMoreMessagesRef.current || prependScrollKeeperRef.current?.active)) return;
 
     const shouldScroll = forceNextChatScrollRef.current || chatShouldAutoScrollRef.current || chatIsNearBottom(scroller);
     forceNextChatScrollRef.current = false;
@@ -6768,7 +6865,9 @@ export function App() {
       return;
     }
 
+    const generation = chatScrollGenerationRef.current;
     const scrollToBottom = () => {
+      if (generation !== chatScrollGenerationRef.current) return;
       scrollChatToBottom();
     };
     const firstFrame = window.requestAnimationFrame(() => {
@@ -6787,10 +6886,17 @@ export function App() {
     chatShellIsLoading,
     firstVisibleMessageKey,
     lastVisibleMessageKey,
+    resolveScrollElement,
     scrollChatToBottom,
     selectedChatId,
     updateScrollDebugPosition
   ]);
+
+  useEffect(() => () => {
+    prependScrollKeeperRef.current?.stop();
+    chatScrollAnimationRef.current?.cancel();
+    chatScrollGenerationRef.current += 1;
+  }, []);
 
   useEffect(() => {
     if (!selectedChatId || chatShellIsLoading) {
@@ -6814,45 +6920,48 @@ export function App() {
     let frame: number | undefined;
     const scrollListenerOptions: AddEventListenerOptions = { capture: true, passive: true };
 
-    const refreshPosition = (target?: EventTarget | Element | null) => {
+    const refreshPosition = () => {
       if (frame !== undefined) {
         window.cancelAnimationFrame(frame);
       }
 
       frame = window.requestAnimationFrame(() => {
         frame = undefined;
-        const scroller = findScrollableAncestor(target) ?? resolveScrollElement();
+        const scroller = resolveScrollElement();
         updateScrollDebugPosition(scroller);
         chatShouldAutoScrollRef.current = chatIsNearBottom(scroller);
       });
     };
 
-    const trackScrollPoint = (point: { clientX: number; clientY: number }) => {
-      lastScrollPointRef.current = {
-        x: Math.max(0, Math.min(window.innerWidth - 1, Math.round(point.clientX))),
-        y: Math.max(0, Math.min(window.innerHeight - 1, Math.round(point.clientY)))
-      };
+    const handleCapturedScroll = (event: Event) => {
+      if (event.type !== "scroll" || event.target === chatContentRef.current) refreshPosition();
     };
-
-    const handleCapturedScroll = (event: Event) => refreshPosition(event.target);
+    const handleScrollKey = (event: KeyboardEvent) => {
+      if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+      if (!event.ctrlKey && !event.metaKey && event.target instanceof Element
+        && event.target.closest("input, textarea, [contenteditable=true]")) return;
+      releaseChatScroll();
+    };
+    const handleScrollPointer = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".chat-content")) releaseChatScroll();
+    };
     const handleWheel = (event: WheelEvent) => {
-      trackScrollPoint(event);
-      refreshPosition(event.target);
+      if (!(event.target instanceof Element) || !event.target.closest(".chat-content")) return;
+      releaseChatScroll();
+      refreshPosition();
     };
     const handleTouchMove = (event: TouchEvent) => {
-      const touch = event.touches[0] ?? event.changedTouches[0];
-
-      if (touch) {
-        trackScrollPoint(touch);
-      }
-
-      refreshPosition(event.target);
+      if (!(event.target instanceof Element) || !event.target.closest(".chat-content")) return;
+      releaseChatScroll();
+      refreshPosition();
     };
 
-    // Keep this capture-phase listener. Mobile Safari can scroll an ancestor that is
-    // not chatContentRef, and binding only the guessed node makes diagnostics stale.
+    // Observe only the transcript's scroll events, not the page sentinel or
+    // nested code/table panels. They must not re-enable bottom-following.
     window.addEventListener("scroll", handleCapturedScroll, scrollListenerOptions);
     window.addEventListener("wheel", handleWheel, scrollListenerOptions);
+    window.addEventListener("keydown", handleScrollKey, true);
+    window.addEventListener("pointerdown", handleScrollPointer, true);
     window.addEventListener("touchmove", handleTouchMove, scrollListenerOptions);
     window.addEventListener("touchend", handleCapturedScroll, scrollListenerOptions);
     window.addEventListener("resize", handleCapturedScroll);
@@ -6871,6 +6980,8 @@ export function App() {
 
       window.removeEventListener("scroll", handleCapturedScroll, scrollListenerOptions);
       window.removeEventListener("wheel", handleWheel, scrollListenerOptions);
+      window.removeEventListener("keydown", handleScrollKey, true);
+      window.removeEventListener("pointerdown", handleScrollPointer, true);
       window.removeEventListener("touchmove", handleTouchMove, scrollListenerOptions);
       window.removeEventListener("touchend", handleCapturedScroll, scrollListenerOptions);
       window.removeEventListener("resize", handleCapturedScroll);
@@ -6880,7 +6991,7 @@ export function App() {
   }, [
     chatIsNearBottom,
     chatShellIsLoading,
-    findScrollableAncestor,
+    releaseChatScroll,
     lastVisibleMessageKey,
     resolveScrollElement,
     selectedChatId,
@@ -7136,9 +7247,17 @@ export function App() {
         `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}`,
         { method: "DELETE" }
       );
-      setDraft(result.text ?? "");
-      setPendingAttachments([]);
-      setAttachmentUploadStatuses({});
+      setDraftForChat(job.chatId, result.text ?? "");
+      writeChatDraftSource(localStorage, job.chatId, result.job?.inputSource ?? job.inputSource ?? "typed");
+      const restoredAttachments = (result.attachments ?? []).map((uploadedFile, index) => ({
+        id: `restored-${job.id}-${index}`,
+        uploadedFile
+      }));
+      setPendingAttachments(restoredAttachments);
+      setAttachmentUploadStatuses(Object.fromEntries(restoredAttachments.map((attachment) => [
+        attachment.id,
+        { status: "uploaded" as const, progress: 100, uploadedFile: attachment.uploadedFile }
+      ])));
       setNotice(result.message ?? "Queued prompt moved back to composer");
       selectChat(job.chatId);
       await Promise.all([
@@ -7158,6 +7277,27 @@ export function App() {
     }
   }
 
+  async function reorderQueuedJobs(jobIds: string[], expectedOrder: string[]) {
+    const chatId = selectedChatId;
+    if (!chatId || reorderingChatIdsRef.current.has(chatId)) throw new Error("Wait for the current queue change to finish.");
+    reorderingChatIdsRef.current.add(chatId);
+    chatJobsRequestIdsRef.current.set(chatId, (chatJobsRequestIdsRef.current.get(chatId) ?? 0) + 1);
+    try {
+      const result = await apiFetch<ApiResult & { jobs: CodexRunJob[] }>(
+        `/api/chats/${encodeURIComponent(chatId)}/queued-prompts/reorder`,
+        { method: "POST", body: JSON.stringify({ jobIds, expectedOrder }), signal: AbortSignal.timeout(15000) }
+      );
+      setChatJobs((current) => ({
+        ...current,
+        [chatId]: keepRecentChatJobs([...(current[chatId] ?? []).filter((job) => job.status !== "queued"), ...result.jobs])
+      }));
+      for (const job of result.jobs) trackServerJob(job);
+    } finally {
+      reorderingChatIdsRef.current.delete(chatId);
+      await Promise.all([loadState(), loadChatJobs(chatId)]);
+    }
+  }
+
   async function steerQueuedJob(job: CodexRunJob) {
     if (!queuedJobCanMoveNext(job, selectedJob, Date.now())) {
       return;
@@ -7173,11 +7313,7 @@ export function App() {
         rememberJob(result.job);
       }
 
-      if (result.stoppedJob) {
-        rememberJob(result.stoppedJob);
-      }
-
-      setNotice(result.message ?? "Stopping current worker; queued prompt will run next");
+      setNotice(result.message ?? "Steering accepted by the active Codex turn");
       await Promise.all([loadState(), loadChatJobs(job.chatId)]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not steer queued prompt");
@@ -7192,8 +7328,11 @@ export function App() {
     setStoppingJobIds((current) => new Set(current).add(job.id));
 
     try {
+      const external = job.id.startsWith("session-run-");
       const result = await apiFetch<ApiResult>(
-        `/api/chats/${encodeURIComponent(job.chatId)}/jobs/${encodeURIComponent(job.id)}/stop`,
+        external
+          ? `/api/chats/${encodeURIComponent(job.chatId)}/external-run/stop`
+          : `/api/chats/${encodeURIComponent(job.chatId)}/jobs/${encodeURIComponent(job.id)}/stop`,
         { method: "POST" }
       );
 
@@ -7243,7 +7382,10 @@ export function App() {
     const rejectedCount = files.length - accepted.length;
     const tooLarge = accepted.filter((file) => file.size > maxAttachmentBytes);
     const valid = accepted.filter((file) => file.size <= maxAttachmentBytes);
-    const nextTotalBytes = pendingAttachments.reduce((total, attachment) => total + attachment.file.size, 0) + valid.reduce((total, file) => total + file.size, 0);
+    const nextTotalBytes = pendingAttachments.reduce(
+      (total, attachment) => total + (attachment.file?.size ?? attachment.uploadedFile?.size ?? 0),
+      0
+    ) + valid.reduce((total, file) => total + file.size, 0);
 
     if (tooLarge.length > 0) {
       setNotice(`Files must be ${formatBytes(maxAttachmentBytes)} or smaller.`);
@@ -7367,6 +7509,7 @@ export function App() {
     end: number;
   }) {
     const { file } = attachment;
+    if (!file) throw new Error("Attachment data is unavailable for upload");
     const chunk = file.slice(start, end, file.type || "application/octet-stream");
     const params = new URLSearchParams({
       name: file.name,
@@ -7421,6 +7564,10 @@ export function App() {
 
   async function uploadAttachmentFile(chatId: string, attachment: PendingAttachment, fileIndex: number, uploadedAt: string) {
     const { file } = attachment;
+
+    if (!file) {
+      throw new Error("Attachment data is unavailable for upload");
+    }
 
     if (!file.size) {
       throw new Error(`${file.name} is empty`);
@@ -7480,12 +7627,15 @@ export function App() {
     }
   }
 
-  async function uploadAttachments(chatId: string) {
-    if (!pendingAttachments.length) {
+  async function uploadAttachments(chatId: string, attachments: PendingAttachment[]) {
+    if (!attachments.length) {
       return [];
     }
 
-    const totalBytes = pendingAttachments.reduce((total, attachment) => total + attachment.file.size, 0);
+    const totalBytes = attachments.reduce(
+      (total, attachment) => total + (attachment.file?.size ?? attachment.uploadedFile?.size ?? 0),
+      0
+    );
     if (totalBytes > maxAttachmentTotalBytes) {
       throw new Error(`Attached files must be ${formatBytes(maxAttachmentTotalBytes)} or smaller in total`);
     }
@@ -7493,12 +7643,16 @@ export function App() {
     const uploadedAt = new Date().toISOString();
     const uploadedFiles: UploadedPromptFile[] = [];
 
-    for (const [index, attachment] of pendingAttachments.entries()) {
+    for (const [index, attachment] of attachments.entries()) {
       const status = attachmentUploadStatuses[attachment.id];
 
-      if (status?.uploadedFile) {
-        uploadedFiles.push(status.uploadedFile);
+      if (attachment.uploadedFile ?? status?.uploadedFile) {
+        uploadedFiles.push((attachment.uploadedFile ?? status?.uploadedFile)!);
         continue;
+      }
+
+      if (!attachment.file) {
+        throw new Error("The restored attachment is no longer available on the target laptop");
       }
 
       uploadedFiles.push(await uploadAttachmentFile(chatId, attachment, index, uploadedAt));
@@ -7513,6 +7667,7 @@ export function App() {
     }
 
     const fileIndex = Math.max(0, pendingAttachments.findIndex((candidate) => candidate.id === attachment.id));
+    if (!attachment.file) return;
     setNotice(`Retrying ${attachment.file.name}...`);
 
     try {
@@ -7689,6 +7844,7 @@ export function App() {
     const insertion = `${before && !/\s$/.test(before) ? " " : ""}${transcript}${after && !/^\s/.test(after) ? " " : ""}`;
     const mutation = insertTextAtSelection(pending.draft, selection, insertion);
     setDraftForChat(pending.chatId, mutation.text);
+    writeChatDraftSource(localStorage, pending.chatId, pending.draft.trim() ? "mixed" : "voice");
 
     if (selectedChatIdRef.current === pending.chatId) {
       latestDraftRef.current = mutation.text;
@@ -7732,6 +7888,7 @@ export function App() {
           textOverride: transcript,
           voiceNote: { url: voiceNoteUrl, mimeType: pending.blob.type || "audio recording" },
           chatIdOverride: pending.chatId,
+          attachmentsOverride: pending.attachments,
           preserveDraft: true
         });
         if (!accepted) throw new Error("Prompt could not be sent");
@@ -7855,6 +8012,9 @@ export function App() {
 
     const composerSnapshot = preserveComposerForTransientFocus();
     const dictationChatId = selectedChatId;
+    // Keep this recording's files with its chat, including transcription retries
+    // after the user has switched to another composer.
+    const attachmentsSnapshot = [...pendingAttachments];
     const draftSnapshot = composerSnapshot?.chatId === dictationChatId ? composerSnapshot.text : draft;
     const selectionSnapshot =
       composerSnapshot?.chatId === dictationChatId
@@ -7937,6 +8097,7 @@ export function App() {
           const pending: PendingDictationAudio = {
             blob,
             chatId: targetChatId,
+            attachments: attachmentsSnapshot,
             draft: dictationDraftSnapshotRef.current,
             selection: dictationDraftSelectionRef.current,
             mode: dictationSubmitModeRef.current
@@ -8028,6 +8189,7 @@ export function App() {
       if (action === "scroll-up" || action === "scroll-down") {
         const scroller = resolveScrollElement(chatContentRef.current);
         if (!scroller) return;
+        releaseChatScroll();
         const distance = Math.max(96, Math.min(240, Math.round(scroller.clientHeight * 0.24)));
         scroller.scrollBy({ top: action === "scroll-up" ? -distance : distance, left: 0, behavior: "auto" });
         updateScrollDebugPosition(scroller);
@@ -8129,13 +8291,14 @@ export function App() {
       window.removeEventListener("blur", clearPressedCodes);
       window.clearTimeout(chatShortcutCommitTimerRef.current);
     };
-  }, [chatIndex?.projects, chatIsNearBottom, chatSwitchOverlay.commit, chatSwitchOverlay.show, dictationProcessing, dictationRecording, dictationStarting, resolveScrollElement, selectedChatId, sending, settingsSaving, shortcutOverlay.show, state?.runner.settings, state?.runner.settingsOptions, updateRunSettings, updateScrollDebugPosition]);
+  }, [chatIndex?.projects, chatIsNearBottom, chatSwitchOverlay.commit, chatSwitchOverlay.show, dictationProcessing, dictationRecording, dictationStarting, pendingAttachments, releaseChatScroll, resolveScrollElement, selectedChatId, sending, settingsSaving, shortcutOverlay.show, state?.runner.settings, state?.runner.settingsOptions, updateRunSettings, updateScrollDebugPosition]);
 
   async function sendPrompt(
     options: {
       textOverride?: string;
       voiceNote?: DictationVoiceNote;
       chatIdOverride?: string;
+      attachmentsOverride?: PendingAttachment[];
       preserveDraft?: boolean;
     } = {}
   ) {
@@ -8144,19 +8307,29 @@ export function App() {
     const liveComposerDraft =
       targetChatId && editor?.dataset.chatId === targetChatId ? rawTextFromComposerEditor(editor) : undefined;
     const outgoingDraft = options.textOverride ?? liveComposerDraft ?? draft;
-    const outgoingAttachments = options.voiceNote ? [] : pendingAttachments;
+    const outgoingAttachments = options.attachmentsOverride ?? pendingAttachments;
 
     if (sending || !targetChatId || (!outgoingDraft.trim() && !outgoingAttachments.length)) {
       return false;
     }
 
     const optimisticAt = new Date().toISOString();
-    const previousAttachments = pendingAttachments;
     const clientRequestId =
       globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let receiptId: string | undefined;
     let submittedPromptText = outgoingDraft;
     let promptRequestAttempted = false;
+
+    const clearSubmittedAttachments = () => {
+      if (!outgoingAttachments.length) return;
+      const submittedIds = new Set(outgoingAttachments.map((attachment) => attachment.id));
+      // Only acknowledge this submission's files. A different chat (or newer
+      // composer edit) may now own the attachment list while the request settles.
+      setPendingAttachments((current) => current.filter((attachment) => !submittedIds.has(attachment.id)));
+      setAttachmentUploadStatuses((current) =>
+        Object.fromEntries(Object.entries(current).filter(([id]) => !submittedIds.has(id)))
+      );
+    };
 
     setSending(true);
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
@@ -8179,7 +8352,7 @@ export function App() {
     }
 
     try {
-      const uploadedFiles = outgoingAttachments.length ? await uploadAttachments(targetChatId) : [];
+      const uploadedFiles = await uploadAttachments(targetChatId, outgoingAttachments);
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
       submittedPromptText = promptText;
       const optimisticMessageId = optimisticPromptId(optimisticAt);
@@ -8196,7 +8369,13 @@ export function App() {
       promptRequestAttempted = true;
       const result = await apiFetch<PromptSubmitResult>(`/api/chats/${encodeURIComponent(targetChatId)}/prompt`, {
         method: "POST",
-        body: JSON.stringify({ text: promptText, clientRequestId })
+        body: JSON.stringify({
+          text: promptText,
+          composerText: outgoingDraft,
+          attachments: uploadedFiles,
+          clientRequestId,
+          inputSource: options.voiceNote ? "voice" : readChatDraftSource(localStorage, targetChatId)
+        })
       });
       const disposition = result.disposition ?? expectedDisposition;
 
@@ -8226,10 +8405,7 @@ export function App() {
       if (!options.preserveDraft) {
         setDraftForChat(targetChatId, "");
       }
-      if (!options.voiceNote) {
-        setPendingAttachments([]);
-        setAttachmentUploadStatuses({});
-      }
+      clearSubmittedAttachments();
       void loadState();
       void loadChatJobs(targetChatId);
       return true;
@@ -8276,10 +8452,7 @@ export function App() {
         if (!options.preserveDraft) {
           setDraftForChat(targetChatId, "");
         }
-        if (!options.voiceNote) {
-          setPendingAttachments([]);
-          setAttachmentUploadStatuses({});
-        }
+        clearSubmittedAttachments();
         setNotice(acceptedDisposition === "queued" ? "Queued on server for this chat" : "Prompt sent to target laptop");
         void loadState();
         void loadChatJobs(targetChatId);
@@ -8299,9 +8472,8 @@ export function App() {
           }
         }
       }
-      if (!options.voiceNote) {
-        setPendingAttachments(previousAttachments);
-      }
+      // Files stay in the composer until acknowledgement. On failure, leave
+      // them and their upload progress intact so typed and voice sends can retry.
       if (receiptId) {
         clearPromptReceipt(receiptId);
       }
@@ -8473,6 +8645,7 @@ export function App() {
           projectName={selectedChatForActions?.projectName ?? ""}
           chatTitle={selectedChatForActions?.title ?? ""}
           audioMetricsRef={dictationAudioMetricsRef}
+          orbTheme={voiceOrbTheme}
           phase={dictationProcessing || dictationOverlayExitRequested ? "processing" : dictationRecording ? "recording" : "starting"}
           exitRequested={dictationOverlayExitRequested}
           onCancel={cancelDictation}
@@ -8551,6 +8724,8 @@ export function App() {
         <RunSettingsPanel
           powerBarTheme={powerBarTheme}
           onPowerBarThemeChange={setPowerBarTheme}
+          voiceOrbTheme={voiceOrbTheme}
+          onVoiceOrbThemeChange={setVoiceOrbTheme}
           settings={state?.runner.settings}
           options={state?.runner.settingsOptions}
           usage={state?.runner.usage}
@@ -8865,7 +9040,9 @@ export function App() {
               </button>
             </header>
             <div className="pdf-viewer-body">
-              <iframe className="pdf-frame" src={selectedPdfFile.mediaUrl} title={selectedPdfFile.label} />
+              <Suspense fallback={<div className="pdf-document-state"><Loader2 className="spin" size={24} /><span>Opening PDF</span></div>}>
+                <PdfDocumentViewer source={selectedPdfFile.mediaUrl} label={selectedPdfFile.label} />
+              </Suspense>
             </div>
           </section>
         </div>
@@ -8993,6 +9170,10 @@ export function App() {
               ) : null}
               {visibleMessageItems.length ? (
                 visibleMessageItems.map(({ message, renderKey }, index) => {
+                  const bubbleContent = messageBubbleContent(message);
+                  const attachmentLabel = bubbleContent.attachmentCount === 1
+                    ? "This message has 1 attachment"
+                    : `This message has ${bubbleContent.attachmentCount} attachments`;
                   const precedingMessage = visibleMessageItems[index - 1]?.message;
                   const followingMessage = visibleMessageItems[index + 1]?.message;
                   const attachedVoiceNote =
@@ -9054,6 +9235,12 @@ export function App() {
                                 {runDuration}
                               </span>
                             ) : null}
+                            {bubbleContent.attachmentCount ? (
+                              <span className="bubble-attachments" role="img" aria-label={attachmentLabel} title={attachmentLabel}>
+                                <Paperclip size={14} aria-hidden="true" />
+                                {bubbleContent.attachmentCount > 1 ? <span aria-hidden="true">{bubbleContent.attachmentCount}</span> : null}
+                              </span>
+                            ) : null}
                             {message.role === "user" && message.kind !== "voice_note" ? (
                               <CopyButton className="bubble-copy-button" text={message.text} label="Copy prompt" />
                             ) : null}
@@ -9064,7 +9251,7 @@ export function App() {
                         ) : (
                           <>
                             <FormattedMessage
-                              text={message.text}
+                              text={bubbleContent.text}
                               emptyText={chatMessageEmptyText(message)}
                               token={token}
                               basePath={selectedChat.projectPath}
@@ -9088,7 +9275,7 @@ export function App() {
                   <Clock3 size={26} />
                 </div>
               )}
-              <div ref={chatEndRef} aria-hidden="true" />
+              <div aria-hidden="true" />
             </div>
           ) : (
             <div className="empty-chat">
@@ -9109,13 +9296,14 @@ export function App() {
               </span>
             </div>
 
-            <div className="queue-list" aria-label="Selected chat command queue">
-              {selectedQueuedServerJobs.map((job) => (
-                <article key={job.id} className={`queue-item is-${job.status}`}>
+            <ReorderableQueue key={selectedChatId} jobs={selectedQueuedServerJobs}
+              enabled={state?.runner.queueReordering === true && !selectedQueuedServerJobs.some((job) => job.steeringState)}
+              onReorder={reorderQueuedJobs}>
+              {(job, index, handle, locked) => <>
                   <div className="queue-status-row">
                     <span className="queue-status">
-                      <JobStatusIcon job={job} />
-                      {jobStatusLabel(job)}
+                      {handle ?? <JobStatusIcon job={job} />}
+                      {job.steeringState ? jobStatusLabel(job) : `#${index + 1}`}
                     </span>
                     <span className="queue-actions">
                       <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
@@ -9128,9 +9316,9 @@ export function App() {
                             event.preventDefault();
                           }
                         }}
-                        disabled={!queuedJobCanMoveNext(job, selectedJob, durationNow)}
-                        aria-label="Stop current worker and run this queued prompt next"
-                        title="Stop the current worker for this chat, then run this queued prompt next"
+                        disabled={locked || !queuedJobCanMoveNext(job, selectedJob, durationNow)}
+                        aria-label="Steer the active turn with this queued prompt"
+                        title="Steer the active turn without stopping it; keeps its model, reasoning level, and speed"
                       >
                         <ArrowRight size={14} />
                       </button>
@@ -9138,6 +9326,7 @@ export function App() {
                         className="queue-remove"
                         type="button"
                         onClick={() => void restoreQueuedJobToComposer(job)}
+                        disabled={locked}
                         aria-label="Move queued prompt back to composer"
                         title="Move back to composer"
                       >
@@ -9150,9 +9339,8 @@ export function App() {
                     <p className="queue-settings">{jobRunSettingsLabel(job, state?.runner.settingsOptions)}</p>
                   ) : null}
                   <p className="queue-detail">{jobDetailText(job)}</p>
-                </article>
-              ))}
-            </div>
+              </>}
+            </ReorderableQueue>
           </section>
         ) : null}
 
@@ -9183,9 +9371,9 @@ export function App() {
               ) : null}
             </span>
             <small>{selectedDisplayJob.promptPreview}</small>
-            {selectedDisplayJob.status === "running" && !selectedDisplayJobIsExternal ? (
+            {selectedDisplayJob.status === "running" ? (
               <button
-                className="job-stop-button"
+                className={`job-stop-button${selectedDisplayJobIsExternal ? " job-stop-external" : ""}`}
                 type="button"
                 onClick={() => void stopRunningJob(selectedDisplayJob)}
                 disabled={stoppingJobIds.has(selectedDisplayJob.id)}
@@ -9199,6 +9387,27 @@ export function App() {
         ) : null}
 
         <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
+          {selectedChat?.id === selectedChatId && selectedChat.pendingConfirmation ? (
+            <ConfirmationSuggestions
+              key={`${selectedChatId}:${selectedChat.pendingConfirmation.id}`}
+              chatId={selectedChatId}
+              request={selectedChat.pendingConfirmation}
+              disabled={sending || dictationStarting || dictationRecording || dictationProcessing}
+              focusComposer={() => composerEditorRef.current?.focus({ preventScroll: true })}
+              onDismiss={async () => {
+                await apiFetch(`/api/chats/${encodeURIComponent(selectedChat.id)}/confirmation`, {
+                  method: "POST", body: JSON.stringify({ id: selectedChat.pendingConfirmation!.id, action: "dismiss" })
+                });
+              }}
+              onAccept={async () => {
+                const result = await apiFetch<PromptSubmitResult>(`/api/chats/${encodeURIComponent(selectedChat.id)}/confirmation`, {
+                  method: "POST", body: JSON.stringify({ id: selectedChat.pendingConfirmation!.id, action: "accept" })
+                });
+                if (result.job) rememberJob(result.job);
+                setNotice(result.message ?? "Confirmation sent");
+              }}
+            />
+          ) : null}
           {singleChatAccess ? (
             <div className="scoped-run-settings" aria-label="Locked run settings">
               <ShieldCheck size={14} />
@@ -9208,6 +9417,8 @@ export function App() {
             <RunSettingsPanel
               powerBarTheme={powerBarTheme}
               onPowerBarThemeChange={setPowerBarTheme}
+              voiceOrbTheme={voiceOrbTheme}
+              onVoiceOrbThemeChange={setVoiceOrbTheme}
               compactOnly
               settings={state?.runner.settings}
               options={state?.runner.settingsOptions}
@@ -9327,8 +9538,8 @@ export function App() {
                   return (
                     <span key={attachment.id} className={`attachment-chip is-${uploadStatus.status}`}>
                       <span className="attachment-copy">
-                        <strong>{attachment.file.name}</strong>
-                        <small>{formatBytes(attachment.file.size)}</small>
+                        <strong>{attachment.file?.name ?? attachment.uploadedFile?.originalName ?? "Attachment"}</strong>
+                        <small>{formatBytes(attachment.file?.size ?? attachment.uploadedFile?.size ?? 0)}</small>
                         {uploadStatus.status !== "idle" ? (
                           <span className="attachment-upload-status">
                             <span className="attachment-progress" aria-hidden="true">
@@ -9351,7 +9562,7 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => removeAttachment(attachment.id)}
-                        aria-label={`Remove ${attachment.file.name}`}
+                        aria-label={`Remove ${attachment.file?.name ?? attachment.uploadedFile?.originalName ?? "attachment"}`}
                         disabled={sending && uploadStatus.status === "uploading"}
                       >
                         <X size={14} />

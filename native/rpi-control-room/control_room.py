@@ -20,11 +20,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    # Importing Pycairo registers the cairo.Surface converter used by
+    # WebKit2.WebView.get_snapshot_finish().
+    import cairo  # noqa: F401
+except ImportError:
+    cairo = None
+
 os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
 import gi
 
+if cairo is not None:
+    gi.require_foreign("cairo")
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
@@ -39,6 +48,8 @@ DATA_PATH = Path.home() / ".local/share/codex-control-room-native"
 DEFAULT_COLUMNS = 5
 DEFAULT_ROWS = 3
 CONNECTION_RETRY_SECONDS = max(1, int(os.environ.get("CODEX_CONTROL_ROOM_RETRY_SECONDS", "900")))
+QUICK_CONNECTION_RETRY_SECONDS = (5, 15, 60)
+CONTROL_ROOM_QUERY_KEYS = frozenset(("control-room-tile", "control-room-slot", "control-room-origin", "control-room-view", "control-room-start"))
 
 
 def atomic_json(path: Path, value: Any, mode: int = 0o600) -> None:
@@ -73,6 +84,27 @@ def normalize_url(value: str) -> str:
         value = "https://" + value
         parsed = urllib.parse.urlparse(value)
     return value if parsed.scheme in ("http", "https") and parsed.netloc else ""
+
+
+def control_room_tile_url(value: str, slot_id: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    query = [(key, item) for key, item in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+             if key not in CONTROL_ROOM_QUERY_KEYS]
+    query.extend((("control-room-tile", "1"), ("control-room-slot", slot_id)))
+    return urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def canonical_tile_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    query = [(key, item) for key, item in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+             if key not in CONTROL_ROOM_QUERY_KEYS]
+    return urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def connection_retry_delay(attempt: int) -> int:
+    if attempt < len(QUICK_CONNECTION_RETRY_SECONDS):
+        return QUICK_CONNECTION_RETRY_SECONDS[max(0, attempt)]
+    return CONNECTION_RETRY_SECONDS
 
 
 def css() -> bytes:
@@ -300,12 +332,16 @@ class BrowserTile(Gtk.Box):
         self.webview: WebKit2.WebView | None = None
         self.tracker_body: TrackerBody | None = None
         self.connection_retry_timer = 0
+        self.connection_retry_attempt = 0
+        self.navigation_failed = False
         self.frozen_path = DATA_PATH / "frozen" / f"{tile['id']}.png"
         add_class(self, "tile")
         self.render()
 
     def clear(self) -> None:
         self.cancel_connection_retry()
+        self.connection_retry_attempt = 0
+        self.navigation_failed = False
         for child in self.get_children():
             self.remove(child)
             child.destroy()
@@ -344,7 +380,7 @@ class BrowserTile(Gtk.Box):
         title = self.tile.get("title") or self.window.name_for_url(self.tile.get("url", ""))
         bar.pack_start(text_label(title, "page-title"), True, True, 0)
         is_machine = bool(current_item and current_item.get("type") == "machine")
-        status = "LIVE" if is_machine else "DASHBOARD" if current_item else "WEBSITE"
+        status = "FROZEN" if self.tile.get("mode") == "frozen" else "LIVE" if is_machine else "DASHBOARD" if current_item else "WEBSITE"
         bar.pack_start(text_label(f"● {status}", "tile-status", xalign=1.0), False, False, 0)
         if is_machine:
             stats = Gtk.Button(label="▥" if self.tile.get("mode") == "browser" else "▤")
@@ -373,8 +409,11 @@ class BrowserTile(Gtk.Box):
         self.webview = WebKit2.WebView.new_with_context(self.window.web_context)
         settings = self.webview.get_settings()
         settings.set_enable_javascript(True)
+        settings.set_enable_media(True)
+        settings.set_enable_webaudio(True)
         settings.set_enable_media_stream(True)
         settings.set_enable_webrtc(True)
+        settings.set_enable_media_capabilities(True)
         settings.set_enable_page_cache(True)
         settings.set_enable_smooth_scrolling(False)
         settings.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
@@ -386,7 +425,7 @@ class BrowserTile(Gtk.Box):
         self.webview.connect("decide-policy", self.decide_policy)
         self.webview.connect("create", self.new_window_requested)
         self.pack_start(self.webview, True, True, 0)
-        self.webview.load_uri(self.tile["url"])
+        self.webview.load_uri(self.runtime_url(self.tile["url"]))
 
     def render_tracker(self) -> None:
         machine = self.window.item_by_id(self.tile.get("libraryId", ""))
@@ -452,6 +491,9 @@ class BrowserTile(Gtk.Box):
 
     def render_frozen(self) -> None:
         add_class(self, "frozen")
+        # Keep the native toolbar live while the page itself remains a static
+        # image with no WebKit process or polling resources.
+        self.pack_start(self.browser_bar(), False, False, 0)
         overlay = Gtk.Overlay()
         if self.frozen_path.exists():
             image = Gtk.Image.new_from_file(str(self.frozen_path))
@@ -563,9 +605,18 @@ class BrowserTile(Gtk.Box):
         self.tile.update({"url": url, "mode": "browser"})
         self.window.save_state()
         if self.webview:
-            self.webview.load_uri(url)
+            self.cancel_connection_retry()
+            self.connection_retry_attempt = 0
+            self.navigation_failed = False
+            self.webview.load_uri(self.runtime_url(url))
         else:
             self.render()
+
+    def runtime_url(self, value: str) -> str:
+        item = self.window.item_by_id(self.tile.get("libraryId", ""))
+        if item and item.get("type") == "machine":
+            return control_room_tile_url(value, self.tile["id"])
+        return value
 
     def set_mode(self, mode: str) -> None:
         self.tile["mode"] = mode
@@ -606,6 +657,9 @@ class BrowserTile(Gtk.Box):
             self.set_mode("frozen")
         except Exception as exc:
             print(f"snapshot failed for {self.tile['id']}: {exc}", flush=True)
+            # Capturing the whole GTK tile is a safe fallback and still releases
+            # the WebView once the square switches to frozen mode.
+            GLib.idle_add(self.capture_native_snapshot)
 
     def launch_external(self, uri: str) -> None:
         if uri.startswith(("http://", "https://")):
@@ -624,6 +678,9 @@ class BrowserTile(Gtk.Box):
 
     def reload(self) -> None:
         if self.webview:
+            self.cancel_connection_retry()
+            self.connection_retry_attempt = 0
+            self.navigation_failed = False
             self.webview.reload()
         elif self.tracker_body:
             self.tracker_body.refresh()
@@ -635,16 +692,22 @@ class BrowserTile(Gtk.Box):
 
     def schedule_connection_retry(self) -> None:
         if not self.connection_retry_timer:
+            delay = connection_retry_delay(self.connection_retry_attempt)
             self.connection_retry_timer = GLib.timeout_add_seconds(
-                CONNECTION_RETRY_SECONDS, self.retry_dead_connection
+                delay, self.retry_dead_connection
             )
+            print(f"connection retry scheduled for {self.tile['id']} in {delay}s", flush=True)
 
     def retry_dead_connection(self) -> bool:
+        self.connection_retry_timer = 0
         if self.tile.get("mode") != "browser" or not self.webview:
-            self.connection_retry_timer = 0
+            self.connection_retry_attempt = 0
             return GLib.SOURCE_REMOVE
+        self.connection_retry_attempt += 1
+        self.navigation_failed = False
+        print(f"retrying failed connection for {self.tile['id']}", flush=True)
         self.webview.reload()
-        return GLib.SOURCE_CONTINUE
+        return GLib.SOURCE_REMOVE
 
     def title_changed(self, webview: WebKit2.WebView, _param: Any) -> None:
         title = webview.get_title() or ""
@@ -655,21 +718,41 @@ class BrowserTile(Gtk.Box):
     def uri_changed(self, webview: WebKit2.WebView, _param: Any) -> None:
         uri = webview.get_uri() or ""
         if uri.startswith(("http://", "https://")):
-            self.tile["url"] = uri
+            item = self.window.item_by_id(self.tile.get("libraryId", ""))
+            self.tile["url"] = canonical_tile_url(uri) if item and item.get("type") == "machine" else uri
             self.window.queue_save()
 
     def load_changed(self, webview: WebKit2.WebView, event: WebKit2.LoadEvent) -> None:
         if event != WebKit2.LoadEvent.FINISHED:
             return
+        if self.navigation_failed:
+            self.schedule_connection_retry()
+            return
         self.cancel_connection_retry()
+        self.connection_retry_attempt = 0
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
         if not item:
             return
-        if item.get("type") == "machine" and item.get("token") and not self.tile.get("authInjected"):
-            script = f"localStorage.setItem('control-token', {json.dumps(item['token'])}); true;"
-            self.tile["authInjected"] = True
-            self.window.save_state()
-            webview.run_javascript(script, None, lambda view, result: (view.run_javascript_finish(result), view.reload()), None)
+        if item.get("type") == "machine" and item.get("token"):
+            token = json.dumps(item["token"])
+            script = (
+                "(() => {"
+                f"const token = {token};"
+                "if (localStorage.getItem('control-token') === token) return false;"
+                "localStorage.setItem('control-token', token);"
+                "return true;"
+                "})()"
+            )
+
+            def authentication_checked(view: WebKit2.WebView, result: Any, _user_data: Any) -> None:
+                try:
+                    changed = view.run_javascript_finish(result).get_js_value().to_boolean()
+                except GLib.Error:
+                    return
+                if changed:
+                    view.reload()
+
+            webview.run_javascript(script, None, authentication_checked, None)
         elif item.get("type") == "dashboard":
             self.window.autofill_dashboard(webview, item)
 
@@ -683,6 +766,7 @@ class BrowserTile(Gtk.Box):
         if error.matches(WebKit2.network_error_quark(), WebKit2.NetworkError.CANCELLED):
             return False
         if error.domain == GLib.quark_to_string(WebKit2.network_error_quark()):
+            self.navigation_failed = True
             self.schedule_connection_retry()
         return False
 
@@ -710,6 +794,12 @@ class BrowserTile(Gtk.Box):
         return True
 
     def decide_policy(self, _webview: WebKit2.WebView, decision: Any, decision_type: Any) -> bool:
+        if decision_type == WebKit2.PolicyDecisionType.RESPONSE:
+            response = decision.get_response()
+            if response and response.get_status_code() >= 500:
+                self.navigation_failed = True
+                self.schedule_connection_retry()
+            return False
         if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
             return False
         action = decision.get_navigation_action()
@@ -1023,6 +1113,11 @@ if __name__ == "__main__":
         config, state = load_files()
         assert 1 <= state["columns"] <= 8 and 1 <= state["rows"] <= 3
         assert all(normalize_url(item.get("url", "")) for item in [*config.get("dashboards", []), *config.get("machines", [])])
+        probe_url = control_room_tile_url("https://example.com/path?chat=123", "tab-7")
+        probe_query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(probe_url).query))
+        assert probe_query == {"chat": "123", "control-room-tile": "1", "control-room-slot": "tab-7"}
+        assert canonical_tile_url(probe_url) == "https://example.com/path?chat=123"
+        assert [connection_retry_delay(index) for index in range(5)] == [5, 15, 60, CONNECTION_RETRY_SECONDS, CONNECTION_RETRY_SECONDS]
         print(f"valid: {len(config.get('dashboards', []))} dashboards, {len(config.get('machines', []))} machines, {len(state['tiles'])} squares")
     else:
         raise SystemExit(App().run(None))

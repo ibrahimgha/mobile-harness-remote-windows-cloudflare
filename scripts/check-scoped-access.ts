@@ -14,12 +14,15 @@ const access: SingleChatRemoteAccess = {
     reasoningEffort: "medium",
     speed: "default",
     updatedAt: new Date(0).toISOString()
-  }
+  },
+  visibleAfter: "2026-09-24T00:00:00.000Z"
 };
 
 assert.equal(scopedRequestAllowed("GET", "/api/chats", access), true);
 assert.equal(scopedRequestAllowed("GET", "/api/chats/selected-chat", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/prompt", access), true);
+assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/queued-prompts/reorder", access), true);
+assert.equal(scopedRequestAllowed("POST", "/api/chats/another-chat/queued-prompts/reorder", access), false);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/files", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/dictation/transcribe", access), true);
 assert.equal(scopedRequestAllowed("POST", "/api/chats/selected-chat/fork", access), false);

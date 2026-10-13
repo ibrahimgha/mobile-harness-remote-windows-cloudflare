@@ -1,6 +1,9 @@
 import { Send, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { VoiceOrb, type VoiceAudioMetrics } from "./VoiceOrb";
+import type { VoiceOrbTheme } from "./voiceOrbThemes";
+import { keepScreenAwake, type ScreenWakeLockStatus } from "./screenWakeLock";
+import { applySystemSurface } from "./systemSurface";
 
 export type DictationOverlayPhase = "starting" | "recording" | "processing";
 
@@ -8,6 +11,7 @@ type DictationRecordingOverlayProps = {
   projectName: string;
   chatTitle: string;
   audioMetricsRef: RefObject<VoiceAudioMetrics>;
+  orbTheme?: VoiceOrbTheme;
   phase: DictationOverlayPhase;
   exitRequested?: boolean;
   onCancel: () => void;
@@ -24,6 +28,7 @@ export function DictationRecordingOverlay({
   projectName,
   chatTitle,
   audioMetricsRef,
+  orbTheme = "water",
   phase,
   exitRequested = false,
   onCancel,
@@ -43,8 +48,23 @@ export function DictationRecordingOverlay({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sendRequested, setSendRequested] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [screenWakeLockStatus, setScreenWakeLockStatus] = useState<ScreenWakeLockStatus>("requesting");
+  const screenWakeLockRef = useRef<ReturnType<typeof keepScreenAwake> | null>(null);
   const isClosing = closing || exitRequested;
   const displayPhase: DictationOverlayPhase = phase === "processing" || sendRequested ? "processing" : phase;
+
+  useEffect(() => applySystemSurface(document, "#ffffff"), []);
+
+  useEffect(() => {
+    // The same popup stays mounted through microphone startup, recording,
+    // transcription, and the exit fade. Do not release between those phases.
+    const lock = keepScreenAwake(window, setScreenWakeLockStatus);
+    screenWakeLockRef.current = lock;
+    return () => {
+      lock.stop();
+      screenWakeLockRef.current = null;
+    };
+  }, []);
 
   const requestCancel = useCallback(() => {
     if (closingRef.current || exitRequested || displayPhase === "processing") return;
@@ -192,6 +212,7 @@ export function DictationRecordingOverlay({
       aria-labelledby="dictation-recording-title"
       aria-describedby="dictation-recording-description"
       aria-busy={displayPhase !== "recording" || isClosing}
+      data-screen-wake-lock={screenWakeLockStatus}
       tabIndex={-1}
     >
       <h2 id="dictation-recording-title" className="dictation-visually-hidden">
@@ -203,7 +224,7 @@ export function DictationRecordingOverlay({
 
       <div className="dictation-recording-stage">
         <div className="dictation-orb-shell">
-          <VoiceOrb audioMetricsRef={audioMetricsRef} phase={displayPhase} loadAnimatedAsset={loadAnimatedOrb} />
+          <VoiceOrb audioMetricsRef={audioMetricsRef} phase={displayPhase} loadAnimatedAsset={loadAnimatedOrb} theme={orbTheme} />
           <time
             className="dictation-recording-timer"
             dateTime={`PT${elapsedSeconds}S`}
@@ -217,6 +238,18 @@ export function DictationRecordingOverlay({
       <span className="dictation-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         {statusText}
       </span>
+
+      {!isClosing && (screenWakeLockStatus === "unavailable" || screenWakeLockStatus === "unsupported") ? (
+        <div className="dictation-wake-lock-notice" role="status">
+          {screenWakeLockStatus === "unsupported" ? (
+            <span>This browser cannot keep the screen awake. Update your phone or browser.</span>
+          ) : (
+            <button type="button" onClick={() => screenWakeLockRef.current?.retry()}>
+              Screen may dim. Tap to retry keep-awake.
+            </button>
+          )}
+        </div>
+      ) : null}
 
       {displayPhase !== "processing" ? (
         <div className="dictation-recording-actions">

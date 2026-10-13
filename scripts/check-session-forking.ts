@@ -15,7 +15,7 @@ try {
   const meta = JSON.stringify({
     timestamp: "2026-08-27T20:49:38.535Z",
     type: "session_meta",
-    payload: { id: oldId, timestamp: "2026-08-27T20:49:38.535Z", source: "cli" }
+    payload: { id: oldId, session_id: oldId, history_mode: "paginated", context_window: { window_id: "original-window" }, timestamp: "2026-08-27T20:49:38.535Z", source: "cli" }
   });
   const bytesBeforeBoundary = 1024 * 1024 - Buffer.byteLength(`${meta}\n`) - 12;
   const largeEvent = `${"x".repeat(bytesBeforeBoundary)}${oldId}${"y".repeat(1024 * 1024 + 31)}`;
@@ -34,6 +34,9 @@ try {
   const forkMarker = JSON.parse(lines.at(-1) ?? "{}");
 
   assert.equal(rewrittenMeta.payload.id, newId);
+  assert.equal(rewrittenMeta.payload.session_id, newId);
+  assert.equal(rewrittenMeta.payload.history_mode, "legacy");
+  assert.equal(rewrittenMeta.payload.context_window, undefined);
   assert.equal(rewrittenMeta.timestamp, nowIso);
   assert.equal(rewrittenMeta.payload.source, "vscode");
   assert.match(lines[1], new RegExp(newId));

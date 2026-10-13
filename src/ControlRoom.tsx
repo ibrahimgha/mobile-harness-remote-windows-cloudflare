@@ -706,6 +706,10 @@ export function ControlRoom() {
       }
       if (message.type === "codex-control-room-pad-action") {
         const slotId = keyboardFocusedSlotIdRef.current;
+        if (message.action === "dismiss-all-completion-glows") {
+          setCompletionGlows({});
+          return;
+        }
         if (message.action === "acknowledge-completion-light") {
           void fetch("/api/control-room/led/acknowledge", {
             method: "POST",
@@ -1920,7 +1924,7 @@ export function ControlRoom() {
                       setConnections((current) => ({ ...current, [slot.id]: "offline" }));
                       setPageFailures((current) => ({ ...current, [slot.id]: "Page did not load" }));
                     }}
-                    allow="clipboard-read; clipboard-write; microphone"
+                    allow="clipboard-read; clipboard-write; microphone; screen-wake-lock"
                   />
                 )}
               </div>

@@ -12,16 +12,27 @@ import {
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { taskNotificationSummary } from "../shared/notificationCopy.js";
+import { isQueueOrder, sameQueueOrder } from "../shared/queueOrder.js";
 import { resolveCodexCliPath } from "./codexCli.js";
-import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus } from "./types.js";
+import { CodexAppServerSession, CodexRpcError } from "./codexAppServer.js";
+import { stripRemotePromptContext, type PromptInputSource, type RemoteSkillContext } from "./remotePromptContext.js";
+import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus, UploadedPromptFile } from "./types.js";
 
 type CodexRunnerOptions = {
   onJobChange?: (job: CodexRunJob, event: JobEvent) => void;
   getRunSettings?: () => CodexRunSettings;
   statePath?: string | null;
+  remoteSkill?: RemoteSkillContext;
+  getExternalActiveRuns?: (force?: boolean) => Promise<Array<{ chatId: string; startedAt: string }>>;
+  onExternalJobsChange?: () => void;
+  externalRunPollMs?: number;
 };
 
-type JobEvent = "queued" | "started" | "heartbeat" | "completed" | "failed" | "stopped";
+type JobEvent = "queued" | "started" | "steered" | "heartbeat" | "completed" | "failed" | "stopped";
+
+type SteeringResult = { job: CodexRunJob; hadRunningJob: boolean; steered: boolean; activeJob?: CodexRunJob };
 
 type EnqueueOptions = {
   clientRequestId?: string;
@@ -31,6 +42,9 @@ type EnqueueOptions = {
   promptPreview: string;
   promptHash: string;
   textLength: number;
+  composerText?: string;
+  attachments?: UploadedPromptFile[];
+  inputSource?: PromptInputSource;
   settings?: CodexRunSettings;
 };
 
@@ -64,6 +78,15 @@ const recoveredLogJobsLimit = Number(process.env.CODEX_RECOVERED_LOG_JOBS_LIMIT 
 const defaultRunnerStatePath = path.resolve(
   process.env.CODEX_RUNNER_STATE_PATH ?? path.join(process.cwd(), ".runtime", "codex-runner-state.json")
 );
+const externalConflictHoldMs = Math.max(5000, Number(process.env.CODEX_EXTERNAL_CONFLICT_HOLD_MS ?? 6500) || 6500);
+
+export function isActiveWriterConflict(message: string): boolean {
+  return /thread-store conflict:[\s\S]*already has an active writer/i.test(message);
+}
+
+export function isModelCapacityError(message: string): boolean {
+  return /selected model is at capacity\b/i.test(message);
+}
 
 type PersistedRunnerItem = {
   job: CodexRunJob;
@@ -118,7 +141,7 @@ function textFromContent(content: unknown): string {
 }
 
 function normalizeTranscriptText(text: string): string {
-  return text.replace(/\r\n/g, "\n").trimEnd();
+  return stripRemotePromptContext(text).replace(/\r\n/g, "\n").trimEnd();
 }
 
 function delay(ms: number): Promise<void> {
@@ -255,6 +278,8 @@ export class CodexRunner {
   private readonly jobs = new Map<string, CodexRunJob>();
   private readonly jobTexts = new Map<string, string>();
   private readonly runningChildren = new Map<string, ChildProcessWithoutNullStreams>();
+  private readonly nativeSessions = new Map<string, CodexAppServerSession>();
+  private readonly steeringRequests = new Map<string, Promise<SteeringResult>>();
   private readonly stoppedJobFinalizers = new Map<
     string,
     (code?: number | null, signal?: NodeJS.Signals | null) => void
@@ -262,6 +287,14 @@ export class CodexRunner {
   private readonly stopRequestedJobIds = new Set<string>();
   private readonly runningChatIds = new Set<string>();
   private readonly statePath: string | null;
+  private readonly remoteSkill?: RemoteSkillContext;
+  private readonly getExternalActiveRuns?: CodexRunnerOptions["getExternalActiveRuns"];
+  private readonly onExternalJobsChange?: CodexRunnerOptions["onExternalJobsChange"];
+  private readonly externalRunPollMs: number;
+  private readonly externalRunsByChat = new Map<string, { chatId: string; startedAt: string }>();
+  private readonly externalConflictHolds = new Map<string, number>();
+  private externalActivityReady = false;
+  private externalRefreshPromise?: Promise<void>;
   private started = false;
 
   readonly bypassSandbox = shouldBypassSandbox();
@@ -272,18 +305,31 @@ export class CodexRunner {
     this.onJobChange = options.onJobChange;
     this.getRunSettings = options.getRunSettings;
     this.statePath = options.statePath === undefined ? defaultRunnerStatePath : options.statePath;
+    this.remoteSkill = options.remoteSkill;
+    this.getExternalActiveRuns = options.getExternalActiveRuns;
+    this.onExternalJobsChange = options.onExternalJobsChange;
+    this.externalRunPollMs = Math.max(500, options.externalRunPollMs ?? 2000);
+    this.externalActivityReady = !this.getExternalActiveRuns;
     this.restorePendingState();
   }
 
   start() {
     if (this.started) return;
     this.started = true;
+    const retryTimer = setInterval(() => this.processNext(), 1000);
+    retryTimer.unref?.();
     for (const item of this.queue) this.emit(item.job, "queued");
-    this.processNext();
+    if (this.getExternalActiveRuns) {
+      void this.refreshExternalActivity(true).catch(() => undefined);
+      const timer = setInterval(() => void this.refreshExternalActivity().catch(() => undefined), this.externalRunPollMs);
+      timer.unref?.();
+    } else {
+      this.processNext();
+    }
   }
 
   get mode() {
-    return this.simulationMode ? "simulation" : "codex-cli";
+    return this.simulationMode ? "simulation" : "codex-app-server";
   }
 
   get cliPath() {
@@ -291,7 +337,7 @@ export class CodexRunner {
   }
 
   get activeJobs() {
-    return this.runningChatIds.size;
+    return new Set([...this.runningChatIds, ...this.externalRunsByChat.keys()]).size;
   }
 
   get queuedJobs() {
@@ -299,11 +345,75 @@ export class CodexRunner {
   }
 
   willQueueBehindExistingJob(chatId: string) {
-    return this.runningChatIds.has(chatId) || this.queue.some((item) => item.job.chatId === chatId);
+    return !this.externalActivityReady || this.runningChatIds.has(chatId) || this.externalRunsByChat.has(chatId)
+      || this.queue.some((item) => item.job.chatId === chatId);
+  }
+
+  hasNativeRunningJob(chatId: string) {
+    return this.jobsForChat(chatId).some((job) => job.status === "running" && this.nativeSessions.has(job.id));
   }
 
   get recentJobs(): CodexRunJob[] {
-    return this.sortedJobs.slice(0, maxRecentJobs);
+    return [...this.externalJobs, ...this.sortedJobs]
+      .sort((left, right) => Date.parse(right.startedAt ?? right.createdAt) - Date.parse(left.startedAt ?? left.createdAt))
+      .slice(0, maxRecentJobs);
+  }
+
+  get externalJobs(): CodexRunJob[] {
+    return [...this.externalRunsByChat.values()]
+      .filter((run) => !this.runningChatIds.has(run.chatId))
+      .map((run) => ({
+        id: `session-run-${run.chatId}-${run.startedAt}`,
+        source: "external" as const,
+        chatId: run.chatId,
+        projectPath: "",
+        status: "running" as const,
+        kind: "prompt" as const,
+        createdAt: run.startedAt,
+        startedAt: run.startedAt,
+        promptPreview: "Started outside this Remote",
+        promptHash: "",
+        textLength: 0,
+        command: [],
+        logPaths: { stdout: "", stderr: "", lastMessage: "" },
+        message: "Running in Codex outside this Remote"
+      }));
+  }
+
+  async refreshExternalActivity(force = false): Promise<void> {
+    if (!this.getExternalActiveRuns) {
+      this.externalActivityReady = true;
+      this.processNext();
+      return;
+    }
+    if (this.externalRefreshPromise) return this.externalRefreshPromise;
+
+    this.externalRefreshPromise = (async () => {
+      const runs = await this.getExternalActiveRuns?.(force) ?? [];
+      const now = Date.now();
+      const next = new Map(runs.map((run) => [run.chatId, run]));
+      for (const [chatId, holdUntil] of this.externalConflictHolds) {
+        if (next.has(chatId)) {
+          this.externalConflictHolds.delete(chatId);
+        } else if (holdUntil > now) {
+          next.set(chatId, this.externalRunsByChat.get(chatId) ?? { chatId, startedAt: new Date().toISOString() });
+        } else {
+          this.externalConflictHolds.delete(chatId);
+        }
+      }
+
+      const signature = (items: Iterable<{ chatId: string; startedAt: string }>) =>
+        [...items].map((run) => `${run.chatId}:${run.startedAt}`).sort().join("|");
+      const changed = signature(this.externalRunsByChat.values()) !== signature(next.values());
+      this.externalRunsByChat.clear();
+      for (const [chatId, run] of next) this.externalRunsByChat.set(chatId, run);
+      this.externalActivityReady = true;
+      if (changed) this.onExternalJobsChange?.();
+      this.processNext();
+    })().finally(() => {
+      this.externalRefreshPromise = undefined;
+    });
+    return this.externalRefreshPromise;
   }
 
   jobsForChat(chatId: string): CodexRunJob[] {
@@ -321,6 +431,10 @@ export class CodexRunner {
       return null;
     }
 
+    if (this.steeringRequests.has(jobId)) {
+      throw new CodexRpcError("Wait for the steering acknowledgement before editing this prompt");
+    }
+
     const [item] = this.queue.splice(queueIndex, 1);
     const text = this.jobTexts.get(item.job.id) ?? item.text;
     this.jobs.delete(item.job.id);
@@ -329,6 +443,42 @@ export class CodexRunner {
     this.persistPendingState();
 
     return { job: item.job, text };
+  }
+
+  reorderQueuedJobs(chatId: string, jobIds: string[], expectedOrder: string[]): CodexRunJob[] {
+    const current = this.queue.filter((item) => item.job.chatId === chatId);
+    const currentIds = current.map((item) => item.job.id);
+    if (
+      !isQueueOrder(jobIds) || !isQueueOrder(expectedOrder) ||
+      !sameQueueOrder(currentIds, expectedOrder) ||
+      jobIds.length !== currentIds.length || jobIds.some((id) => !currentIds.includes(id))
+    ) {
+      throw new Error("The queue changed while you were reordering. The latest order has been refreshed; please try again.");
+    }
+    if (current.some(({ job }) => job.steeringState || this.steeringRequests.has(job.id))) {
+      throw new Error("Wait for steering to finish before reordering this queue.");
+    }
+    if (sameQueueOrder(currentIds, jobIds)) return current.map((item) => item.job);
+
+    const previous = [...this.queue];
+    const byId = new Map(current.map((item) => [item.job.id, item]));
+    let position = 0;
+    // Only replace this chat's slots. Keep every job object, payload and other chat's position intact.
+    for (let index = 0; index < this.queue.length; index += 1) {
+      if (this.queue[index].job.chatId === chatId) this.queue[index] = byId.get(jobIds[position++])!;
+    }
+    this.refreshQueuePositions();
+    try {
+      this.persistPendingState(true);
+    } catch {
+      this.queue.splice(0, this.queue.length, ...previous);
+      this.refreshQueuePositions();
+      throw new Error("Could not save the queue order. The previous order was kept; please try again.");
+    }
+    const ordered = jobIds.map((id) => byId.get(id)!.job);
+    // Publish only after every position and the durable journal have been updated.
+    for (const job of ordered) this.emit(job, "queued", false);
+    return ordered;
   }
 
   prioritizeQueuedJob(jobId: string, chatId?: string): CodexRunJob | null {
@@ -346,25 +496,66 @@ export class CodexRunner {
     return item.job;
   }
 
-  steerQueuedJob(jobId: string, chatId: string): { job: CodexRunJob; stoppedJob?: CodexRunJob; hadRunningJob: boolean } | null {
-    const job = this.prioritizeQueuedJob(jobId, chatId);
-
-    if (!job) {
-      return null;
-    }
-
+  async steerQueuedJob(jobId: string, chatId: string): Promise<SteeringResult | null> {
+    const existing = this.jobs.get(jobId);
+    if (!existing || existing.chatId !== chatId) return null;
+    if (existing.status === "steered") return { job: existing, hadRunningJob: true, steered: true };
+    const pending = this.steeringRequests.get(jobId);
+    if (pending) return pending;
+    const item = this.queue.find((entry) => entry.job.id === jobId);
+    if (!item) return null;
+    if (item.job.steeringState) throw new CodexRpcError("Steering delivery is awaiting confirmation. The saved prompt will not be sent twice.");
     const runningJob = this.jobsForChat(chatId).find((candidate) => candidate.status === "running");
-    const stoppedJob = runningJob ? this.stopRunningJob(runningJob.id, chatId) ?? undefined : undefined;
-
     if (!runningJob) {
+      this.prioritizeQueuedJob(jobId, chatId);
       this.processNext();
+      return { job: item.job, hadRunningJob: false, steered: false };
     }
-
-    return {
-      job,
-      stoppedJob,
-      hadRunningJob: Boolean(runningJob)
-    };
+    const session = this.nativeSessions.get(runningJob.id);
+    if (!session) throw new CodexRpcError("This worker is not connected to native steering yet. Leave the prompt queued; the current worker will not be stopped.");
+    const selected = item.job.settings;
+    const active = runningJob.settings;
+    if (selected && active && (selected.model !== active.model || selected.reasoningEffort !== active.reasoningEffort || selected.speed !== active.speed)) {
+      throw new CodexRpcError("Native steering keeps the active model, reasoning level, and speed. This prompt has different settings; leave it queued, or resubmit it with the active settings.");
+    }
+    item.job.steeringState = "sending";
+    item.job.steeredIntoJobId = runningJob.id;
+    item.job.nativeTurnId = runningJob.nativeTurnId;
+    item.job.message = "Sending input to the active Codex turn without stopping it";
+    this.emit(item.job, "queued");
+    const operation = (async (): Promise<SteeringResult> => {
+      try {
+        const turnId = await session.steer(item.text, item.job.id, item.job.inputSource);
+        const queueIndex = this.queue.indexOf(item);
+        if (queueIndex >= 0) this.queue.splice(queueIndex, 1);
+        item.job.status = "steered";
+        item.job.kind = "steer";
+        item.job.nativeTurnId = turnId;
+        item.job.steeringState = session.hasConfirmedInput(item.job.id) ? "confirmed" : "accepted";
+        item.job.queuePosition = undefined;
+        item.job.message = "Steering accepted by the same active Codex turn; no worker was stopped";
+        this.refreshQueuePositions(true);
+        this.emit(item.job, "steered");
+        return { job: item.job, hadRunningJob: true, steered: true, activeJob: runningJob };
+      } catch (error) {
+        const uncertain = error instanceof CodexRpcError && error.outcomeUnknown;
+        item.job.steeringState = uncertain ? "uncertain" : undefined;
+        if (!uncertain) {
+          item.job.steeredIntoJobId = undefined;
+          item.job.nativeTurnId = undefined;
+        }
+        item.job.message = uncertain
+          ? "Steering acknowledgement was lost. Prompt saved and held to prevent duplicate delivery; check the chat before resubmitting."
+          : "Steering was not accepted; prompt remains queued";
+        this.emit(item.job, "queued");
+        throw error;
+      } finally {
+        this.steeringRequests.delete(jobId);
+        this.processNext();
+      }
+    })();
+    this.steeringRequests.set(jobId, operation);
+    return operation;
   }
 
   stopRunningJob(jobId: string, chatId?: string): CodexRunJob | null {
@@ -389,7 +580,21 @@ export class CodexRunner {
       return job;
     }
 
-    this.terminateChild(child);
+    const session = this.nativeSessions.get(job.id);
+    if (session) {
+      // A real Stop is distinct from Steer. Give Codex a chance to cancel its
+      // tools cleanly; process-tree termination is only a stuck-stop safeguard.
+      const timer = setTimeout(() => {
+        if (job.status === "running") this.terminateChild(child);
+      }, 5000);
+      timer.unref?.();
+      child.once("exit", () => clearTimeout(timer));
+      void session.interrupt().catch(() => {
+        if (job.status === "running") this.terminateChild(child);
+      });
+    } else {
+      this.terminateChild(child);
+    }
 
     return job;
   }
@@ -398,6 +603,7 @@ export class CodexRunner {
     const runningJobs = this.jobsForChat(chatId).filter((job) => job.status === "running");
 
     for (const job of runningJobs) {
+      if (this.nativeSessions.has(job.id)) continue;
       if (await this.stdoutHasTurnCompleted(job)) {
         await this.recoverCompletedJob(job);
       }
@@ -427,8 +633,11 @@ export class CodexRunner {
       promptPreview: options.promptPreview,
       promptHash: options.promptHash,
       textLength: options.textLength,
+      composerText: options.composerText,
+      attachments: options.attachments?.map((attachment) => ({ ...attachment })),
       command: [],
       settings: options.settings,
+      inputSource: options.inputSource ?? "typed",
       logPaths: {
         stdout: path.join(runLogDir, `${logBase}.stdout.log`),
         stderr: path.join(runLogDir, `${logBase}.stderr.log`),
@@ -463,48 +672,24 @@ export class CodexRunner {
   }
 
   private argsForJob(job: CodexRunJob): string[] {
-    const args = [
-      "exec",
-      "resume",
-      "--all",
-      "--json",
-      "--output-last-message",
-      job.logPaths.lastMessage
-    ];
-
-    if (this.bypassSandbox) {
-      args.push("--dangerously-bypass-approvals-and-sandbox");
-    }
-
-    if (this.skipGitRepoCheck) {
-      args.push("--skip-git-repo-check");
-    }
-
-    if (job.settings?.model && job.settings.model !== "default") {
-      args.push("--model", job.settings.model);
-    }
-
-    if (job.settings?.reasoningEffort) {
-      args.push("-c", `model_reasoning_effort="${job.settings.reasoningEffort}"`);
-    }
-
-    if (job.settings?.speed === "priority") {
-      args.push("-c", 'desktop.default-service-tier="priority"');
-    }
-
-    args.push(job.chatId, "-");
-    return args;
+    return ["app-server", "--listen", "stdio://"];
   }
 
   private processNext(): void {
+    if (!this.externalActivityReady) return;
     while (true) {
-      const nextIndex = this.queue.findIndex((item) => !this.runningChatIds.has(item.job.chatId));
+      const nextIndex = this.queue.findIndex((item, index) => !item.job.steeringState
+        && (!item.job.notBefore || Date.parse(item.job.notBefore) <= Date.now())
+        && !this.queue.slice(0, index).some((earlier) => earlier.job.chatId === item.job.chatId && earlier.job.notBefore && Date.parse(earlier.job.notBefore) > Date.now())
+        && !this.runningChatIds.has(item.job.chatId)
+        && !this.externalRunsByChat.has(item.job.chatId));
       if (nextIndex < 0) {
         return;
       }
 
       const [next] = this.queue.splice(nextIndex, 1);
       next.job.queuePosition = undefined;
+      next.job.notBefore = undefined;
       this.runningChatIds.add(next.job.chatId);
       next.job.status = "running";
       next.job.startedAt = new Date().toISOString();
@@ -526,9 +711,14 @@ export class CodexRunner {
 
       void this.runJob(next.job, next.text)
         .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "Codex runner failed before the worker started";
+          if (isActiveWriterConflict(message)) {
+            this.requeueBehindExternalWriter(next.job, next.text);
+            return;
+          }
           next.job.status = "failed";
           next.job.finishedAt = new Date().toISOString();
-          next.job.message = error instanceof Error ? error.message : "Codex runner failed before the worker started";
+          next.job.message = message;
           this.jobTexts.delete(next.job.id);
           this.emit(next.job, "failed");
         })
@@ -563,6 +753,7 @@ export class CodexRunner {
       const stdout = createWriteStream(job.logPaths.stdout, { flags: "a" });
       const stderr = createWriteStream(job.logPaths.stderr, { flags: "a" });
       let stdoutBuffer = "";
+      const stdoutDecoder = new StringDecoder("utf8");
       let stdoutBufferTruncated = false;
       let completed = false;
       let childClosed = false;
@@ -571,6 +762,7 @@ export class CodexRunner {
       const child = spawn(cliPath, args, {
         cwd: existsSync(job.projectPath) ? job.projectPath : os.homedir(),
         windowsHide: true,
+        env: this.remoteSkill ? { ...process.env, CODEX_REMOTE_CONNECTION_FILE: this.remoteSkill.connectionFile } : process.env,
         stdio: ["pipe", "pipe", "pipe"]
       });
       this.runningChildren.set(job.id, child);
@@ -596,9 +788,21 @@ export class CodexRunner {
       };
 
       const handleLine = (line: string) => {
-        if (this.handleStdoutLine(job, line) === "turn.completed") {
-          finishFromTurnCompleted();
+        try {
+          session.handleLine(line);
+        } catch (error) {
+          // A notification callback or a closed reply pipe must not crash the
+          // whole remote (and every other chat) from a child data event.
+          stderr.write(`[remote] App-server event error: ${error instanceof Error ? error.message : String(error)}\n`);
         }
+      };
+
+      const requeueWriterConflict = (message: string) => {
+        if (completed || !isActiveWriterConflict(message)) return false;
+        completed = true;
+        this.requeueBehindExternalWriter(job, text);
+        resolve();
+        return true;
       };
 
       const completeJob = async (
@@ -625,6 +829,12 @@ export class CodexRunner {
         job.status = status;
 
         try {
+          // A completion notification can race the RPC acknowledgement. Keep
+          // the connection and queue reservations until those replies settle.
+          await Promise.allSettled([...this.steeringRequests.entries()]
+            .filter(([id]) => this.jobs.get(id)?.steeredIntoJobId === job.id)
+            .map(([, request]) => request));
+          this.holdUnconfirmedSteers(job.id);
           if (status === "stopped") {
             job.message = "Stopped from the remote for this chat";
             this.emit(job, "stopped");
@@ -680,9 +890,52 @@ export class CodexRunner {
 
       this.stoppedJobFinalizers.set(job.id, finishStoppedJob);
 
+      const session = new CodexAppServerSession({
+        child,
+        threadId: job.chatId,
+        cwd: existsSync(job.projectPath) ? job.projectPath : os.homedir(),
+        settings: job.settings,
+        remoteSkill: this.remoteSkill,
+        inputSource: job.inputSource,
+        bypassSandbox: this.bypassSandbox,
+        onTurnId: (turnId) => {
+          job.nativeTurnId = turnId;
+          this.persistPendingState();
+        },
+        onUserMessage: (clientId) => {
+          this.confirmSteeredInput(job.id, clientId);
+        },
+        onMessage: (message, final) => {
+          if (final) {
+            writeFileSync(job.logPaths.lastMessage, message, "utf8");
+            job.notificationSummary = taskNotificationSummary({ response: message, prompt: job.promptPreview });
+          }
+          else this.updateHeartbeat(job, message);
+        },
+        onComplete: (status, message) => {
+          if (message) job.message = message;
+          if (status === "failed" && message && requeueWriterConflict(message)) {
+            child.stdin.end();
+            if (child.exitCode === null && child.signalCode === null) child.kill();
+            return;
+          }
+          // Retain small, root-turn-only completion records for existing log
+          // reconciliation. Subagent completion notifications cannot end this job.
+          if (status === "completed") {
+            stdout.write(`${JSON.stringify({ type: "turn.completed", turn_id: job.nativeTurnId })}\n`);
+            finishFromTurnCompleted();
+          } else {
+            stdout.write(`${JSON.stringify({ type: status === "failed" ? "turn.failed" : "turn.stopped", error: { message } })}\n`);
+            completionPromise ??= completeJob(status, status === "failed" ? 1 : null, null, "close");
+          }
+          void completionPromise?.finally(() => child.stdin.end());
+        }
+      });
+      this.nativeSessions.set(job.id, session);
+
       child.stdout.on("data", (chunk: Buffer) => {
         stdout.write(chunk);
-        stdoutBuffer += chunk.toString("utf8");
+        stdoutBuffer += stdoutDecoder.write(chunk);
 
         const lines = stdoutBuffer.split(/\r?\n/);
         stdoutBuffer = lines.pop() ?? "";
@@ -704,7 +957,21 @@ export class CodexRunner {
         }
       });
       child.stderr.pipe(stderr);
-      child.stdin.end(text);
+      child.stdin.on("error", () => session.dispose());
+      void session.start(text, job.clientRequestId ?? job.id).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Codex app-server could not start the turn";
+        job.message = message;
+        if (requeueWriterConflict(message)) {
+          child.stdin.end();
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+          return;
+        }
+        completionPromise ??= completeJob(this.stopRequestedJobIds.has(job.id) ? "stopped" : "failed", 1, null, "close");
+        void completionPromise.finally(() => {
+          child.stdin.end();
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+        });
+      });
 
       child.on("error", (error) => {
         stderr.write(`${error.name}: ${error.message}\n`);
@@ -713,7 +980,18 @@ export class CodexRunner {
       // A descendant can keep stdio handles open on Windows after Codex exits.
       // Finalize an explicit stop on process exit instead of waiting for close.
       child.on("exit", (code, signal) => {
+        session.dispose();
         finishStoppedJob(code, signal);
+        // Unexpected app-server exits are failures, not successful turns. A
+        // descendant can keep stdio open forever, so do not wait for `close`.
+        if (!completed) {
+          job.message = `Codex connection exited before confirming turn completion (exit ${code ?? signal ?? "unknown"})`;
+          completionPromise ??= completeJob("failed", code, signal, "close");
+          void completionPromise.finally(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+          });
+        }
       });
 
       child.on("close", (code, signal) => {
@@ -725,7 +1003,7 @@ export class CodexRunner {
             handleLine(stdoutBuffer);
           }
 
-          completionPromise ??= completeJob(this.stopRequestedJobIds.has(job.id) ? "stopped" : code === 0 ? "completed" : "failed", code, signal, "close");
+          completionPromise ??= completeJob(this.stopRequestedJobIds.has(job.id) ? "stopped" : "failed", code, signal, "close");
           await completionPromise;
           stdout.end();
           stderr.end();
@@ -745,10 +1023,32 @@ export class CodexRunner {
         });
       });
     }).finally(() => {
+      this.nativeSessions.get(job.id)?.dispose();
+      this.nativeSessions.delete(job.id);
       this.runningChildren.delete(job.id);
       this.stoppedJobFinalizers.delete(job.id);
       this.stopRequestedJobIds.delete(job.id);
     });
+  }
+
+  private requeueBehindExternalWriter(job: CodexRunJob, text: string) {
+    const now = Date.now();
+    this.externalConflictHolds.set(job.chatId, now + externalConflictHoldMs);
+    if (!this.externalRunsByChat.has(job.chatId)) {
+      this.externalRunsByChat.set(job.chatId, { chatId: job.chatId, startedAt: new Date(now).toISOString() });
+    }
+    job.status = "queued";
+    job.startedAt = undefined;
+    job.finishedAt = undefined;
+    job.exitCode = undefined;
+    job.signal = undefined;
+    job.nativeTurnId = undefined;
+    job.message = "Queued behind a Codex job started outside this Remote";
+    if (!this.queue.some((item) => item.job.id === job.id)) this.queue.unshift({ job, text });
+    this.refreshQueuePositions();
+    this.emit(job, "queued");
+    this.onExternalJobsChange?.();
+    void this.refreshExternalActivity(true);
   }
 
   private terminateChild(child: ChildProcessWithoutNullStreams) {
@@ -1123,6 +1423,39 @@ export class CodexRunner {
     }
   }
 
+  private confirmSteeredInput(parentJobId: string, clientId: string) {
+    const steered = this.jobs.get(clientId);
+    if (steered?.steeredIntoJobId !== parentJobId) return;
+    const wasHeld = steered.status === "queued" && steered.steeringState === "uncertain";
+    steered.steeringState = "confirmed";
+    if (wasHeld) {
+      // Input notifications may arrive after the RPC timeout. Reconcile that
+      // evidence without requiring a retry or ever sending the prompt again.
+      const index = this.queue.findIndex((item) => item.job.id === clientId);
+      if (index >= 0) this.queue.splice(index, 1);
+      steered.status = "steered";
+      steered.kind = "steer";
+      steered.queuePosition = undefined;
+      steered.message = "Steering delivery confirmed by the active Codex turn";
+      this.refreshQueuePositions(true);
+      this.emit(steered, "steered");
+    } else {
+      this.persistPendingState();
+    }
+  }
+
+  private holdUnconfirmedSteers(parentJobId: string) {
+    for (const candidate of this.jobs.values()) {
+      if (candidate.steeredIntoJobId !== parentJobId || candidate.status !== "steered" || candidate.steeringState === "confirmed") continue;
+      candidate.status = "queued";
+      candidate.steeringState = "uncertain";
+      candidate.message = "The turn ended before steering delivery was confirmed. Prompt saved and held; check the chat before resubmitting.";
+      this.queue.push({ job: candidate, text: this.jobTexts.get(candidate.id) ?? "" });
+      this.emit(candidate, "queued");
+    }
+    this.refreshQueuePositions(true);
+  }
+
   private restorePendingState() {
     if (!this.statePath) return;
 
@@ -1140,7 +1473,7 @@ export class CodexRunner {
           typeof job.chatId !== "string" ||
           typeof job.projectPath !== "string" ||
           typeof entry.text !== "string" ||
-          (job.status !== "queued" && job.status !== "running")
+          (job.status !== "queued" && job.status !== "running" && job.status !== "steered")
         ) {
           continue;
         }
@@ -1153,6 +1486,21 @@ export class CodexRunner {
           heartbeatHistory: job.heartbeatHistory ? [...job.heartbeatHistory] : undefined
         };
         let text = entry.text;
+        if (restoredJob.steeredIntoJobId && restoredJob.steeringState === "confirmed") {
+          restoredJob.status = "steered";
+          restoredJob.kind = "steer";
+          restoredJob.queuePosition = undefined;
+          this.jobs.set(restoredJob.id, restoredJob);
+          this.jobTexts.set(restoredJob.id, text);
+          continue;
+        }
+        if (restoredJob.steeringState) {
+          // Never replay an input whose delivery was interrupted by a reboot.
+          // Keep the full text visible in the queue for explicit reconciliation.
+          restoredJob.status = "queued";
+          restoredJob.steeringState = "uncertain";
+          restoredJob.message = "Restart interrupted steering confirmation. Prompt saved and held to prevent duplicate delivery; check the chat before resubmitting.";
+        }
         if (restoredJob.status === "running") {
           restoredJob.status = "queued";
           restoredJob.kind = "prompt";
@@ -1161,9 +1509,11 @@ export class CodexRunner {
           restoredJob.finishedAt = undefined;
           restoredJob.exitCode = undefined;
           restoredJob.signal = undefined;
+          restoredJob.nativeTurnId = undefined;
           restoredJob.promptPreview = "resume";
           restoredJob.promptHash = "service-restart-resume";
           restoredJob.textLength = 6;
+          restoredJob.inputSource = "typed";
           restoredJob.message = "Queued to resume after an interrupted service or machine restart";
           text = "resume";
         }
@@ -1183,11 +1533,13 @@ export class CodexRunner {
     }
   }
 
-  private persistPendingState() {
+  private persistPendingState(requireSuccess = false) {
     if (!this.statePath) return;
 
     const pending = [...this.jobs.values()]
-      .filter((job) => job.status === "queued" || job.status === "running")
+      .filter((job) => job.status === "queued" || job.status === "running" || (job.status === "steered" && (
+        job.steeringState !== "confirmed" || ["queued", "running"].includes(this.jobs.get(job.steeredIntoJobId ?? "")?.status ?? "")
+      )))
       .sort((left, right) => {
         if (left.status !== right.status) return left.status === "running" ? -1 : 1;
         if (left.status === "queued") return (left.queuePosition ?? Number.MAX_SAFE_INTEGER) - (right.queuePosition ?? Number.MAX_SAFE_INTEGER);
@@ -1210,17 +1562,41 @@ export class CodexRunner {
       mkdirSync(path.dirname(this.statePath), { recursive: true });
       writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
       renameSync(tempPath, this.statePath);
-    } catch {
+    } catch (error) {
       try {
         rmSync(tempPath, { force: true });
       } catch {
         // Best-effort cleanup; the next state transition will retry the journal.
       }
+      if (requireSuccess) throw error;
     }
   }
 
-  private emit(job: CodexRunJob, event: JobEvent) {
-    if (event !== "heartbeat") this.persistPendingState();
+  private emit(job: CodexRunJob, event: JobEvent, persist = true) {
+    if (event === "failed" && isModelCapacityError(job.message ?? "") &&
+        ![...this.jobs.values()].some((candidate) => candidate.capacityRetryOfJobId === job.id)) {
+      const notBefore = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const retry = this.createJob({
+        chatId: job.chatId,
+        projectPath: job.projectPath,
+        text: "resume",
+        promptPreview: "resume",
+        promptHash: "model-capacity-resume",
+        textLength: 6,
+        settings: job.settings ? { ...job.settings } : undefined,
+        kind: "prompt",
+        status: "queued",
+        inputSource: "typed",
+        message: `Model at capacity; automatic resume scheduled for ${notBefore}`
+      });
+      retry.notBefore = notBefore;
+      retry.capacityRetryOfJobId = job.id;
+      const firstChatIndex = this.queue.findIndex((item) => item.job.chatId === job.chatId);
+      this.queue.splice(firstChatIndex < 0 ? this.queue.length : firstChatIndex, 0, { job: retry, text: "resume" });
+      this.refreshQueuePositions();
+      this.emit(retry, "queued");
+    }
+    if (persist && event !== "heartbeat") this.persistPendingState();
     this.onJobChange?.(
       {
         ...job,

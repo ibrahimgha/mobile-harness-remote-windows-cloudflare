@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint } from "../src/powerBarThemes.js";
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-settings-"));
 const modelsCachePath = path.join(tempDir, "models_cache.json");
@@ -9,6 +11,21 @@ const settingsPath = path.join(tempDir, "run-settings.json");
 const appSource = fs.readFileSync(path.join(process.cwd(), "src", "App.tsx"), "utf8");
 const stylesSource = fs.readFileSync(path.join(process.cwd(), "src", "styles.css"), "utf8");
 const serverSource = fs.readFileSync(path.join(process.cwd(), "server", "index.ts"), "utf8");
+
+assert(isPowerBarTheme("wheat"), "previously saved yellow squares keep their persisted theme key");
+assert.equal(powerBarThemes.wheat.label, "Yellow / amber", "the replacement clip has an accurate visible label");
+assert.match(powerBarTexture("wheat"), /model-bar-amber\.gif/, "existing yellow selections use the new boomerang");
+for (const themeName of ["water", "wheat", "fire"] as const) {
+  const theme = powerBarThemes[themeName];
+  assert.match(theme.middle, /, 0\.32\)$/, `${theme.label} reveals more animation in the middle`);
+  assert.match(theme.faded, /, 0\.08\)$/, `${theme.label} keeps only a light color tint at the right`);
+  assert.match(theme.shade, /, 0\.1\)$/, `${theme.label} uses the same light background shade`);
+  assert.equal(powerBarTint(themeName, "20%"), `linear-gradient(to right, ${theme.solid} 20%, ${theme.middle} 60%, ${theme.faded} 100%)`, `${theme.label} preserves the solid left end and shares the stronger reveal curve`);
+  const assetUrl = new URL(theme.asset, "https://local.invalid");
+  const asset = fs.readFileSync(path.join(process.cwd(), "public", assetUrl.pathname));
+  assert.match(asset.subarray(0, 6).toString(), /^GIF8[79]a$/, `${theme.label} is a GIF asset`);
+  assert.equal(createHash("sha256").update(asset).digest("hex").slice(0, 12), assetUrl.searchParams.get("v"), `${theme.label} has a content-based cache version`);
+}
 
 assert.match(
   appSource,
@@ -33,7 +50,7 @@ assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes t
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(
   appSource,
-  /gpt-5\.6-luna", reasoningEffort: "medium", modelLabel: "Luna", effortLabel: "Medium"[\s\S]*gpt-5\.6-sol", reasoningEffort: "low", modelLabel: "Sol", effortLabel: "Low"[\s\S]*gpt-5\.6-sol", reasoningEffort: "medium", modelLabel: "Sol", effortLabel: "Medium"[\s\S]*gpt-5\.6-sol", reasoningEffort: "high", modelLabel: "Sol", effortLabel: "High"[\s\S]*gpt-6-astra", reasoningEffort: "medium", modelLabel: "Astra", effortLabel: "Medium"[\s\S]*gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max"/,
+  /gpt-6-luna", reasoningEffort: "low", modelLabel: "Luna", effortLabel: "Light"[\s\S]*gpt-6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max"[\s\S]*gpt-6\.1-sol", reasoningEffort: "low", modelLabel: "Sol 6\.1", effortLabel: "Low"[\s\S]*gpt-6\.1-sol", reasoningEffort: "medium", modelLabel: "Sol 6\.1", effortLabel: "Medium"[\s\S]*gpt-6\.1-sol", reasoningEffort: "max", modelLabel: "Sol 6\.1", effortLabel: "Max"[\s\S]*gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max"/,
   "the shared power slider keeps the requested preset order in both settings surfaces"
 );
 assert.match(appSource, /isControlRoomTile \? "is-control-room-tile"/, "embedded squares identify themselves for tile-specific composer layering");
@@ -104,10 +121,14 @@ try {
   const options = getRunSettingsOptions();
 
   assert(options.models.includes("gpt-5.6-sol"));
+  assert(options.models.includes("gpt-6.1-sol"));
+  assert(options.models.includes("gpt-6-luna"));
   assert(options.models.includes("gpt-6-astra"), "Astra remains available when the local cache is incomplete");
   assert(options.models.includes("gpt-5.6-terra"), "fallback models remain available when the local cache is incomplete");
   assert.deepEqual(options.modelCapabilities["gpt-6-astra"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-sol"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+  assert.deepEqual(options.modelCapabilities["gpt-6.1-sol"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+  assert.deepEqual(options.modelCapabilities["gpt-6-luna"]?.reasoningEfforts, ["none", "low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-luna"]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual(options.modelCapabilities["gpt-5.6-sol"]?.speeds, ["default", "priority"]);
 

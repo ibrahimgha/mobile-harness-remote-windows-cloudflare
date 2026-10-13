@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import "./check-scroll-top";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mergeTranscriptWindow, preserveOptimisticRunSettings } from "../src/chatRefresh.js";
-import { restoredPrependScrollTop } from "../src/chatScroll.js";
+import { mergeTranscriptWindow, preserveOptimisticRunSettings, transcriptRenderItems } from "../src/chatRefresh.js";
+import { capturePrependScrollSnapshot, keepPrependScrollAnchor, restoredPrependScrollTop } from "../src/chatScroll.js";
 import { parseSessionFile, resolveTranscriptTailBytes } from "../server/codexSessions.js";
 import { attachPromptRunSettings } from "../server/promptRunSettings.js";
 import { createHash } from "node:crypto";
@@ -14,6 +15,31 @@ type TestMessage = {
   createdAt: string;
   text: string;
 };
+
+const repeatedPrompts: TestMessage[] = Array.from({ length: 30 }, (_, index) => ({
+  id: `prompt-${index}`,
+  createdAt: new Date(Date.UTC(2026, 8, 1, 10, index)).toISOString(),
+  text: "resume"
+}));
+const signature = (message: TestMessage) => message.text;
+const originalKeys = transcriptRenderItems(repeatedPrompts.slice(10, 20), signature);
+const prependedKeys = transcriptRenderItems(repeatedPrompts.slice(0, 20), signature);
+const appendedKeys = transcriptRenderItems(repeatedPrompts, signature);
+for (const original of originalKeys) {
+  assert.equal(prependedKeys.find((item) => item.message.id === original.message.id)?.renderKey, original.renderKey, "loading older repeated prompts must not reassign the reader's anchor");
+  assert.equal(appendedKeys.find((item) => item.message.id === original.message.id)?.renderKey, original.renderKey, "appending another identical prompt must not reassign older anchors");
+}
+assert.deepEqual(
+  transcriptRenderItems(repeatedPrompts.slice(10, 20).map((message) => ({ ...message, id: `new-${message.id}` })), signature).map((item) => item.renderKey),
+  originalKeys.map((item) => item.renderKey),
+  "backend ID churn must not remount unchanged message bubbles"
+);
+assert.equal(new Set(appendedKeys.map((item) => item.renderKey)).size, repeatedPrompts.length, "identical text in different turns must have distinct keys");
+
+const appSource = await fs.readFile(path.join(process.cwd(), "src/App.tsx"), "utf8");
+const loadDetailSource = appSource.slice(appSource.indexOf("const loadChatDetail = useCallback("), appSource.indexOf("const loadChatJobs = useCallback("));
+assert(loadDetailSource.indexOf("loadingMoreMessagesRef.current") < loadDetailSource.indexOf("chatDetailRequestRef.current + 1"), "skipped background refreshes must not invalidate the pending history request");
+assert.match(appSource, /useLayoutEffect\(\(\) => \{[\s\S]*?keepPrependScrollAnchor/, "history anchors are restored before painting the expanded page");
 
 assert.equal(
   restoredPrependScrollTop(
@@ -44,6 +70,60 @@ assert.equal(
   700,
   "scroll-height preservation remains available when no message anchor is visible"
 );
+
+// Exercise the real anchor keeper without a live chat or production browser.
+const fixtureWindow = new EventTarget();
+let resized: (() => void) | undefined;
+let disconnected = false;
+let cancelledFrame = false;
+let clearedTimeout = false;
+Object.assign(fixtureWindow, {
+  requestAnimationFrame: () => 1,
+  cancelAnimationFrame: () => { cancelledFrame = true; },
+  setTimeout: () => 2,
+  clearTimeout: () => { clearedTimeout = true; }
+});
+const fixtureScroller = new EventTarget() as EventTarget & Record<string, any>;
+let messageTop = 260;
+const fixtureMessage = {
+  dataset: { renderKey: "stable-turn" },
+  getBoundingClientRect: () => ({ top: 100 + messageTop - fixtureScroller.scrollTop, bottom: 300 + messageTop - fixtureScroller.scrollTop, height: 200 })
+};
+Object.assign(fixtureScroller, {
+  ownerDocument: { defaultView: fixtureWindow, scrollingElement: null },
+  scrollTop: 200, scrollHeight: 1000, clientTop: 0, isConnected: true,
+  getBoundingClientRect: () => ({ top: 100 }),
+  querySelectorAll: () => [fixtureMessage], querySelector: () => fixtureMessage
+});
+const previousResizeObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
+Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: class {
+  constructor(callback: () => void) { resized = callback; }
+  observe() {}
+  disconnect() { disconnected = true; }
+} });
+try {
+  const scroller = fixtureScroller as unknown as HTMLElement;
+  const snapshot = capturePrependScrollSnapshot(scroller, "fixture-chat");
+  messageTop += 500;
+  fixtureScroller.scrollHeight += 500;
+  const keeper = keepPrependScrollAnchor(scroller, snapshot);
+  assert.equal(fixtureScroller.scrollTop, 700, "restore must happen synchronously, before an animation frame");
+  messageTop += 200;
+  fixtureScroller.scrollHeight += 200;
+  resized?.();
+  assert.equal(fixtureScroller.scrollTop, 900, "late image/layout expansion must retain the same reading position");
+  fixtureWindow.dispatchEvent(new Event("wheel"));
+  fixtureScroller.scrollTop = 960;
+  messageTop += 100;
+  fixtureScroller.scrollHeight += 100;
+  resized?.();
+  assert.equal(fixtureScroller.scrollTop, 960, "scrolling must release the anchor instead of fighting the reader");
+  assert.equal(keeper.active, false);
+  assert(disconnected && cancelledFrame && clearedTimeout, "release must clean up observers and pending callbacks");
+} finally {
+  if (previousResizeObserver) Object.defineProperty(globalThis, "ResizeObserver", previousResizeObserver);
+  else Reflect.deleteProperty(globalThis, "ResizeObserver");
+}
 
 const sameItem = (a: TestMessage, b: TestMessage) =>
   a.id === b.id || (a.createdAt === b.createdAt && a.text === b.text);

@@ -6,6 +6,7 @@ import path from "node:path";
 import { clearSessionCache, findNewestChatForProject } from "./codexSessions.js";
 import { promoteChatForDesktop } from "./desktopVisibility.js";
 import type { ChatDetail, CodexRunSettings } from "./types.js";
+import { withRemotePromptContext, type RemoteSkillContext } from "./remotePromptContext.js";
 
 type StartProjectChatOptions = {
   cliPath: string;
@@ -16,6 +17,7 @@ type StartProjectChatOptions = {
   prompt?: string;
   createDirectory?: boolean;
   settings?: CodexRunSettings;
+  remoteSkill?: RemoteSkillContext;
 };
 
 export type ProjectChatStartResult = {
@@ -193,12 +195,13 @@ export async function startProjectChat(options: StartProjectChatOptions): Promis
     const child = spawn(options.cliPath, args, {
       cwd: existsSync(options.projectPath) ? options.projectPath : os.homedir(),
       windowsHide: true,
+      env: options.remoteSkill ? { ...process.env, CODEX_REMOTE_CONNECTION_FILE: options.remoteSkill.connectionFile } : process.env,
       stdio: ["pipe", "pipe", "pipe"]
     });
 
     child.stdout.pipe(stdout);
     child.stderr.pipe(stderr);
-    child.stdin.end(prompt);
+    child.stdin.end(withRemotePromptContext(prompt, { chatId: "new-chat", skill: options.remoteSkill }));
 
     child.on("error", (error) => {
       stderr.write(`${error.name}: ${error.message}\n`);

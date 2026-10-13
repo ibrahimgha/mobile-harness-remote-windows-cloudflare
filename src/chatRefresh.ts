@@ -3,6 +3,28 @@ export type TranscriptWindowItem = {
   createdAt: string;
 };
 
+export function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function transcriptRenderItems<T extends TranscriptWindowItem>(messages: T[], signature: (message: T) => string) {
+  const occurrences = new Map<string, number>();
+  return messages.map((message) => {
+    // Identical prompts in different turns are different anchors. Neither a
+    // prepended "resume" nor an appended one may steal an existing DOM key.
+    // Backend IDs and volatile run metadata deliberately stay out of the key.
+    const identity = `${message.createdAt}\u001e${signature(message)}`;
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return { message, renderKey: `${stableHash(identity)}-${occurrence}` };
+  });
+}
+
 type RunSettingsMessageFields = {
   model?: string;
   reasoningEffort?: string;

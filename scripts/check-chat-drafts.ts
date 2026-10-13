@@ -53,9 +53,16 @@ const persistedClearIndex = sendPromptSource.indexOf('setDraftForChat(targetChat
 assert.ok(persistedClearIndex > submitRequestIndex, "persisted drafts remain recoverable until the server acknowledges the prompt");
 assert.match(
   sendPromptSource,
-  /body: JSON\.stringify\(\{ text: promptText, clientRequestId \}\)/,
-  "prompt submissions must carry an idempotent client request ID"
+  /body: JSON\.stringify\(\{[\s\S]*composerText: outgoingDraft,[\s\S]*attachments: uploadedFiles,[\s\S]*clientRequestId,/,
+  "prompt submissions must preserve editable text and uploaded attachment metadata with their idempotent request ID"
 );
+const restoreQueuedSource = appSource.slice(
+  appSource.indexOf("async function restoreQueuedJobToComposer"),
+  appSource.indexOf("async function steerQueuedJob")
+);
+assert.match(restoreQueuedSource, /result\.attachments[\s\S]*setPendingAttachments\(restoredAttachments\)/);
+assert.match(restoreQueuedSource, /status: "uploaded"[\s\S]*uploadedFile: attachment\.uploadedFile/,
+  "queued attachment chips must return as already uploaded instead of losing or re-uploading their files");
 const reconcileIndex = sendPromptSource.indexOf("job.clientRequestId === clientRequestId");
 const restoreIndex = sendPromptSource.indexOf("setDraftForChat(targetChatId, outgoingDraft)");
 assert.ok(reconcileIndex > submitRequestIndex, "failed acknowledgements must be reconciled against server jobs");

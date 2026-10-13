@@ -18,7 +18,7 @@ function jobTime(job: CodexRunJob): number {
 export function attachPromptRunSettings(chat: ChatDetail, jobs: CodexRunJob[]): ChatDetail {
   const uniqueJobs = new Map<string, CodexRunJob>();
   for (const job of jobs) {
-    if (job.chatId === chat.id && job.kind !== "steer" && job.settings && job.promptHash) {
+    if (job.chatId === chat.id && (job.kind !== "steer" || job.steeringState === "confirmed") && job.settings && job.promptHash) {
       if (!uniqueJobs.has(job.id)) uniqueJobs.set(job.id, job);
     }
   }

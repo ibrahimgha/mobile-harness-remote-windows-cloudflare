@@ -15,6 +15,7 @@ const projectPath = valueFor("project-path");
 const model = valueFor("model");
 const reasoningEffort = valueFor("reasoning", "medium");
 const speed = valueFor("speed", "default");
+const visibleAfter = valueFor("visible-after");
 
 if (![chatId, chatTitle, projectName, projectPath, model].every(Boolean)) {
   console.error(
@@ -47,7 +48,8 @@ config.tokens.push({
   projectPath,
   model,
   reasoningEffort,
-  speed
+  speed,
+  ...(visibleAfter ? { visibleAfter } : {})
 });
 
 fs.mkdirSync(path.dirname(configPath), { recursive: true });

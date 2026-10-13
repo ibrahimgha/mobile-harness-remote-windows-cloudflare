@@ -75,7 +75,7 @@ function runFromJob(job: CodexRunJob, chats: Map<string, ChatMetadata>, fallback
     model: settings.model,
     reasoningEffort: settings.reasoningEffort,
     speed: settings.speed,
-    source: "remote"
+    source: job.source ?? "remote"
   };
 }
 

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import webPush, { type PushSubscription } from "web-push";
 import { clearSessionCache, getChat } from "./codexSessions.js";
 import type { CodexRunJob } from "./types.js";
+import { notificationCopy } from "../shared/notificationCopy.js";
 
 type StoredPushSubscription = {
   id: string;
@@ -266,14 +267,6 @@ export async function sendTestPushNotification(): Promise<SendResult> {
   });
 }
 
-function notificationLabel(value: string | undefined, fallback: string): string {
-  return value?.replace(/\s+/g, " ").trim() || fallback;
-}
-
-function projectNameFromPath(projectPath: string): string {
-  return path.posix.basename(projectPath.replace(/\\/g, "/"));
-}
-
 export function chatDeepLink(chatId: string): string {
   return `/?chat=${encodeURIComponent(chatId)}`;
 }
@@ -281,23 +274,19 @@ export function chatDeepLink(chatId: string): string {
 export function formatJobPushNotification(
   job: CodexRunJob,
   event: "completed" | "failed",
-  context: { projectName?: string; chatName?: string }
+  context: { projectName?: string; chatName?: string; response?: string }
 ): { title: string; body: string } {
-  const projectName = notificationLabel(context.projectName, projectNameFromPath(job.projectPath) || "Project");
-  const chatName = notificationLabel(context.chatName, job.promptPreview || `Chat ${job.chatId.slice(0, 8)}`);
-
-  return {
-    title: projectName,
-    body: `${chatName} · ${event === "completed" ? "Done" : "Failed"}`
-  };
+  return notificationCopy(job, event, context);
 }
 
 export async function sendJobPushNotification(job: CodexRunJob, event: "completed" | "failed"): Promise<SendResult> {
   clearSessionCache();
   const chat = await getChat(job.chatId).catch(() => null);
+  const response = job.logPaths?.lastMessage ? await fs.readFile(job.logPaths.lastMessage, "utf8").catch(() => "") : "";
   const { title, body } = formatJobPushNotification(job, event, {
     projectName: chat?.projectName,
-    chatName: chat?.title
+    chatName: chat?.title,
+    response
   });
 
   return sendPushPayload({

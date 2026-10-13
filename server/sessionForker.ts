@@ -51,6 +51,9 @@ function rewriteSessionMeta(line: string, oldId: string, newId: string, nowIso: 
       type?: string;
       payload?: {
         id?: string;
+        session_id?: string;
+        history_mode?: string;
+        context_window?: unknown;
         timestamp?: string;
         source?: string;
         thread_source?: string;
@@ -63,6 +66,13 @@ function rewriteSessionMeta(line: string, oldId: string, newId: string, nowIso: 
 
     record.timestamp = nowIso;
     record.payload.id = newId;
+    if (record.payload.session_id) record.payload.session_id = newId;
+    // A streamed fork owns a complete local rollout, not the original
+    // thread-store's paginated history or context-window identity.
+    if (record.payload.history_mode === "paginated") {
+      record.payload.history_mode = "legacy";
+      delete record.payload.context_window;
+    }
     record.payload.timestamp = nowIso;
     record.payload.source = "vscode";
     record.payload.thread_source = "user";

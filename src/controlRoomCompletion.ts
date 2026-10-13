@@ -1,6 +1,6 @@
 export type CompletionTrackedJob = {
   id: string;
-  status: "queued" | "running" | "completed" | "failed" | "stopped";
+  status: "queued" | "running" | "steered" | "completed" | "failed" | "stopped";
   finishedAt?: string;
 };
 
@@ -56,7 +56,7 @@ export function advanceCompletionGlow(
   }
 
   const endedWithoutCompletion = jobs.some(
-    (job) => previouslyPending.has(job.id) && (job.status === "failed" || job.status === "stopped")
+    (job) => previouslyPending.has(job.id) && (job.status === "failed" || job.status === "stopped" || job.status === "steered")
   );
 
   return {

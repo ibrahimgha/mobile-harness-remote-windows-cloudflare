@@ -15,10 +15,12 @@ function parseProcessIds(text: string): number[] {
 
 async function stopWindowsRun(chatId: string): Promise<ExternalRunStopResult> {
   const discover = [
-    "$chatId = '" + chatId + "'",
+    "$chatId = '" + chatId + "';",
     "Get-CimInstance Win32_Process |",
     "Where-Object {",
     "  ($_.Name -ieq 'codex.exe' -or $_.Name -ieq 'node.exe') -and",
+    "  $_.ProcessId -ne " + process.pid + " -and",
+    "  $_.CommandLine -match '\\bresume\\s+(?:--[^ ]+\\s+)*' -and",
     "  $_.CommandLine -and $_.CommandLine.IndexOf($chatId, [StringComparison]::OrdinalIgnoreCase) -ge 0",
     "} | Select-Object -ExpandProperty ProcessId"
   ].join(" ");

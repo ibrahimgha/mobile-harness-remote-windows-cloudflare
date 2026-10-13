@@ -326,6 +326,81 @@ function Test-ManagedPid {
   }
 }
 
+function Get-ManagedProcessIds {
+  param(
+    [ValidateSet("app", "tunnel")]
+    [string]$Kind
+  )
+
+  $processName = if ($Kind -eq "app") { "node.exe" } else { "cloudflared.exe" }
+  $processIds = @()
+
+  try {
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name = '$processName'" -ErrorAction Stop)
+    foreach ($process in $processes) {
+      $commandLine = [string]$process.CommandLine
+      $matches = if ($Kind -eq "app") {
+        $commandLine.IndexOf($ServerEntry, [StringComparison]::OrdinalIgnoreCase) -ge 0
+      } else {
+        $commandLine.IndexOf($TunnelName, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+          $commandLine.IndexOf($CloudflaredConfig, [StringComparison]::OrdinalIgnoreCase) -ge 0
+      }
+
+      if ($matches) {
+        $processIds += [int]$process.ProcessId
+      }
+    }
+  } catch {
+    Write-ServiceLog "Could not discover managed $Kind processes: $($_.Exception.Message)"
+  }
+
+  return @($processIds | Sort-Object -Unique)
+}
+
+function Resolve-ManagedPid {
+  param(
+    [string]$Name,
+    [string]$Path,
+    [ValidateSet("app", "tunnel")]
+    [string]$Kind
+  )
+
+  $trackedPid = Read-Pid -Path $Path
+  $managedPids = @(Get-ManagedProcessIds -Kind $Kind)
+  if ($managedPids.Count -eq 0) {
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return $null
+  }
+
+  $selectedPid = if (
+    $null -ne $trackedPid -and
+    $managedPids -contains [int]$trackedPid
+  ) {
+    [int]$trackedPid
+  } else {
+    [int]$managedPids[0]
+  }
+
+  foreach ($processId in $managedPids) {
+    if ($processId -eq $selectedPid) {
+      continue
+    }
+
+    if ($Kind -eq "app") {
+      & taskkill.exe /PID $processId /T /F 2>$null | Out-Null
+      if ($LASTEXITCODE -ne 0 -and (Test-Pid -ProcessId $processId)) {
+        Stop-Process -Id $processId -Force
+      }
+    } else {
+      Stop-Process -Id $processId -Force
+    }
+    Write-ServiceLog "Stopped duplicate $Name pid=$processId; canonical pid=$selectedPid"
+  }
+
+  Set-Content -LiteralPath $Path -Value $selectedPid -Encoding ascii
+  return $selectedPid
+}
+
 function Get-PidAgeSeconds {
   param([Nullable[int]]$ProcessId)
 
@@ -369,7 +444,10 @@ function Stop-PidFile {
     [string]$Kind
   )
 
-  $processIds = @(Read-Pids -Path $Path)
+  $processIds = @(
+    @(Read-Pids -Path $Path) +
+    @(Get-ManagedProcessIds -Kind $Kind)
+  ) | Select-Object -Unique
   $stoppedAny = $false
 
   foreach ($processId in $processIds | Select-Object -Unique) {
@@ -416,7 +494,7 @@ function Start-ManagedProcess {
     [string]$Stderr
   )
 
-  $existingPid = Read-Pid -Path $PidPath
+  $existingPid = Resolve-ManagedPid -Name $Name -Path $PidPath -Kind $Kind
   if (Test-ManagedPid -ProcessId $existingPid -Kind $Kind) {
     Write-Host "$Name is already running (pid $existingPid)"
     Write-ServiceLog "$Name already running pid=$existingPid"
@@ -470,8 +548,8 @@ function Start-Remote {
   Ensure-Build
   Sync-ProjectControlToken
 
-  $appPid = Read-Pid -Path $AppPidFile
-  $tunnelPid = Read-Pid -Path $TunnelPidFile
+  $appPid = Resolve-ManagedPid -Name "Codex window remote app" -Path $AppPidFile -Kind "app"
+  $tunnelPid = Resolve-ManagedPid -Name "Cloudflare tunnel" -Path $TunnelPidFile -Kind "tunnel"
   $appRunning = Test-ManagedPid -ProcessId $appPid -Kind "app"
   $tunnelRunning = Test-ManagedPid -ProcessId $tunnelPid -Kind "tunnel"
 
@@ -575,8 +653,8 @@ function Stop-Remote {
 
 function Show-Status {
   Ensure-Directories
-  $appPid = Read-Pid -Path $AppPidFile
-  $tunnelPid = Read-Pid -Path $TunnelPidFile
+  $appPid = Resolve-ManagedPid -Name "Codex window remote app" -Path $AppPidFile -Kind "app"
+  $tunnelPid = Resolve-ManagedPid -Name "Cloudflare tunnel" -Path $TunnelPidFile -Kind "tunnel"
   $appRunning = Test-ManagedPid -ProcessId $appPid -Kind "app"
   $tunnelRunning = Test-ManagedPid -ProcessId $tunnelPid -Kind "tunnel"
   $watchdogInstalled = Test-WatchdogTaskInstalled
@@ -608,6 +686,12 @@ function Install-StartupCommand {
 }
 
 function Install-StartupTask {
+  # A GUI-subsystem launcher uses CREATE_NO_WINDOW for PowerShell; hiding an
+  # already-created console can still briefly flash on the user's desktop.
+  $launcherCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+  $launcherOutput = Join-Path $RuntimeDir 'watchdog-launcher.exe'
+  & $launcherCompiler /nologo /target:winexe ("/out:" + $launcherOutput) (Join-Path $PSScriptRoot 'WatchdogLauncher.cs')
+  if ($LASTEXITCODE -ne 0) { throw 'Could not build the console-free watchdog launcher' }
   $action = New-ScheduledTaskAction `
     -Execute "wscript.exe" `
     -Argument "//B `"$WatchdogScript`"" `

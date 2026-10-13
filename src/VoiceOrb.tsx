@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { voiceOrbThemes, resolveVoiceOrbTheme, type VoiceOrbTheme } from "./voiceOrbThemes";
 
 export type VoiceAudioMetrics = {
   amplitude: number;
@@ -12,18 +13,19 @@ type VoiceOrbProps = {
   audioMetricsRef: RefObject<VoiceAudioMetrics>;
   phase: "starting" | "recording" | "processing";
   loadAnimatedAsset: boolean;
+  theme?: VoiceOrbTheme;
 };
 
-// Keep the prior video-derived orb available for an instant rollback after
-// this water-orb visual test.
+// Keep the prior video-derived orb available for an instant rollback.
 export const LEGACY_ORB_ASSET = "/voice-orb-video.gif?v=da9cace1bd46";
 export const LEGACY_ORB_POSTER_ASSET = "/voice-orb-poster.png?v=da9cace1bd46";
-const ORB_ASSET = "/voice-orb-water-test.gif?v=04587e6f071c";
-const ORB_POSTER_ASSET = "/voice-orb-water-test-poster.png?v=04587e6f071c";
 
-export function VoiceOrb({ audioMetricsRef, phase, loadAnimatedAsset }: VoiceOrbProps) {
+export function VoiceOrb({ audioMetricsRef, phase, loadAnimatedAsset, theme = "water" }: VoiceOrbProps) {
   const reactorRef = useRef<HTMLDivElement | null>(null);
-  const [assetLoaded, setAssetLoaded] = useState(false);
+  const [loadedAsset, setLoadedAsset] = useState<string | null>(null);
+  const [randomTheme] = useState(() => resolveVoiceOrbTheme(theme));
+  const animation = voiceOrbThemes[theme === "random" ? randomTheme : theme];
+  const assetLoaded = loadAnimatedAsset && loadedAsset === animation.asset;
 
   useEffect(() => {
     const reactor = reactorRef.current;
@@ -53,20 +55,21 @@ export function VoiceOrb({ audioMetricsRef, phase, loadAnimatedAsset }: VoiceOrb
   }, [audioMetricsRef, phase]);
 
   return (
-    <div ref={reactorRef} className="voice-orb-reactor" aria-hidden="true">
+    <div ref={reactorRef} className="voice-orb-reactor" data-orb-theme={theme} aria-hidden="true">
       <img
         className={`voice-orb-poster is-circle-crop${assetLoaded ? " is-replaced" : ""}`}
-        src={ORB_POSTER_ASSET}
+        src={animation.poster}
         alt=""
         draggable={false}
       />
       {loadAnimatedAsset ? (
         <img
+          key={animation.asset}
           className={`voice-orb-image is-circle-crop${assetLoaded ? " is-loaded" : ""}`}
-          src={ORB_ASSET}
+          src={animation.asset}
           alt=""
           draggable={false}
-          onLoad={() => setAssetLoaded(true)}
+          onLoad={() => setLoadedAsset(animation.asset)}
         />
       ) : null}
     </div>

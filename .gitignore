@@ -11,3 +11,17 @@ __pycache__/
 *.tsbuildinfo
 npm-debug.log*
 windows/.packages/
+
+# Local evidence, captured inputs and backups are not distributable source.
+artifacts/
+output/
+tmp/
+*.bak-*
+ops/cloudflared.yml.bak-*
+ops/cloudflared-ibrahim-hp-ssh-tc11.yml
+/fire.mov
+/wheat.mov
+/fire.gif
+/wheat.gif
+# Original 592 MB Mojave candidate is explicitly pending publication approval.
+/public/voice-orb-mojave-ride.gif

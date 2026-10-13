@@ -43,6 +43,34 @@ body {
   overscroll-behavior: none;
 }
 
+html[data-status-bar-scroll="true"] {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-width: none;
+}
+
+html[data-status-bar-scroll="true"]::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-status-bar-scroll="true"] body {
+  height: calc(100% + 1px);
+  min-height: calc(100% + 1px);
+  overflow: visible;
+}
+
+html[data-status-bar-scroll="true"] #root {
+  position: fixed;
+  inset: 0;
+}
+
+html[data-mobile-viewport="true"] #root {
+  position: fixed;
+  inset: var(--app-viewport-top, 0px) 0 auto;
+  height: var(--app-height, 100dvh);
+  min-height: 0;
+}
+
 button,
 input,
 textarea {
@@ -423,6 +451,15 @@ p {
   border-radius: 10px;
   background-position: center;
   background-size: cover;
+}
+
+.run-settings-voice-preview {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin-top: 6px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .run-settings-power-tick {
@@ -1191,7 +1228,8 @@ p {
 
 .pdf-viewer {
   width: min(1080px, 100%);
-  max-height: min(860px, 100%);
+  height: min(900px, 100%);
+  max-height: 100%;
 }
 
 .pdf-viewer-header {
@@ -1200,15 +1238,151 @@ p {
 
 .pdf-viewer-body {
   min-height: 0;
-  background: #f4f6f1;
+  overflow: hidden;
+  background: #626862;
 }
 
-.pdf-frame {
+.pdf-document-scroll {
+  position: relative;
   width: 100%;
-  height: min(74vh, 720px);
-  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  scrollbar-gutter: stable;
+}
+
+.pdf-document-pages {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 52px 12px 86px;
+}
+
+.pdf-document-page {
+  position: relative;
+  overflow: hidden;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.pdf-document-page canvas {
+  display: block;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pdf-document-page.is-rendered canvas {
+  opacity: 1;
+}
+
+.pdf-page-loader {
+  position: absolute;
+  top: 48px;
+  left: calc(50% - 11px);
+  color: #7d837e;
+}
+
+.pdf-page-counter,
+.pdf-zoom-controls {
+  position: sticky;
+  z-index: 3;
+  width: fit-content;
+  color: #fff;
+  background: rgba(24, 28, 25, 0.82);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.pdf-page-counter {
+  top: 10px;
+  height: 34px;
+  margin: 0 auto -34px;
+  padding: 7px 13px;
+  border-radius: 17px;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.pdf-zoom-controls {
+  bottom: 12px;
+  display: flex;
+  margin: -58px auto 12px;
+  border-radius: 24px;
+}
+
+.pdf-zoom-controls button {
+  display: inline-flex;
+  min-width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 12px;
   border: 0;
-  background: #ffffff;
+  color: inherit;
+  background: transparent;
+}
+
+.pdf-zoom-controls button:disabled {
+  opacity: 0.38;
+}
+
+.pdf-zoom-controls span {
+  min-width: 36px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.pdf-document-state {
+  display: flex;
+  height: 100%;
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #fff;
+}
+
+.pdf-document-state.is-error {
+  padding: 24px;
+  color: #fff1ee;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .pdf-viewer-overlay {
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    background: #626862;
+  }
+
+  .pdf-viewer {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .pdf-viewer-header {
+    grid-template-columns: minmax(0, 1fr) 42px 42px;
+    padding: 8px 9px;
+  }
+
+  .pdf-viewer-header p {
+    display: none;
+  }
+
+  .pdf-document-pages {
+    gap: 8px;
+    padding: 48px 6px 82px;
+  }
 }
 
 .project-group {
@@ -1653,11 +1827,15 @@ p {
 .chat-thread {
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
   gap: 10px;
   width: 100%;
   min-width: 0;
   min-height: min-content;
-  overflow-x: hidden;
+  /* Only .chat-content scrolls. `hidden` on one axis makes the other axis
+     `auto`, creating a second async scroll view in iOS WebKit. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .chat-thread::after {
@@ -1772,6 +1950,15 @@ p {
 
 .bubble-time-compact {
   display: none;
+}
+
+.bubble-attachments {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  color: inherit;
+  white-space: nowrap;
 }
 
 .bubble-duration {
@@ -3090,6 +3277,35 @@ p {
   outline-color: rgba(32, 33, 36, 0.42);
 }
 
+.dictation-wake-lock-notice {
+  position: absolute;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: calc(max(26px, env(safe-area-inset-bottom)) + 72px);
+  left: max(18px, env(safe-area-inset-left));
+  z-index: 4;
+  color: #666666;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.dictation-wake-lock-notice button {
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.dictation-wake-lock-notice button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .dictation-overlay-cancel {
   border: 1px solid #e3e3e3;
   color: #363636;
@@ -3495,7 +3711,7 @@ p {
 .command-queue {
   grid-row: 4;
   display: grid;
-  grid-template-rows: auto minmax(0, auto);
+  grid-template-rows: auto minmax(0, auto) auto;
   gap: 8px;
   max-height: 210px;
   min-height: 92px;
@@ -3573,6 +3789,7 @@ p {
 }
 
 .queue-list {
+  position: relative;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(240px, 360px);
@@ -3582,6 +3799,68 @@ p {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0 1px 4px;
+}
+
+.queue-drag-handle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 30px;
+  margin: -4px 0 -4px -5px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--teal-strong);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.queue-drag-handle:hover,
+.queue-drag-handle:focus-visible {
+  background: rgba(15, 118, 110, 0.12);
+  outline: 2px solid var(--teal-strong);
+  outline-offset: -2px;
+}
+
+.queue-list.is-reordering { user-select: none; -webkit-user-select: none; cursor: grabbing; }
+.queue-item.is-dragging {
+  position: relative;
+  z-index: 2;
+  transform: translateX(var(--queue-drag-x, 0px));
+  border-color: var(--teal-strong);
+  box-shadow: 0 3px 12px rgba(15, 118, 110, 0.3);
+  opacity: 0.93;
+  cursor: grabbing;
+}
+.queue-item.is-dragging .queue-drag-handle { cursor: grabbing; }
+.queue-drag-handle:disabled, .queue-remove:disabled { opacity: 0.45; cursor: default; }
+.queue-move-actions { display: flex; gap: 6px; }
+.queue-move-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 4px 6px;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--teal-strong);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.queue-move-actions button:disabled { opacity: 0.4; cursor: default; }
+.queue-reorder-feedback { color: var(--muted); font-size: 0.71rem; line-height: 1.2; margin: 0; }
+.queue-reorder-feedback:empty { display: none; }
+@media (pointer: coarse) {
+  .queue-drag-handle { flex-basis: 36px; width: 36px; height: 38px; }
+  .queue-move-actions button { min-height: 42px; }
 }
 
 .queue-item {
@@ -3833,6 +4112,16 @@ p {
 .job-stop-button:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.job-stop-button.job-stop-external {
+  color: #111;
+  flex-shrink: 0;
+}
+
+.job-stop-button.job-stop-external:hover:not(:disabled),
+.job-stop-button.job-stop-external:focus-visible {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .run-board-overlay {
@@ -5034,3 +5323,18 @@ p {
     height: 20px;
   }
 }
+.chat-audio-file { display: inline-flex; flex-direction: column; width: 100%; max-width: 480px; gap: 4px; color: inherit; vertical-align: middle; }
+.chat-audio-title { font-size: .88em; overflow-wrap: anywhere; }
+.chat-audio-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-audio-controls button, .chat-audio-controls a { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; min-height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.chat-audio-controls input { flex: 1; min-width: 30px; width: 100%; accent-color: currentColor; }
+.chat-audio-time { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chat-audio-error { font-size: 12px; }
+.confirmation-suggestions { position: relative; z-index: 1; width: 100%; min-width: 0; flex: 0 0 auto; }
+.confirmation-actions { display: flex; gap: 8px; padding: 4px 0 6px; }
+.confirmation-actions button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; min-width: 0; min-height: 40px; padding: 7px 10px; border: 1px solid #4a8c8590; border-radius: 12px; background: #16796e; color: #fff; font: inherit; font-size: 13px; cursor: pointer; }
+.confirmation-actions button + button { background: #edf1ed; color: #193f39; }
+.confirmation-actions button:disabled { opacity: .55; cursor: default; }
+.confirmation-actions button:focus-visible { outline: 2px solid #64cdbb; outline-offset: 2px; }
+.confirmation-number { font-size: 11px; font-weight: 700; opacity: .8; }
+.confirmation-error { display: block; color: #be3939; padding: 0 4px 6px; overflow-wrap: anywhere; }

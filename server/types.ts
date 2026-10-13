@@ -18,6 +18,7 @@ export type BridgeState = {
     projectName?: string;
     projectPath?: string;
     settings?: CodexRunSettings;
+    visibleAfter?: string;
   };
   bridge: {
     mode: BridgeMode;
@@ -36,6 +37,7 @@ export type BridgeState = {
   };
   runner: {
     mode: CodexRunMode;
+    skill?: { name: string; path: string };
     cliPath: string;
     bypassSandbox: boolean;
     skipGitRepoCheck: boolean;
@@ -43,16 +45,17 @@ export type BridgeState = {
     settingsOptions: CodexRunSettingsOptions;
     activeJobs: number;
     queuedJobs: number;
+    queueReordering?: boolean;
     recentJobs: CodexRunJob[];
     usage: CodexUsage | null;
   };
   recentEvents: BridgeEvent[];
 };
 
-export type CodexRunMode = "codex-cli" | "simulation";
+export type CodexRunMode = "codex-cli" | "codex-app-server" | "simulation";
 export type PromptDeliveryMode = "cli";
 
-export type CodexRunStatus = "queued" | "running" | "completed" | "failed" | "stopped";
+export type CodexRunStatus = "queued" | "running" | "steered" | "completed" | "failed" | "stopped";
 
 export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type CodexRunSpeed = "default" | "priority";
@@ -94,17 +97,31 @@ export type CodexRunSettingsOptions = {
 
 export type CodexRunJob = {
   id: string;
+  /** Whether this run was launched by this Remote or another Codex client. */
+  source?: "remote" | "external";
   clientRequestId?: string;
+  inputSource?: "typed" | "voice" | "mixed";
+  notificationSummary?: string;
   chatId: string;
   projectPath: string;
   status: CodexRunStatus;
   kind?: "prompt" | "steer";
+  nativeTurnId?: string;
+  steeredIntoJobId?: string;
+  steeringState?: "sending" | "accepted" | "confirmed" | "uncertain";
   recoveredAfterRestart?: boolean;
+  /** Persistent delay for a resume after a model-capacity failure. */
+  notBefore?: string;
+  capacityRetryOfJobId?: string;
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;
   promptHash: string;
   textLength: number;
+  /** Original editable composer text, before the attachment path block is appended. */
+  composerText?: string;
+  /** Uploaded files restored as attachment chips when a queued prompt returns for editing. */
+  attachments?: UploadedPromptFile[];
   command: string[];
   settings?: CodexRunSettings;
   logPaths: {
@@ -157,6 +174,7 @@ export type ChatMessageExcerpt = {
 };
 
 export type ChatTranscriptMessage = ChatMessageExcerpt & {
+  confirmationHint?: { reply: string; summary: string };
   id: string;
   role: "user" | "assistant" | "tool" | "system";
   kind?:
@@ -194,6 +212,7 @@ export type ChatSummary = {
 };
 
 export type ChatDetail = {
+  pendingConfirmation?: import("../shared/confirmation.js").PendingConfirmation;
   id: string;
   title: string;
   projectName: string;

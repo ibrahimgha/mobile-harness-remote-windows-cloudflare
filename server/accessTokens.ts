@@ -16,6 +16,7 @@ export type SingleChatRemoteAccess = {
   projectName: string;
   projectPath: string;
   settings: CodexRunSettings;
+  visibleAfter?: string;
 };
 
 export type RemoteAccess = FullRemoteAccess | SingleChatRemoteAccess;
@@ -30,6 +31,7 @@ type StoredAccessToken = {
   model: string;
   reasoningEffort: CodexReasoningEffort;
   speed: CodexRunSpeed;
+  visibleAfter?: string;
 };
 
 type StoredAccessTokenFile = {
@@ -108,7 +110,8 @@ export function resolveScopedAccessToken(value: unknown): SingleChatRemoteAccess
       reasoningEffort: token.reasoningEffort,
       speed: token.speed,
       updatedAt: new Date().toISOString()
-    }
+    },
+    ...(token.visibleAfter ? { visibleAfter: token.visibleAfter } : {})
   };
 }
 
@@ -124,10 +127,11 @@ export function scopedRequestAllowed(method: string, requestPath: string, access
 
   const suffix = requestPath.slice(exactChatPrefix.length);
   if (verb === "GET" && (suffix === "" || suffix === "/jobs" || suffix === "/uploads")) return true;
-  if (verb === "POST" && (suffix === "/prompt" || suffix === "/steer" || suffix === "/files" || suffix === "/dictation/transcribe")) return true;
+  if (verb === "POST" && (suffix === "/prompt" || suffix === "/confirmation" || suffix === "/steer" || suffix === "/files" || suffix === "/dictation/transcribe")) return true;
   if (verb === "PUT" && suffix === "/files/chunk") return true;
   if (verb === "POST" && /^\/jobs\/[^/]+\/stop$/.test(suffix)) return true;
   if (verb === "DELETE" && /^\/queued-prompts\/[^/]+$/.test(suffix)) return true;
+  if (verb === "POST" && suffix === "/queued-prompts/reorder") return true;
   if (verb === "POST" && /^\/queued-prompts\/[^/]+\/(prioritize|steer)$/.test(suffix)) return true;
   return false;
 }

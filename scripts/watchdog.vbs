@@ -10,8 +10,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-servicePath = fso.BuildPath(scriptDir, "service.ps1")
-command = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " & Chr(34) & servicePath & Chr(34) & " watchdog"
+servicePath = fso.BuildPath(fso.GetParentFolderName(scriptDir), ".runtime\watchdog-launcher.exe")
+command = Chr(34) & servicePath & Chr(34)
 
-shell.Run command, 0, False
-WScript.Quit 0
+WScript.Quit shell.Run(command, 0, True)

@@ -1,43 +1,24 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { chatDeepLink, formatJobPushNotification } from "../server/webPush";
-import type { CodexRunJob } from "../server/types";
+import { chatDeepLink, formatJobPushNotification } from "../server/webPush.js";
+import { notificationCopy, splitNotificationMetadata, taskNotificationSummary } from "../shared/notificationCopy.js";
+import type { CodexRunJob } from "../server/types.js";
+import "./check-notification-navigation.js";
 
-const job = {
-  chatId: "chat-12345678",
-  projectPath: "C:\\Projects\\Fallback project",
-  promptPreview: "Fallback chat"
-} as CodexRunJob;
-
-assert.deepEqual(
-  formatJobPushNotification(job, "completed", {
-    projectName: "mobile-harness-remote-windows-cloudflare",
-    chatName: "Codex Remote"
-  }),
-  {
-    title: "mobile-harness-remote-windows-cloudflare",
-    body: "Codex Remote · Done"
-  }
-);
-
-assert.equal(chatDeepLink("chat/id with spaces"), "/?chat=chat%2Fid%20with%20spaces", "notification links safely encode the target chat");
-const pushSource = fs.readFileSync(new URL("../server/webPush.ts", import.meta.url), "utf8");
-const workerSource = fs.readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
-const appSource = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-assert.match(pushSource, /url: chatDeepLink\(job\.chatId\)/, "job push payloads deep-link the completed chat");
-assert.match(workerSource, /sameOriginClient\.navigate\(targetUrl\)/, "notification clicks navigate an existing app window to the deep link");
-assert.match(workerSource, /client\.url === targetUrl/, "notification clicks prefer an already-open exact target");
-assert.match(appSource, /notificationChatId[\s\S]{0,220}getCachedChatHistory\(notificationChatId\)/, "the app selects a chat supplied by a notification deep link");
-
-assert.deepEqual(formatJobPushNotification(job, "failed", {}), {
-  title: "Fallback project",
-  body: "Fallback chat · Failed"
-});
-
-assert.deepEqual(
-  formatJobPushNotification({ ...job, projectPath: "/var/www/Fallback project" }, "failed", {}),
-  {
-    title: "Fallback project",
-    body: "Fallback chat · Failed"
-  }
-);
+const job = { chatId:"chat-12345678", projectPath:"C:\\Projects\\Billing", promptPreview:"Please preserve voice prompt attachments" } as CodexRunJob;
+const context = { projectName:"Billing", chatName:"Mobile app", response:"Done.\n\n<!-- codex-notification: Voice attachments now preserved -->" };
+assert.deepEqual(formatJobPushNotification(job,"completed",context), { title:"Voice attachments now preserved",body:"Billing · Mobile app" });
+assert.deepEqual(notificationCopy(job,"completed",context),formatJobPushNotification(job,"completed",context));
+assert.equal(taskNotificationSummary({ response:"Done.\n\nVoice attachments now persist.",prompt:job.promptPreview }),"Voice attachments now persist");
+assert.equal(taskNotificationSummary({ response:"Done",prompt:job.promptPreview }),"preserve voice prompt attachments");
+assert.equal(taskNotificationSummary({summary:"Invoice totals recalculated"}),"Invoice totals recalculated");
+assert.equal(taskNotificationSummary({summary:"تم إصلاح إرسال المرفقات"}),"تم إصلاح إرسال المرفقات");
+assert.equal(splitNotificationMetadata(context.response).text,"Done.");
+assert.equal(splitNotificationMetadata("Normal response without metadata").text,"Normal response without metadata");
+assert.equal(formatJobPushNotification({...job,notificationSummary:"Invoice totals recalculated"},"completed",{}).title,"Invoice totals recalculated");
+assert.match(formatJobPushNotification(job,"failed",{}).body,/Failed$/);
+assert.equal(formatJobPushNotification(job,"failed",{}).title,"Task needs attention");
+const long = formatJobPushNotification(job,"completed",{projectName:"Project ".repeat(30),chatName:"Chat ".repeat(30),response:"<!-- codex-notification: Notification tap target successfully restored -->"});
+assert.ok(long.title.split(/\s+/).length <= 4);
+assert.ok(long.body.length <= 93);
+assert.equal(chatDeepLink("chat/id with spaces"),"/?chat=chat%2Fid%20with%20spaces");
+console.log("Notification copy: compact result summaries, metadata isolation, task-context extraction and shared local/push rendering passed.");
