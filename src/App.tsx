@@ -1050,8 +1050,7 @@ function mergeChatDetailPreservingOptimistic(
     ? mergeTranscriptWindow(current.messages ?? [], incomingMessages, messagesRepresentSameTranscriptItem)
     : incomingMessages;
   const preservedMessageCount = Math.max(0, mergedWindow.length - incomingMessages.length);
-  const messages = dedupeMessagesById([...mergedWindow, ...optimisticMessages])
-    .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0));
+  const messages = dedupeMessagesById([...mergedWindow, ...optimisticMessages]);
   const lastOptimisticPrompt = optimisticMessages.filter(isOptimisticPromptMessage).at(-1);
 
   if (!lastOptimisticPrompt && !preservedMessageCount) {
@@ -6376,9 +6375,7 @@ export function App() {
         updatedAt: promptTime >= (Date.parse(current.updatedAt) || 0) ? createdAt : current.updatedAt,
         lastPrompt: { text, createdAt },
         lastResponse: responseIsNewer ? current.lastResponse : null,
-        messages: dedupeMessagesById(messages).sort(
-          (a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)
-        ),
+        messages: dedupeMessagesById(messages),
         hasResponse: responseIsNewer ? current.hasResponse : false
       };
     });

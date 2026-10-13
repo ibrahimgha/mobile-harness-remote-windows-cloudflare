@@ -1011,16 +1011,9 @@ export async function parseSessionFile(
     | ChatMessageExcerpt
     | null;
   const title = indexed?.threadName ?? previewText(currentLastPrompt?.text ?? "", id);
-  const sortedMessages = transcriptMessages.sort((a, b) => {
-    const byTime = Date.parse(a.createdAt) - Date.parse(b.createdAt);
-
-    if (byTime !== 0) {
-      return byTime;
-    }
-
-    return a.id.localeCompare(b.id);
-  });
-  const messagePage = paginateTranscriptMessages(sortedMessages, detailTurns);
+  // The append-only rollout sequence is authoritative. Wall clocks can move
+  // backwards after a reboot; timestamp sorting then hides the newest turns.
+  const messagePage = paginateTranscriptMessages(transcriptMessages, detailTurns);
 
   return {
     id,

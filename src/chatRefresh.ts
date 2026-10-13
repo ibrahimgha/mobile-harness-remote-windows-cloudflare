@@ -57,7 +57,5 @@ export function mergeTranscriptWindow<T extends TranscriptWindowItem>(
     byId.set(item.id, item);
   }
 
-  return [...byId.values()].sort(
-    (a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)
-  );
+  return [...byId.values()];
 }
