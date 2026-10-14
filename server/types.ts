@@ -113,6 +113,7 @@ export type CodexRunJob = {
   /** Persistent delay for a resume after a model-capacity failure. */
   notBefore?: string;
   capacityRetryOfJobId?: string;
+  capacityRetryFailedAt?: string;
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;

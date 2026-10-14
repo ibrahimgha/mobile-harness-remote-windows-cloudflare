@@ -113,11 +113,11 @@ async function main() {
   await delay(3000);
   if (!await idle()) { log('Deferred: new work arrived during idle confirmation'); process.exitCode=75; return; }
   const ui = snapshotUi();
-  save(path.join(backup,'ui-before.json'),ui);
+  if (!release.versionControlled) save(path.join(backup,'ui-before.json'),ui);
   for (const entry of release.files) {
     const target = path.join(project,entry.path);
     const previous = path.join(backup,entry.path);
-    if (fs.existsSync(target) && !fs.existsSync(previous)) copy(target,previous);
+    if (!release.versionControlled && fs.existsSync(target) && !fs.existsSync(previous)) copy(target,previous);
   }
   if (publicUrl) {
     const connection=path.join(runtime,'codex-remote-connection.json');
@@ -161,6 +161,7 @@ async function main() {
   if (!index.includes(release.javascript)) throw new Error('Server is not serving the staged frontend');
   const uiAfter = ui.map(item => ({...item,unchanged:fs.existsSync(item.file)&&sha(item.file)===item.sha256}));
   save(marker,{release:release.id,installedAt:new Date().toISOString(),nativeMode:true,skill:installedSkill,ui:uiAfter});
+  if (release.cleanupStage) fs.rmSync(stage,{recursive:true,force:true});
   log('PASS: native backend, bundled skill, frontend, checksums verified; UI profile files were not modified by installer');
 }
 main().catch(error => {log('Deferred/error: '+error.message);process.exitCode=1;});

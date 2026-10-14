@@ -28,6 +28,7 @@ try {
   const failed = runner.enqueue({chatId:"chat", projectPath:root, text:"original", promptPreview:"original", promptHash:"original", textLength:8, settings});
   internal.queue.splice(0);
   failed.status="failed";
+  failed.finishedAt=new Date(now).toISOString();
   failed.message="Selected model is at capacity. Please try a different model.";
   internal.emit(failed,"failed");
   internal.emit(failed,"failed");
@@ -37,6 +38,7 @@ try {
   assert.equal(Date.parse(retry.job.notBefore!),now+300000);
   assert.deepEqual(retry.job.settings,settings);
   assert.equal(retry.job.capacityRetryOfJobId,failed.id);
+  assert.equal(retry.job.capacityRetryFailedAt,failed.finishedAt);
   const restored=new CodexRunner({statePath:journal});
   const recovered=restored as unknown as Internals;
   assert.equal(recovered.queue[0].job.notBefore,retry.job.notBefore,"deadline survives reboot");
@@ -51,6 +53,20 @@ try {
   now+=1;
   recovered.processNext();
   assert.deepEqual(starts,["resume"]);
+  await new Promise(resolve=>setImmediate(resolve));
+  // Test the real external-activity guard, including persisted retry recovery.
+  let scannedStart=failed.finishedAt!;
+  const guarded=new CodexRunner({statePath:journal,getExternalActiveRuns:async()=>[{chatId:"chat",startedAt:scannedStart}]});
+  const guardedInternal=guarded as unknown as Internals;
+  const guardedStarts:string[]=[];
+  guardedInternal.runJob=async(job,text)=>{guardedStarts.push(text);job.status="completed";};
+  // A genuinely newer writer must remain protected even after the deadline.
+  scannedStart=new Date(Date.parse(failed.finishedAt!)+1).toISOString();
+  await guarded.refreshExternalActivity(true);
+  assert.equal(guardedStarts.length,0,"newer external writer must block retry");
+  scannedStart=failed.finishedAt!;
+  await guarded.refreshExternalActivity(true);
+  assert.deepEqual(guardedStarts,["resume"],"stale failed writer must not strand an overdue restored retry");
   await new Promise(resolve=>setImmediate(resolve));
   const job=retry.job;
   internal.queue.splice(0);

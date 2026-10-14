@@ -391,7 +391,17 @@ export class CodexRunner {
     this.externalRefreshPromise = (async () => {
       const runs = await this.getExternalActiveRuns?.(force) ?? [];
       const now = Date.now();
-      const next = new Map(runs.map((run) => [run.chatId, run]));
+      const next = new Map(runs.filter(run => {
+        const started = Date.parse(run.startedAt);
+        if (!Number.isFinite(started)) return true;
+        return ![...this.jobs.values()].some(job => {
+          if (job.chatId !== run.chatId) return false;
+          const terminalAt = ["completed", "failed", "stopped"].includes(job.status)
+            ? job.finishedAt : job.capacityRetryFailedAt;
+          const ended = Date.parse(terminalAt ?? "");
+          return Number.isFinite(ended) && ended >= started;
+        });
+      }).map((run) => [run.chatId, run]));
       for (const [chatId, holdUntil] of this.externalConflictHolds) {
         if (next.has(chatId)) {
           this.externalConflictHolds.delete(chatId);
@@ -1591,6 +1601,7 @@ export class CodexRunner {
       });
       retry.notBefore = notBefore;
       retry.capacityRetryOfJobId = job.id;
+      retry.capacityRetryFailedAt = job.finishedAt ?? new Date().toISOString();
       const firstChatIndex = this.queue.findIndex((item) => item.job.chatId === job.chatId);
       this.queue.splice(firstChatIndex < 0 ? this.queue.length : firstChatIndex, 0, { job: retry, text: "resume" });
       this.refreshQueuePositions();
