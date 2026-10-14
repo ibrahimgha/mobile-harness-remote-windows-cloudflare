@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { DiagnosticLog, compactDiagnosticRecord } from "./diagnosticLog.js";
 import {
-  createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -760,8 +760,8 @@ export class CodexRunner {
     }
 
     await new Promise<void>((resolve) => {
-      const stdout = createWriteStream(job.logPaths.stdout, { flags: "a" });
-      const stderr = createWriteStream(job.logPaths.stderr, { flags: "a" });
+      const stdout = new DiagnosticLog(job.logPaths.stdout);
+      const stderr = new DiagnosticLog(job.logPaths.stderr);
       let stdoutBuffer = "";
       const stdoutDecoder = new StringDecoder("utf8");
       let stdoutBufferTruncated = false;
@@ -798,6 +798,7 @@ export class CodexRunner {
       };
 
       const handleLine = (line: string) => {
+        if (stdout.acceptingDiagnostics) stdout.write(compactDiagnosticRecord(line));
         try {
           session.handleLine(line);
         } catch (error) {
@@ -932,10 +933,10 @@ export class CodexRunner {
           // Retain small, root-turn-only completion records for existing log
           // reconciliation. Subagent completion notifications cannot end this job.
           if (status === "completed") {
-            stdout.write(`${JSON.stringify({ type: "turn.completed", turn_id: job.nativeTurnId })}\n`);
+            stdout.terminal({ type: "turn.completed", turn_id: job.nativeTurnId });
             finishFromTurnCompleted();
           } else {
-            stdout.write(`${JSON.stringify({ type: status === "failed" ? "turn.failed" : "turn.stopped", error: { message } })}\n`);
+            stdout.terminal({ type: status === "failed" ? "turn.failed" : "turn.stopped", error: { message: message?.slice(0, 2048) } });
             completionPromise ??= completeJob(status, status === "failed" ? 1 : null, null, "close");
           }
           void completionPromise?.finally(() => child.stdin.end());
@@ -944,7 +945,6 @@ export class CodexRunner {
       this.nativeSessions.set(job.id, session);
 
       child.stdout.on("data", (chunk: Buffer) => {
-        stdout.write(chunk);
         stdoutBuffer += stdoutDecoder.write(chunk);
 
         const lines = stdoutBuffer.split(/\r?\n/);

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { ParsedFileCache } from "./parsedFileCache.js";
 import { stripRemotePromptContext } from "./remotePromptContext.js";
 import { splitNotificationMetadata } from "../shared/notificationCopy.js";
 import { splitConfirmationMetadata } from "../shared/confirmation.js";
@@ -25,6 +26,8 @@ const maxDetailTurns = Math.max(defaultDetailTurns, Number(process.env.CODEX_CHA
 const maxEventTextLength = Math.max(1000, Number(process.env.CODEX_CHAT_EVENT_TEXT_BYTES ?? 12000) || 12000);
 
 let summarySessionsCache: { expiresAt: number; sessions: ParsedSession[] } | null = null;
+const parsedFiles = new ParsedFileCache<ParsedSession | null>();
+export function sessionParseCacheStats() { return { hits: parsedFiles.hits, misses: parsedFiles.misses }; }
 
 type IndexedSession = {
   threadName: string;
@@ -46,6 +49,8 @@ type ParseSessionOptions = {
 
 type DetailTailWindow = {
   fileSize: number;
+  mtimeMs: number;
+  ctimeMs: number;
   requiredPrompts: number;
   bytes: number;
 };
@@ -67,7 +72,8 @@ type SessionMetaPayload = {
 
 export function clearSessionCache() {
   summarySessionsCache = null;
-  detailTailWindows.clear();
+  // Per-file parse/tail caches validate against file metadata on access.
+  // Job heartbeats must not evict unchanged history for every other chat.
 }
 
 export function isSubagentSessionMeta(payload: SessionMetaPayload): boolean {
@@ -421,11 +427,12 @@ async function detailBytesForTurns(filePath: string, requestedTurns: number): Pr
   const initialBytes = Math.max(detailTailBytes, previousWindowBytes);
   const bytes =
     previous && previous.requiredPrompts >= requiredPrompts && previous.fileSize === stat.size
+      && previous.mtimeMs === stat.mtimeMs && previous.ctimeMs === stat.ctimeMs
       ? previous.bytes
       : await resolveTranscriptTailBytes(filePath, stat.size, initialBytes, requiredPrompts);
 
   detailTailWindows.delete(filePath);
-  detailTailWindows.set(filePath, { fileSize: stat.size, requiredPrompts, bytes });
+  detailTailWindows.set(filePath, { fileSize: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, requiredPrompts, bytes });
 
   while (detailTailWindows.size > maxRememberedDetailTailWindows) {
     const oldestKey = detailTailWindows.keys().next().value;
@@ -584,6 +591,21 @@ function formatToolOutputText(output: unknown): string {
 }
 
 export async function parseSessionFile(
+  filePath: string,
+  index: Map<string, IndexedSession>,
+  options: ParseSessionOptions | number = {}
+): Promise<ParsedSession | null> {
+  const stat = await fs.stat(filePath);
+  const fileId = idFromFilename(filePath);
+  const metadata = fileId ? index.get(fileId) : [...index];
+  const signature = JSON.stringify([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, metadata]);
+  const key = JSON.stringify([filePath, options]);
+  const result = await parsedFiles.get(key, signature, () => parseSessionFileUncached(filePath, index, options));
+  // Consumers attach run metadata; never let them mutate the cached transcript.
+  return result ? structuredClone(result) : null;
+}
+
+async function parseSessionFileUncached(
   filePath: string,
   index: Map<string, IndexedSession>,
   options: ParseSessionOptions | number = {}

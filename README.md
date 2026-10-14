@@ -1,5 +1,24 @@
 # Codex Window Remote
 
+## Transcript caching and diagnostic retention
+
+Native chat transcripts are never trimmed by Remote. Unchanged file parses are
+cached by file metadata, parse options and indexed chat metadata, with concurrent
+reads coalesced and a 64 MiB / 320-entry LRU limit. Heartbeats invalidate the chat
+list but retain validated per-file results and tail-window sizing.
+
+New native-run diagnostics store abbreviated JSON records, with approximately
+256 KiB per stdout/stderr file and a separate 16 KiB terminal-record allowance.
+The live protocol, native session history and final-response recovery files stay
+complete. Existing large log files are not rewritten.
+
+Preview retention with `npm run logs:retention`. Only stdout/stderr pairs for
+provably completed runs older than 30 days are eligible. Pending jobs, unknown or
+failed runs, symlinks, native transcripts and final-response files are preserved.
+After reviewing the preview, explicitly apply with
+`npm run logs:retention -- --apply --days=30`. There is no scheduled purge.
+This diagnostic-retention command is separate from routine task-temp cleanup.
+
 A local web control surface for a running Codex desktop window. It is designed to be served from this laptop and exposed through a Cloudflare tunnel.
 
 ## What Is Scaffolded
