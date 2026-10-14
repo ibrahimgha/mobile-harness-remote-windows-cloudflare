@@ -3,7 +3,7 @@ import "./check-scroll-top";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mergeTranscriptWindow, preserveOptimisticRunSettings, transcriptRenderItems } from "../src/chatRefresh.js";
+import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSettings, transcriptRenderItems } from "../src/chatRefresh.js";
 import { capturePrependScrollSnapshot, keepPrependScrollAnchor, restoredPrependScrollTop } from "../src/chatScroll.js";
 import { parseSessionFile, resolveTranscriptTailBytes } from "../server/codexSessions.js";
 import { attachPromptRunSettings } from "../server/promptRunSettings.js";
@@ -15,6 +15,20 @@ type TestMessage = {
   createdAt: string;
   text: string;
 };
+
+const atMinute = (minute: number) => `2026-10-14T08:${String(minute).padStart(2, "0")}:00.000Z`;
+const stopTranscript: TestMessage[] = [
+  { id: "prompt", createdAt: atMinute(14), text: "New task" },
+  { id: "response-15", createdAt: atMinute(15), text: "Newer response" },
+  { id: "response-17", createdAt: atMinute(17), text: "Latest response" }
+];
+const stoppedNotice = { id: "run-status-old", createdAt: atMinute(14), text: "Stopped from the remote" };
+assert.deepEqual(mergeRunStatusTimeline(stopTranscript, [stoppedNotice]).map(m => m.id), ["prompt", "run-status-old", "response-15", "response-17"]);
+assert.equal(mergeRunStatusTimeline(stopTranscript, [stoppedNotice, stoppedNotice]).length, 4, "Polling must not duplicate the stop notice");
+assert.deepEqual(mergeRunStatusTimeline(stopTranscript, [
+  { id: "failed", createdAt: atMinute(16), text: "Failed" }, stoppedNotice
+]).map(m => m.id), ["prompt", "run-status-old", "response-15", "failed", "response-17"]);
+assert.deepEqual(stopTranscript.map(m => m.id), ["prompt", "response-15", "response-17"], "Timeline merge must not mutate cached transcript");
 
 const repeatedPrompts: TestMessage[] = Array.from({ length: 30 }, (_, index) => ({
   id: `prompt-${index}`,

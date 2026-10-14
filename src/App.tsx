@@ -67,7 +67,7 @@ import { advanceCompletionGlow, type CompletionGlowTracker } from "./controlRoom
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
-import { mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
+import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
 import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
@@ -4747,7 +4747,7 @@ export function App() {
         ? runFailureMessages.filter((message) => (Date.parse(message.createdAt) || 0) >= firstTranscriptMs)
         : runFailureMessages;
 
-      return [...transcriptMessages, ...scopedRunFailures];
+      return mergeRunStatusTimeline<VisibleChatMessage>(transcriptMessages, scopedRunFailures);
     },
     [runFailureMessages, transcriptMessages]
   );
