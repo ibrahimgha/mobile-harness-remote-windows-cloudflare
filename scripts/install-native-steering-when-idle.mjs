@@ -103,6 +103,16 @@ function scheduleResume() {
 
 async function main() {
   if (fs.existsSync(marker)) { log('Already installed; no action'); return; }
+  if (release.requiredBuiltins?.length) {
+    let serviceRuntime = process.execPath;
+    if (process.platform !== 'win32') {
+      const command = spawnSync('systemctl', ['show', service, '--property=ExecStart', '--value'], {encoding:'utf8',timeout:10000});
+      serviceRuntime = command.stdout?.match(/\bpath=([^;]+);/)?.[1].trim();
+      if (command.status !== 0 || !serviceRuntime || !path.isAbsolute(serviceRuntime)) throw new Error('Could not verify service runtime; service was not stopped.');
+    }
+    const probe = spawnSync(serviceRuntime, ['--input-type=module','-e',`await Promise.all(${JSON.stringify(release.requiredBuiltins)}.map(name=>import(name)));`], {encoding:'utf8',timeout:10000,windowsHide:true});
+    if (probe.status !== 0) throw new Error(`Service runtime lacks required modules ${release.requiredBuiltins.join(', ')}; upgrade it before installing. Service was not stopped.`);
+  }
   for (const entry of release.files) {
     const runtimeFile=/^(dist|dist-server)\/[a-zA-Z0-9_./-]+$/.test(entry.path);
     const skillFile=/^skills\/codex-remote-mobile\/(SKILL\.md|agents\/openai\.yaml|references\/handoffs\.md|scripts\/remote-chat\.mjs)$/.test(entry.path);

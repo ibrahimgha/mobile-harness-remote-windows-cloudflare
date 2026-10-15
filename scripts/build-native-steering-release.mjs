@@ -34,5 +34,5 @@ for(const file of ['sw.js','manifest.webmanifest']) add('dist/'+file);
 for(const file of ['mobile-search-focus.css','mobile-composer-layout.css','mobile-chat-actions.css','mobile-chat-actions.js','mobile-login-viewport.css']) add('dist/'+file);
 for(const file of ['SKILL.md','agents/openai.yaml','references/handoffs.md','scripts/remote-chat.mjs']) add('skills/codex-remote-mobile/'+file,process.cwd());
 fs.copyFileSync('scripts/install-native-steering-when-idle.mjs',path.join(target,'installer.mjs'));
-fs.writeFileSync(path.join(target,'release.json'),JSON.stringify({id:releaseId,sourceCommit,versionControlled:true,cleanupStage:true,skillName:'codex-remote-mobile',queueReordering:releaseId.includes('queue-reorder'),javascript:assets.find(name=>name.endsWith('.js')),files},null,2)+'\n');
+fs.writeFileSync(path.join(target,'release.json'),JSON.stringify({id:releaseId,sourceCommit,versionControlled:true,cleanupStage:true,requiredBuiltins:['node:sqlite'],skillName:'codex-remote-mobile',queueReordering:releaseId.includes('queue-reorder'),javascript:assets.find(name=>name.endsWith('.js')),files},null,2)+'\n');
 console.log(JSON.stringify({stage:target,files:files.length,surface:full}));
