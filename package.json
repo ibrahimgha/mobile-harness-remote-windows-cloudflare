@@ -25,7 +25,7 @@
     "check:composer-scenarios": "tsx scripts/check-composer-scenarios.ts",
     "check:auth-revocation": "node scripts/check-auth-revocation.mjs",
     "check:composer-editing": "tsx scripts/check-composer-editing.ts",
-    "check:message-refresh": "tsx scripts/check-message-refresh.ts",
+    "check:message-refresh": "tsx scripts/check-message-refresh.ts && tsx scripts/check-injected-messages.ts",
     "check:run-settings": "tsx scripts/check-run-settings.ts",
     "check:codex-usage": "tsx scripts/check-codex-usage.ts",
     "check:run-controls": "tsx scripts/check-run-controls.ts",

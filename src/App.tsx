@@ -68,6 +68,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
+import { isInjectedInstruction, injectedInstructionsPreferenceKey, readInjectedInstructionsPreference } from "./injectedMessages";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
 import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
@@ -3405,6 +3406,8 @@ export function RunSettingsPanel({
   onPowerBarThemeChange,
   voiceOrbTheme,
   onVoiceOrbThemeChange,
+  showInjectedInstructions = false,
+  onShowInjectedInstructionsChange,
   compactOnly = false
 }: {
   settings?: CodexRunSettings;
@@ -3418,6 +3421,8 @@ export function RunSettingsPanel({
   onPowerBarThemeChange: (theme: PowerBarTheme) => void;
   voiceOrbTheme: VoiceOrbTheme;
   onVoiceOrbThemeChange: (theme: VoiceOrbTheme) => void;
+  showInjectedInstructions?: boolean;
+  onShowInjectedInstructionsChange?: (show: boolean) => void;
   compactOnly?: boolean;
 }) {
   const current = settings ?? {
@@ -3655,6 +3660,17 @@ export function RunSettingsPanel({
             </label>
           <details className="run-settings-appearance">
             <summary>Appearance</summary>
+            {onShowInjectedInstructionsChange ? (
+              <label>
+                <span>Show injected instructions</span>
+                <input
+                  type="checkbox"
+                  aria-label="Show injected instructions"
+                  checked={showInjectedInstructions}
+                  onChange={event => onShowInjectedInstructionsChange(event.currentTarget.checked)}
+                />
+              </label>
+            ) : null}
             <label>
               <span>Model bar style</span>
               <select
@@ -3821,6 +3837,23 @@ export function App() {
   const [loginToken, setLoginToken] = useState(() => localStorage.getItem(tokenKey) ?? "");
   const [powerBarTheme, setPowerBarTheme] = usePowerBarTheme(controlRoomSlotId);
   const [voiceOrbTheme, setVoiceOrbTheme] = useVoiceOrbTheme(controlRoomSlotId);
+  const [showInjectedInstructions, setShowInjectedInstructions] = useState(() => readInjectedInstructionsPreference(localStorage));
+  const updateInjectedInstructions = useCallback((show: boolean) => {
+    setShowInjectedInstructions(show);
+    try {
+      localStorage.setItem(injectedInstructionsPreferenceKey, String(show));
+    } catch {
+      // Keep the display toggle usable if storage is unavailable.
+    }
+  }, []);
+  useEffect(() => {
+    const updatePreference = (event: StorageEvent) => {
+      if (event.key === injectedInstructionsPreferenceKey || event.key === null)
+        setShowInjectedInstructions(readInjectedInstructionsPreference(localStorage));
+    };
+    window.addEventListener("storage", updatePreference);
+    return () => window.removeEventListener("storage", updatePreference);
+  }, []);
 
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
     const saved = localStorage.getItem(collapsedProjectsKey);
@@ -4752,8 +4785,12 @@ export function App() {
     [runFailureMessages, transcriptMessages]
   );
   const visibleMessages = useMemo(
-    () => messagesForViewMode(timelineMessages, selectedChatMessageViewMode, selectedDisplayJob),
-    [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages]
+    () => messagesForViewMode(
+      showInjectedInstructions ? timelineMessages : timelineMessages.filter(message => !isInjectedInstruction(message)),
+      selectedChatMessageViewMode,
+      selectedDisplayJob
+    ),
+    [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions]
   );
   const visibleMessageItems = useMemo(
     () => transcriptRenderItems(visibleMessages, chatMessageStableSignature),
@@ -8714,6 +8751,8 @@ export function App() {
           onPowerBarThemeChange={setPowerBarTheme}
           voiceOrbTheme={voiceOrbTheme}
           onVoiceOrbThemeChange={setVoiceOrbTheme}
+          showInjectedInstructions={showInjectedInstructions}
+          onShowInjectedInstructionsChange={updateInjectedInstructions}
           settings={state?.runner.settings}
           options={state?.runner.settingsOptions}
           usage={state?.runner.usage}
@@ -9407,6 +9446,8 @@ export function App() {
               onPowerBarThemeChange={setPowerBarTheme}
               voiceOrbTheme={voiceOrbTheme}
               onVoiceOrbThemeChange={setVoiceOrbTheme}
+              showInjectedInstructions={showInjectedInstructions}
+              onShowInjectedInstructionsChange={updateInjectedInstructions}
               compactOnly
               settings={state?.runner.settings}
               options={state?.runner.settingsOptions}

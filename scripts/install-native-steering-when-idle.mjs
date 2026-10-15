@@ -75,7 +75,7 @@ function snapshotUi() {
   const piState = '/home/vm13/.config/codex-control-room-native/state.json';
   if (process.platform !== 'win32' && fs.existsSync(piState)) files.push(piState);
   return files.map((file,index) => {
-    copy(file, path.join(backup, 'ui-state', `${index}-${path.basename(file)}`));
+    if (!release.versionControlled) copy(file, path.join(backup, 'ui-state', `${index}-${path.basename(file)}`));
     return {file, sha256:sha(file)};
   });
 }
@@ -126,8 +126,8 @@ async function main() {
     const existing=fs.existsSync(connection)?JSON.parse(fs.readFileSync(connection,'utf8')):{};
     save(connection,{...existing,publicUrl});
   }
-  if (!await idle()) { log('Deferred: work arrived while backups were being saved'); process.exitCode=75; return; }
-  log('Idle reconfirmed after backups; stopping only the remote service');
+  if (!await idle()) { log('Deferred: work arrived during installation preparation'); process.exitCode=75; return; }
+  log('Idle reconfirmed after preparation; stopping only the remote service');
   serviceAction('stop');
   try {
     // Retain all old hashed assets. Publish index only after the matching files.
@@ -160,7 +160,7 @@ async function main() {
   const index = await fetch(`http://127.0.0.1:${port}/`,{signal:AbortSignal.timeout(10000)}).then(r=>r.text());
   if (!index.includes(release.javascript)) throw new Error('Server is not serving the staged frontend');
   const uiAfter = ui.map(item => ({...item,unchanged:fs.existsSync(item.file)&&sha(item.file)===item.sha256}));
-  save(marker,{release:release.id,installedAt:new Date().toISOString(),nativeMode:true,skill:installedSkill,ui:uiAfter});
+  save(marker,{release:release.id,sourceCommit:release.sourceCommit,installedAt:new Date().toISOString(),nativeMode:true,skill:installedSkill,ui:uiAfter,files:release.files});
   if (release.cleanupStage) fs.rmSync(stage,{recursive:true,force:true});
   log('PASS: native backend, bundled skill, frontend, checksums verified; UI profile files were not modified by installer');
 }

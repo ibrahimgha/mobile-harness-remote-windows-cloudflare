@@ -38,6 +38,7 @@ try {
   {id:'reply-15',role:'assistant',kind:'assistant_final',isFinal:true,text:'Newer reply',createdAt:at('15')},
   {id:'reply-17',role:'assistant',kind:'assistant_final',isFinal:true,text:'Newest reply',createdAt:at('17')}
  ];
+ messages.push({id:'injected-policy',role:'user',kind:'user_prompt',text:'# AGENTS.md instructions for C:\\fixture\nInjected policy fixture',createdAt:at('18')});
  await page.route('**/api/**',route=>{
   const pathname=new URL(route.request().url()).pathname;
   let body={ok:true};
@@ -52,6 +53,25 @@ try {
  console.log('Navigated to mobile App');
  try { await page.getByText('Newest reply',{exact:true}).waitFor(); }
  catch(error){console.log('Fixture state:',await page.locator('body').innerText());throw error;}
+ assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
+ await page.getByRole('button',{name:'Open menu',exact:true}).click();
+ await page.getByText('Appearance',{exact:true}).click();
+ const showInstructions=page.getByRole('checkbox',{name:'Show injected instructions',exact:true});
+ assert.equal(await showInstructions.isChecked(),false);
+ await showInstructions.check();
+ await page.getByRole('button',{name:'Close menu',exact:true}).click();
+ await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).waitFor();
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Open menu',exact:true}).click();
+ await page.getByText('Appearance',{exact:true}).click();
+ assert.equal(await showInstructions.isChecked(),true);
+ await showInstructions.uncheck();
+ await page.getByRole('button',{name:'Close menu',exact:true}).click();
+ assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.getByText('Newest reply',{exact:true}).waitFor();
+ assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
  for(let refresh=0;refresh<3;refresh++){
   const text=await page.locator('.chat-content').innerText();
   assert.ok(text.indexOf('Stopped from the remote')<text.indexOf('Newer reply'));
@@ -62,6 +82,7 @@ try {
   await page.getByText('Newest reply',{exact:true}).waitFor();
  }
  console.log('PASS: actual mobile App keeps stop notice before newer replies through repeated refreshes; no real jobs or credentials.');
+ console.log('PASS: actual mobile App hides injected instructions by default; Appearance opt-in and opt-out survive reloads without hiding genuine prompts/replies.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);
