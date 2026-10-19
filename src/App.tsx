@@ -69,6 +69,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
 import { isInjectedInstruction, injectedInstructionsPreferenceKey, readInjectedInstructionsPreference } from "./injectedMessages";
+import { capacityRetryStatus } from "./capacityRetry";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
 import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
@@ -221,6 +222,8 @@ type CodexRunJob = {
   steeredIntoJobId?: string;
   steeringState?: "sending" | "accepted" | "confirmed" | "uncertain";
   queuePosition?: number;
+  notBefore?: string;
+  capacityRetryOfJobId?: string;
   createdAt: string;
   promptPreview: string;
   textLength: number;
@@ -4718,6 +4721,7 @@ export function App() {
   const selectedDisplayJobIsExternal = Boolean(selectedDisplayJob?.id.startsWith("session-run-"));
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length;
+  const hasScheduledCapacityRetry = selectedQueuedServerJobs.some(job => Boolean(job.capacityRetryOfJobId && job.notBefore));
   const selectedMessagePage = selectedChat?.messagePage;
   const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
@@ -6792,7 +6796,7 @@ export function App() {
   }, [authenticated, selectedInstructionFile, token]);
 
   useEffect(() => {
-    if (selectedJob?.status !== "running" && !activeRunJobKey && !selectedViewHasLiveThinking) {
+    if (selectedJob?.status !== "running" && !activeRunJobKey && !selectedViewHasLiveThinking && !hasScheduledCapacityRetry) {
       return;
     }
 
@@ -6803,7 +6807,7 @@ export function App() {
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [activeRunJobKey, selectedJob?.id, selectedJob?.status, selectedViewHasLiveThinking]);
+  }, [activeRunJobKey, selectedJob?.id, selectedJob?.status, selectedViewHasLiveThinking, hasScheduledCapacityRetry]);
 
   useEffect(() => {
     if (!liveThinkingRunKey) {
@@ -9333,7 +9337,9 @@ export function App() {
                       {job.steeringState ? jobStatusLabel(job) : `#${index + 1}`}
                     </span>
                     <span className="queue-actions">
-                      <time>{formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
+                      <time dateTime={job.notBefore ?? job.createdAt} title={job.notBefore ? `Automatic resume scheduled for ${formatDate(job.notBefore)}` : undefined}>
+                        {capacityRetryStatus(job, durationNow) ?? formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}
+                      </time>
                       <button
                         className="queue-steer"
                         type="button"
@@ -9388,7 +9394,7 @@ export function App() {
                   ? selectedDisplayJobIsExternal
                     ? "Running in Codex"
                     : "Running on target laptop"
-                  : "Queued on target laptop"}
+                  : capacityRetryStatus(selectedDisplayJob, durationNow) ?? "Queued on target laptop"}
               </span>
               {selectedDisplayJob.status === "running" ? (
                 <span className="job-duration" aria-label={`Elapsed ${selectedJobDuration}`}>

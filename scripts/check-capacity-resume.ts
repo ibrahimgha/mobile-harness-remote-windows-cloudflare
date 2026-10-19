@@ -79,6 +79,23 @@ try {
   failed.id="other-error";failed.message="Model not supported";
   internal.emit(failed,"failed");
   assert.equal(internal.queue.length,0,"unrelated failures never retry");
+  // Exercise the production interval, not just manual calls to processNext.
+  const ticking = new CodexRunner({statePath:null});
+  const clocked = ticking as unknown as Internals;
+  const automaticStarts: string[] = [];
+  clocked.runJob = async (job,text) => { automaticStarts.push(text); job.status="completed"; };
+  clocked.runningChatIds.add("timer-chat");
+  const automatic = ticking.enqueue({chatId:"timer-chat",projectPath:root,text:"resume",promptPreview:"resume",promptHash:"timer-fixture",textLength:6,settings});
+  automatic.notBefore = new Date(now+1000).toISOString();
+  clocked.runningChatIds.delete("timer-chat");
+  ticking.start();
+  now += 999;
+  await new Promise(resolve=>setTimeout(resolve,1100));
+  assert.equal(automaticStarts.length,0,"live scheduler does not send early");
+  now += 1;
+  await new Promise(resolve=>setTimeout(resolve,1100));
+  assert.deepEqual(automaticStarts,["resume"],"live scheduler starts the existing retry at its deadline without X or a new prompt");
+  assert.deepEqual(automatic.settings,settings);
   console.log("PASS: capacity-only resume, exact five-minute deadline, settings, deduplication, reboot persistence, repeated failure and cancellation.");
 } finally {
   Date.now=originalNow;

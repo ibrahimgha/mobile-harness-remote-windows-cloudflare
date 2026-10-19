@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import { capacityRetryStatus } from "../src/capacityRetry.js";
+const now = Date.parse("2026-10-19T10:55:13.900Z");
+const job = {status:"queued",capacityRetryOfJobId:"capacity-failure",notBefore:new Date(now+300000).toISOString()};
+assert.equal(capacityRetryStatus(job,now),"Capacity retry in 5:00");
+assert.equal(capacityRetryStatus(job,now+1000),"Capacity retry in 4:59");
+assert.equal(capacityRetryStatus(job,now+299999),"Capacity retry in 0:01");
+assert.equal(capacityRetryStatus(job,now+300000),"Capacity retry ready");
+assert.equal(capacityRetryStatus({...job,status:"running"},now),null);
+assert.equal(capacityRetryStatus({status:"queued"},now),null);
+assert.equal(capacityRetryStatus({...job,notBefore:"invalid"},now),"Capacity retry queued");
+console.log("PASS: capacity retry countdown, exact deadline, overdue and ordinary queue labels.");

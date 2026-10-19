@@ -28,7 +28,7 @@
     "check:message-refresh": "tsx scripts/check-message-refresh.ts && tsx scripts/check-injected-messages.ts",
     "check:run-settings": "tsx scripts/check-run-settings.ts",
     "check:codex-usage": "tsx scripts/check-codex-usage.ts",
-    "check:run-controls": "tsx scripts/check-run-controls.ts",
+    "check:run-controls": "tsx scripts/check-run-controls.ts && tsx scripts/check-capacity-resume.ts && tsx scripts/check-capacity-retry-ui.ts",
     "check:external-job-queue": "tsx scripts/check-external-job-queue.ts && tsx scripts/check-confirmations.ts",
     "check:chat-drafts": "tsx scripts/check-chat-drafts.ts",
     "check:live-thinking": "tsx scripts/check-live-thinking.ts",
