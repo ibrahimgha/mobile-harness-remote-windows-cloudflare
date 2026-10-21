@@ -70,6 +70,7 @@ import rehypeSanitize from "rehype-sanitize";
 import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSettings, stableHash, transcriptRenderItems } from "./chatRefresh";
 import { isInjectedInstruction, injectedInstructionsPreferenceKey, readInjectedInstructionsPreference } from "./injectedMessages";
 import { capacityRetryStatus } from "./capacityRetry";
+import { installComposerOverlap } from "./composerOverlap";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
 import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
@@ -3972,6 +3973,13 @@ export function App() {
   const pendingChatShortcutRef = useRef<{ chatId: string } | null>(null);
   const chatShortcutCommitTimerRef = useRef<number | undefined>(undefined);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
+  const chatWorkspaceRef = useRef<HTMLElement | null>(null);
+  const composerContainerRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    if (!authenticated || checkingAuth || isControlRoomTile) return;
+    const workspace = chatWorkspaceRef.current, composer = composerContainerRef.current, scroller = chatContentRef.current;
+    if (workspace && composer && scroller) return installComposerOverlap(workspace, composer, scroller);
+  }, [authenticated, checkingAuth, isControlRoomTile]);
   const composerEditorRef = useRef<HTMLDivElement | null>(null);
   const composerSelectionRef = useRef<TextSelection>({ start: 0, end: 0 });
   const chatDetailRequestRef = useRef(0);
@@ -9079,7 +9087,7 @@ export function App() {
         </div>
       ) : null}
 
-      <section className="chat-workspace" aria-label="Selected chat">
+      <section className="chat-workspace" ref={chatWorkspaceRef} aria-label="Selected chat">
         <header className="chat-topbar">
           {!singleChatAccess ? (
             <button
@@ -9419,7 +9427,7 @@ export function App() {
           </div>
         ) : null}
 
-        <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} data-composer="chat">
+        <div className={`composer ${composerExpanded ? "is-expanded" : ""}`} ref={composerContainerRef} data-composer="chat">
           {selectedChat?.id === selectedChatId && selectedChat.pendingConfirmation ? (
             <ConfirmationSuggestions
               key={`${selectedChatId}:${selectedChat.pendingConfirmation.id}`}

@@ -55,6 +55,7 @@ try {
  console.log('Navigated to mobile App');
  try { await page.getByText('Newest reply',{exact:true}).waitFor(); }
  catch(error){console.log('Fixture state:',await page.locator('body').innerText());throw error;}
+ assert.equal(await page.locator('.chat-workspace').getAttribute('data-composer-overlap'),'true','real App mounts the mobile composer observer after authentication');
  assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
  await page.getByRole('button',{name:'Open menu',exact:true}).click();
  await page.getByText('Appearance',{exact:true}).click();

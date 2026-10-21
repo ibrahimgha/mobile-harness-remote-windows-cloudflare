@@ -1,5 +1,4 @@
-/* Reserve the real composer height instead of scrolling messages behind it.
-   Keep the editor's own scrolling and draft contents untouched. */
+/* Safe fallback until the real composer height is measured. */
 @media (max-width: 920px) {
   .chat-workspace .chat-content {
     grid-row: 5 / 6;
@@ -7,5 +6,29 @@
 
   .chat-workspace .composer {
     margin-top: 0;
+  }
+
+  /* Restore the floating fade without hiding the transcript's final lines.
+     Only the end spacer grows; editor scrolling and draft text are untouched. */
+  .chat-workspace[data-composer-overlap] .chat-content {
+    grid-row: 5 / -1;
+  }
+
+  .chat-workspace[data-composer-overlap] .composer {
+    margin-top: -16px;
+  }
+
+  .chat-workspace[data-composer-overlap] .composer::before {
+    content: "";
+    position: absolute;
+    inset: 0 calc((100vw - 100%) / -2);
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(245, 246, 241, 0) 0%, rgba(245, 246, 241, 0.9) 100%);
+  }
+
+  .chat-workspace[data-composer-overlap] .chat-thread::after {
+    flex-basis: calc(var(--mobile-composer-height) + 12px);
+    block-size: calc(var(--mobile-composer-height) + 12px);
   }
 }
