@@ -71,6 +71,7 @@ import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSet
 import { isInjectedInstruction, injectedInstructionsPreferenceKey, readInjectedInstructionsPreference } from "./injectedMessages";
 import { capacityRetryStatus } from "./capacityRetry";
 import { installComposerOverlap } from "./composerOverlap";
+import { isConfirmedActiveJob, confirmedActiveJobVersions, activeChatIdsForRevalidation, preferredJobVersion } from "./jobActivity";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
 import { ConfirmationSuggestions } from "./ConfirmationSuggestions";
@@ -211,6 +212,8 @@ type BridgeEvent = {
 };
 
 type CodexRunJob = {
+  /** Browser cache hints are not authoritative until checked with the Remote. */
+  activityUnverified?: boolean;
   id: string;
   clientRequestId?: string;
   inputSource?: "typed" | "voice" | "mixed";
@@ -1162,6 +1165,7 @@ function jobStableSignature(job: CodexRunJob) {
     job.id,
     job.chatId,
     job.status,
+    job.activityUnverified ?? false,
     job.kind ?? "",
     job.queuePosition ?? "",
     job.createdAt,
@@ -1257,7 +1261,7 @@ function readCachedActiveJobs(): Record<string, CodexRunJob[]> {
       });
 
       if (jobs.length) {
-        result[chatId] = sortJobsForChat(jobs).slice(0, 8);
+        result[chatId] = sortJobsForChat(jobs.map(job => ({...job, activityUnverified:true}))).slice(0, 8);
       }
     }
 
@@ -1277,13 +1281,7 @@ function writeCachedActiveJobs(chatJobs: Record<string, CodexRunJob[]>, recentJo
     result[job.chatId] = mergeJobsForChat(result[job.chatId] ?? [], [job]).filter(isActiveJob).slice(0, 8);
   };
 
-  for (const jobs of Object.values(chatJobs)) {
-    for (const job of jobs) {
-      addJob(job);
-    }
-  }
-
-  for (const job of recentJobs) {
+  for (const job of confirmedActiveJobVersions([...Object.values(chatJobs).flat(), ...recentJobs])) {
     addJob(job);
   }
 
@@ -1680,7 +1678,7 @@ function notificationLabel(status: RemoteNotificationState) {
 }
 
 function isActiveJob(job: CodexRunJob | undefined) {
-  return job?.status === "queued" || job?.status === "running";
+  return isConfirmedActiveJob(job);
 }
 
 function sortJobsForChat(jobs: CodexRunJob[]) {
@@ -1718,7 +1716,7 @@ function mergeJobsForChat(current: CodexRunJob[], incoming: CodexRunJob[]) {
   const merged = new Map(current.map((job) => [job.id, job]));
 
   for (const job of incoming) {
-    merged.set(job.id, { ...merged.get(job.id), ...job });
+    merged.set(job.id, preferredJobVersion(merged.get(job.id), { ...merged.get(job.id), ...job, activityUnverified: job.activityUnverified === true }));
   }
 
   return keepRecentChatJobs([...merged.values()]);
@@ -3898,6 +3896,8 @@ export function App() {
   const [, setNotice] = useState("");
   const [socketLive, setSocketLive] = useState(false);
   const [chatJobs, setChatJobs] = useState<Record<string, CodexRunJob[]>>(() => readCachedActiveJobs());
+  const chatJobsRef = useRef(chatJobs);
+  chatJobsRef.current = chatJobs;
   const chatJobsRequestIdsRef = useRef(new Map<string, number>());
   const reorderingChatIdsRef = useRef(new Set<string>());
   const [activeSessionRuns, setActiveSessionRuns] = useState<ActiveSessionRun[]>([]);
@@ -4513,7 +4513,7 @@ export function App() {
 
     for (const jobs of Object.values(chatJobs)) {
       for (const job of jobs) {
-        if (job.status === "queued") {
+        if (job.status === "queued" && isActiveJob(job)) {
           jobsById.set(job.id, job);
         }
       }
@@ -4550,15 +4550,15 @@ export function App() {
 
     for (const job of state?.runner.recentJobs ?? []) {
       knownJobs.push(job);
-      addJob(job);
     }
 
     for (const jobs of Object.values(chatJobs)) {
       for (const job of jobs) {
         knownJobs.push(job);
-        addJob(job);
       }
     }
+
+    for (const job of confirmedActiveJobVersions(knownJobs)) addJob(job);
 
     const serverRunningChatIds = new Set(
       [...jobsById.values()].filter((job) => job.status === "running").map((job) => job.chatId)
@@ -7273,6 +7273,39 @@ export function App() {
 
     return () => window.clearInterval(interval);
   }, [authenticated, loadChatDetail, loadChatJobs, loadState, queuedServerJobs, socketLive]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let stopped = false;
+    let refreshing = false;
+    const reconcile = async () => {
+      if (stopped || refreshing) return;
+      refreshing = true;
+      try {
+        const ids = activeChatIdsForRevalidation(chatJobsRef.current).filter(id => !isTemporaryChatId(id));
+        let cursor = 0;
+        // Refresh inactive/unselected chats too, without a request storm on reload.
+        await Promise.all(Array.from({length:Math.min(4, ids.length)}, async () => {
+          while (!stopped && cursor < ids.length) await loadChatJobs(ids[cursor++]);
+        }));
+      } finally {
+        refreshing = false;
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") void reconcile(); };
+    void reconcile();
+    const timer = window.setInterval(() => void reconcile(), 30_000);
+    window.addEventListener("focus", onVisible);
+    window.addEventListener("online", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onVisible);
+      window.removeEventListener("online", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [authenticated, loadChatJobs]);
 
   async function restoreQueuedJobToComposer(job: CodexRunJob) {
     if (job.status !== "queued") {

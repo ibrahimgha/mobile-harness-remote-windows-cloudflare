@@ -32,6 +32,17 @@ try {
  const summary={id:'status-fixture',title:'Stop timeline QC',projectName:'Isolated test',projectPath:'/test-only',createdAt:at('13'),updatedAt:at('17'),hasResponse:true};
  const settings={model:'gpt-6.1-sol',reasoningEffort:'medium',speed:'default',updatedAt:at('13')};
  const job={id:'old-stop',chatId:summary.id,projectPath:summary.projectPath,status:'stopped',createdAt:at('13'),finishedAt:at('14'),message:'Stopped from the remote for this chat',promptPreview:'old task',settings,textLength:8,command:[],logPaths:{}};
+ const sidebarBase={...job,status:'running',createdAt:'2026-10-01T00:00:00Z',startedAt:'2026-10-01T00:00:00Z',finishedAt:undefined};
+ const sidebarJobs={
+  'stale-sidebar':[{...sidebarBase,id:'stale-run',chatId:'stale-sidebar',status:'completed',finishedAt:at('14')}],
+  'real-sidebar':[{...sidebarBase,id:'real-run',chatId:'real-sidebar'}],
+  'removed-sidebar':[],
+  'queued-sidebar':[{...sidebarBase,id:'queued-run',chatId:'queued-sidebar',status:'queued'}]
+ };
+ const sidebarTitles={'stale-sidebar':'Finished old worker','real-sidebar':'Genuine long worker','removed-sidebar':'Removed old worker','queued-sidebar':'Genuine queue'};
+ const cache=Object.fromEntries(Object.keys(sidebarJobs).map(id=>[id,[{...sidebarBase,id:id==='stale-sidebar'?'stale-run':id==='real-sidebar'?'real-run':id==='removed-sidebar'?'removed-run':'queued-run',chatId:id,status:id==='queued-sidebar'?'queued':'running'}]]));
+ await page.addInitScript(cache=>{if(!localStorage.getItem('sidebar-qc-seeded')){localStorage.setItem('active-jobs-cache-v1',JSON.stringify(cache));localStorage.setItem('sidebar-qc-seeded','true');}},cache);
+ const sidebarReads=new Set();
  let capacityRetry=null;
  const jobs=()=>capacityRetry?[capacityRetry,job]:[job];
  const messages=[
@@ -45,7 +56,8 @@ try {
   const pathname=new URL(route.request().url()).pathname;
   let body={ok:true};
   if(pathname==='/api/state')body={access:{mode:'full'},bridge:{mode:'simulation',targetTitle:'Fixture',controlEnabled:false,platform:'win32'},server:{name:'QC ONLY',uptimeSeconds:1},runner:{mode:'simulation',settings,settingsOptions:{models:['gpt-6.1-sol'],reasoningEfforts:['medium'],speeds:['default']},activeJobs:0,queuedJobs:capacityRetry?1:0,recentJobs:jobs(),usage:null},recentEvents:[]};
-  else if(pathname==='/api/chats')body={projects:[{projectName:summary.projectName,projectPath:summary.projectPath,chats:[summary]}],activeRuns:[]};
+  else if(pathname==='/api/chats')body={projects:[{projectName:summary.projectName,projectPath:summary.projectPath,chats:[summary,...Object.entries(sidebarTitles).map(([id,title])=>({...summary,id,title}))]}],activeRuns:[]};
+  else if(/^\/api\/chats\/[^/]+\/jobs$/.test(pathname)&&Object.hasOwn(sidebarJobs,pathname.split('/')[3])){const id=pathname.split('/')[3];sidebarReads.add(id);body={jobs:sidebarJobs[id]};}
   else if(pathname.endsWith('/jobs'))body={jobs:jobs(),activeJobs:0,queuedJobs:capacityRetry?1:0};
   else if(pathname==='/api/chats/status-fixture')body={...summary,messages,lastPrompt:messages[1],lastResponse:messages[3],messagePage:{hasMore:false,visibleTurns:2,totalTurns:2}};
   else if(pathname==='/api/chats/activity')body={activeRuns:[]};
@@ -58,6 +70,12 @@ try {
  assert.equal(await page.locator('.chat-workspace').getAttribute('data-composer-overlap'),'true','real App mounts the mobile composer observer after authentication');
  assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
  await page.getByRole('button',{name:'Open menu',exact:true}).click();
+ await page.waitForFunction(()=>{const cache=JSON.parse(localStorage.getItem('active-jobs-cache-v1')||'{}');return !cache['stale-sidebar']&&!cache['removed-sidebar']&&cache['real-sidebar']?.[0]?.activityUnverified===false;});
+ assert.equal(sidebarReads.size,4,'all cached active chats are revalidated without selecting them');
+ assert.equal(await page.getByRole('button',{name:/Finished old worker/}).locator('.chat-active-indicator').count(),0);
+ assert.equal(await page.getByRole('button',{name:/Removed old worker/}).locator('.chat-active-indicator').count(),0);
+ assert.equal(await page.getByRole('button',{name:/Genuine long worker/}).locator('.chat-active-indicator.is-running').count(),1,'a genuinely long-running worker remains visible');
+ assert.equal(await page.getByRole('button',{name:/Genuine queue/}).locator('.chat-active-indicator').count(),1);
  await page.getByText('Appearance',{exact:true}).click();
  const showInstructions=page.getByRole('checkbox',{name:'Show injected instructions',exact:true});
  assert.equal(await showInstructions.isChecked(),false);
@@ -99,6 +117,10 @@ try {
  await page.clock.fastForward(300000);
  assert.equal(await page.locator('.queue-actions time').textContent(),'Capacity retry ready');
  console.log('PASS: mobile capacity queue and banner count down without an active worker and never claim a queued retry is running.');
+ sidebarJobs['real-sidebar']=[];sidebarJobs['queued-sidebar']=[];
+ await page.clock.fastForward(31000);
+ await page.waitForFunction(()=>{const c=JSON.parse(localStorage.getItem('active-jobs-cache-v1')||'{}');return !c['real-sidebar']&&!c['queued-sidebar'];});
+ console.log('PASS: cached 100+ hour ghosts clear automatically; genuine old workers/queues survive validation; missed completions clear on background refresh without selecting chats or cancelling work.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);
