@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { ParsedFileCache } from "./parsedFileCache.js";
+import { compressedSessionRows, materializeSession } from "./sessionArchive.js";
 import { stripRemotePromptContext } from "./remotePromptContext.js";
 import { splitNotificationMetadata } from "../shared/notificationCopy.js";
 import { splitConfirmationMetadata } from "../shared/confirmation.js";
@@ -11,7 +12,7 @@ import type { ChatDetail, ChatMessageExcerpt, ChatMessageViewMode, ChatProjectGr
 
 const sessionsRoot = process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");
 const sessionIndexPath = process.env.CODEX_SESSION_INDEX ?? path.join(os.homedir(), ".codex", "session_index.jsonl");
-const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? 300);
+const maxSessionFiles = Number(process.env.CODEX_MAX_SESSION_FILES ?? Infinity);
 const cacheMs = Number(process.env.CODEX_SESSION_CACHE_MS ?? 5000);
 const tailBytes = Number(process.env.CODEX_SESSION_TAIL_BYTES ?? 4 * 1024 * 1024);
 const summaryTailBytes = Number(process.env.CODEX_SESSION_SUMMARY_TAIL_BYTES ?? 768 * 1024);
@@ -285,7 +286,10 @@ async function collectJsonlFiles(root: string): Promise<string[]> {
 export async function findSessionFile(id: string): Promise<string | null> {
   const files = await collectJsonlFiles(sessionsRoot);
 
-  return files.find((filePath) => idFromFilename(filePath) === id) ?? null;
+  const plain = files.find((filePath) => idFromFilename(filePath) === id);
+  if (plain) return plain;
+  const archived = compressedSessionRows(sessionsRoot).find(row => row.id === id);
+  return archived ? materializeSession(archived.rollout_path) : null;
 }
 
 export function getSessionsRoot(): string {
@@ -1125,9 +1129,19 @@ export async function listChats(): Promise<{ projects: ChatProjectGroup[]; total
   }
 
   const groups = new Map<string, ChatProjectGroup & { sortTime: number }>();
+  const summaries = sessions.map(toSummary);
+  const knownIds = new Set(summaries.map(s => s.id));
+  for (const row of compressedSessionRows(sessionsRoot)) {
+    if (knownIds.has(row.id)) continue;
+    const createdAt = new Date(row.created_at * 1000).toISOString();
+    const updatedAt = new Date(row.updated_at * 1000).toISOString();
+    summaries.push({id:row.id,title:row.title || "Untitled chat",projectName:projectNameFromPath(row.cwd),projectPath:row.cwd,createdAt,updatedAt,lastPromptPreview:previewText(row.first_user_message ?? "", "No prompt yet"),lastResponsePreview:"",hasResponse:false});
+    knownIds.add(row.id);
+  }
+  summaries.sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 
-  for (const session of sessions) {
-    const summary = toSummary(session);
+  for (const summary of summaries) {
+    const session = {...summary, sortTime:Date.parse(summary.updatedAt)};
     const existing = groups.get(session.projectPath);
 
     if (existing) {
@@ -1150,7 +1164,7 @@ export async function listChats(): Promise<{ projects: ChatProjectGroup[]; total
     projects: [...groups.values()]
       .sort((a, b) => b.sortTime - a.sortTime)
       .map(({ sortTime: _sortTime, ...group }) => group),
-    totalChats: sessions.length
+    totalChats: summaries.length
   };
 }
 

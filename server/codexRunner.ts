@@ -17,6 +17,7 @@ import { taskNotificationSummary } from "../shared/notificationCopy.js";
 import { isQueueOrder, sameQueueOrder } from "../shared/queueOrder.js";
 import { resolveCodexCliPath } from "./codexCli.js";
 import { CodexAppServerSession, CodexRpcError } from "./codexAppServer.js";
+import { restoreCompressedChat } from "./sessionArchive.js";
 import { stripRemotePromptContext, type PromptInputSource, type RemoteSkillContext } from "./remotePromptContext.js";
 import type { CodexRunJob, CodexRunSettings, CodexTranscriptStatus, UploadedPromptFile } from "./types.js";
 
@@ -763,6 +764,7 @@ export class CodexRunner {
       return;
     }
 
+    await restoreCompressedChat(job.chatId);
     await new Promise<void>((resolve) => {
       const stdout = new DiagnosticLog(job.logPaths.stdout);
       const stderr = new DiagnosticLog(job.logPaths.stderr);

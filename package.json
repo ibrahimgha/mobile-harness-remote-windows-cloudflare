@@ -33,7 +33,7 @@
     "check:chat-drafts": "tsx scripts/check-chat-drafts.ts",
     "check:live-thinking": "tsx scripts/check-live-thinking.ts",
     "check:notification-copy": "tsx scripts/check-notification-copy.ts",
-    "check:subagent-filter": "tsx scripts/check-subagent-filter.ts",
+    "check:subagent-filter": "tsx scripts/check-subagent-filter.ts && tsx scripts/check-session-archive.ts",
     "check:sidebar-order": "tsx scripts/check-sidebar-order.ts && tsx scripts/check-job-activity.ts",
     "check:session-activity": "tsx scripts/check-session-activity.ts && npm run check:storage-efficiency",
     "check:storage-efficiency": "tsx scripts/check-storage-efficiency.ts",
