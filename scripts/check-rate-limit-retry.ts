@@ -1,0 +1,92 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CodexRunner, isExhaustedRateLimitError } from "../server/codexRunner.js";
+import type { CodexRunJob } from "../server/types.js";
+
+type Internals = {
+  queue: Array<{job: CodexRunJob; text: string}>;
+  runningChatIds: Set<string>;
+  emit: (job: CodexRunJob, event: "failed" | "heartbeat") => void;
+  processNext: () => void;
+  runJob: (job: CodexRunJob, text: string) => Promise<void>;
+};
+const root = mkdtempSync(path.join(os.tmpdir(), "rate-limit-retry-"));
+const originalNow = Date.now;
+let now = originalNow();
+Date.now = () => now;
+try {
+  const error = "exceeded retry limit, last status: 429 Too Many Requests";
+  assert.ok(isExhaustedRateLimitError(error));
+  for (const unrelated of ["429 Too Many Requests", "exceeded retry limit, last status: 500 Internal Server Error", "Model not supported"]) {
+    assert.equal(isExhaustedRateLimitError(unrelated), false);
+  }
+  const journal = path.join(root, "journal.json");
+  const runner = new CodexRunner({statePath: journal});
+  const internal = runner as unknown as Internals;
+  internal.runningChatIds.add("chat");
+  const settings = {model:"gpt-6.1-sol", reasoningEffort:"medium" as const, speed:"priority" as const, updatedAt:new Date(now).toISOString()};
+  const text = "Original multiline prompt\nwith original attachment path and voice context";
+  const attachments = [{name:"image.png", originalName:"image.png", type:"image/png", size:12, path:path.join(root,"image.png"), relativePath:"uploads/image.png", uploadedAt:new Date(now).toISOString()}];
+  const failed = runner.enqueue({chatId:"chat",projectPath:root,text,promptPreview:"Original multiline prompt",promptHash:"original-hash",textLength:text.length,composerText:"Original multiline prompt",attachments,inputSource:"mixed",settings});
+  internal.queue.splice(0);
+  failed.status="failed"; failed.finishedAt=new Date(now).toISOString(); failed.message=error;
+  internal.emit(failed,"heartbeat");
+  assert.equal(internal.queue.length,0,"nonterminal errors never resend");
+  internal.emit(failed,"failed"); internal.emit(failed,"failed");
+  assert.equal(internal.queue.length,1,"duplicate failure events create exactly one retry");
+  const retry=internal.queue[0];
+  assert.equal(retry.text,text);
+  assert.equal(retry.job.rateLimitRetryOfJobId,failed.id);
+  assert.equal(retry.job.capacityRetryOfJobId,undefined);
+  assert.equal(retry.job.retryFailedAt,failed.finishedAt);
+  assert.equal(Date.parse(retry.job.notBefore!),now+480000);
+  assert.deepEqual(retry.job.settings,settings);
+  assert.deepEqual(retry.job.attachments,attachments);
+  assert.notEqual(retry.job.attachments,attachments);
+  assert.equal(retry.job.composerText,failed.composerText);
+  assert.equal(retry.job.inputSource,"mixed");
+  assert.equal(retry.job.promptHash,"original-hash");
+  const restored = new CodexRunner({statePath:journal});
+  const recovered = restored as unknown as Internals;
+  assert.deepEqual(JSON.parse(JSON.stringify(recovered.queue[0])),JSON.parse(JSON.stringify(retry)),"original prompt, attachments, settings and deadline survive restart");
+  let scannedStart=new Date(Date.parse(failed.finishedAt!)+1).toISOString();
+  const guarded=new CodexRunner({statePath:journal,getExternalActiveRuns:async()=>[{chatId:"chat",startedAt:scannedStart}]});
+  const starts:string[]=[];
+  recovered.runJob=async(job,prompt)=>{starts.push(prompt);job.status="completed";};
+  now+=479999; recovered.processNext();
+  assert.equal(starts.length,0,"never send before eight minutes");
+  now+=1; recovered.processNext();
+  assert.deepEqual(starts,[text]);
+  await new Promise(resolve=>setImmediate(resolve));
+  const guardedInternal=guarded as unknown as Internals;
+  const guardedStarts:string[]=[];
+  guardedInternal.runJob=async(job,prompt)=>{guardedStarts.push(prompt);job.status="completed";};
+  await guarded.refreshExternalActivity(true);
+  assert.equal(guardedStarts.length,0,"genuinely newer writer remains protected");
+  scannedStart=failed.finishedAt!;
+  await guarded.refreshExternalActivity(true);
+  assert.deepEqual(guardedStarts,[text],"stale failed writer cannot strand restored resend");
+  await new Promise(resolve=>setImmediate(resolve));
+  internal.queue.splice(0);
+  retry.job.status="failed"; retry.job.message=error; retry.job.finishedAt=new Date(now).toISOString();
+  internal.emit(retry.job,"failed");
+  assert.equal(internal.queue.length,1);
+  assert.equal(internal.queue[0].text,text,"repeated 429 still resends original prompt");
+  assert.equal(Date.parse(internal.queue[0].job.notBefore!),now+480000);
+  runner.cancelQueuedJob(internal.queue[0].job.id);
+  assert.equal(internal.queue.length,0,"scheduled resend is cancellable");
+  // Exercise processNext's rejection path, where original prompt text used to be deleted before emit.
+  const rejected=new CodexRunner({statePath:null});
+  const rejectedInternal=rejected as unknown as Internals;
+  rejectedInternal.runJob=async()=>{throw new Error(error);};
+  rejected.enqueue({chatId:"rejected",projectPath:root,text,promptPreview:text,promptHash:"rejected",textLength:text.length,settings});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(rejectedInternal.queue[0].text,text);
+  assert.equal(Date.parse(rejectedInternal.queue[0].job.notBefore!),now+480000);
+  console.log("PASS: exhausted 429 exact eight-minute original-prompt retry, provenance/attachments/settings, deduplication, persistence, stale/new writer protection, repeated error, cancellation and rejection path.");
+} finally {
+  Date.now=originalNow;
+  rmSync(root,{recursive:true,force:true});
+}

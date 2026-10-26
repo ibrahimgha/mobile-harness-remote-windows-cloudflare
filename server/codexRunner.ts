@@ -88,6 +88,10 @@ export function isModelCapacityError(message: string): boolean {
   return /selected model is at capacity\b/i.test(message);
 }
 
+export function isExhaustedRateLimitError(message: string): boolean {
+  return /exceeded retry limit\b[\s\S]*last status:\s*429\b[\s\S]*Too Many Requests\b/i.test(message);
+}
+
 type PersistedRunnerItem = {
   job: CodexRunJob;
   text: string;
@@ -397,7 +401,7 @@ export class CodexRunner {
         return ![...this.jobs.values()].some(job => {
           if (job.chatId !== run.chatId) return false;
           const terminalAt = ["completed", "failed", "stopped"].includes(job.status)
-            ? job.finishedAt : job.capacityRetryFailedAt;
+            ? job.finishedAt : job.retryFailedAt ?? job.capacityRetryFailedAt;
           const ended = Date.parse(terminalAt ?? "");
           return Number.isFinite(ended) && ended >= started;
         });
@@ -729,8 +733,8 @@ export class CodexRunner {
           next.job.status = "failed";
           next.job.finishedAt = new Date().toISOString();
           next.job.message = message;
-          this.jobTexts.delete(next.job.id);
           this.emit(next.job, "failed");
+          this.jobTexts.delete(next.job.id);
         })
         .finally(() => {
           this.runningChatIds.delete(next.job.chatId);
@@ -1027,8 +1031,8 @@ export class CodexRunner {
           job.finishedAt = new Date().toISOString();
           job.status = "failed";
           job.message = error instanceof Error ? error.message : "Codex CLI transcript verification failed";
-          this.jobTexts.delete(job.id);
           this.emit(job, "failed");
+          this.jobTexts.delete(job.id);
           resolve();
         });
       });
@@ -1583,27 +1587,36 @@ export class CodexRunner {
   }
 
   private emit(job: CodexRunJob, event: JobEvent, persist = true) {
-    if (event === "failed" && isModelCapacityError(job.message ?? "") &&
-        ![...this.jobs.values()].some((candidate) => candidate.capacityRetryOfJobId === job.id)) {
-      const notBefore = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const rateLimited = isExhaustedRateLimitError(job.message ?? "");
+    const retryText = rateLimited ? this.jobTexts.get(job.id) : "resume";
+    if (event === "failed" && (rateLimited || isModelCapacityError(job.message ?? "")) &&
+        retryText !== undefined &&
+        ![...this.jobs.values()].some((candidate) => candidate.capacityRetryOfJobId === job.id || candidate.rateLimitRetryOfJobId === job.id)) {
+      const notBefore = new Date(Date.now() + (rateLimited ? 8 : 5) * 60 * 1000).toISOString();
       const retry = this.createJob({
         chatId: job.chatId,
         projectPath: job.projectPath,
-        text: "resume",
-        promptPreview: "resume",
-        promptHash: "model-capacity-resume",
-        textLength: 6,
+        text: retryText,
+        promptPreview: rateLimited ? job.promptPreview : "resume",
+        promptHash: rateLimited ? job.promptHash : "model-capacity-resume",
+        textLength: retryText.length,
+        composerText: rateLimited ? job.composerText : undefined,
+        attachments: rateLimited ? job.attachments : undefined,
         settings: job.settings ? { ...job.settings } : undefined,
         kind: "prompt",
         status: "queued",
-        inputSource: "typed",
-        message: `Model at capacity; automatic resume scheduled for ${notBefore}`
+        inputSource: rateLimited ? job.inputSource : "typed",
+        message: rateLimited
+          ? `Rate limit retries exhausted; same prompt scheduled for ${notBefore}`
+          : `Model at capacity; automatic resume scheduled for ${notBefore}`
       });
       retry.notBefore = notBefore;
-      retry.capacityRetryOfJobId = job.id;
-      retry.capacityRetryFailedAt = job.finishedAt ?? new Date().toISOString();
+      if (rateLimited) retry.rateLimitRetryOfJobId = job.id;
+      else retry.capacityRetryOfJobId = job.id;
+      retry.retryFailedAt = job.finishedAt ?? new Date().toISOString();
+      if (!rateLimited) retry.capacityRetryFailedAt = retry.retryFailedAt;
       const firstChatIndex = this.queue.findIndex((item) => item.job.chatId === job.chatId);
-      this.queue.splice(firstChatIndex < 0 ? this.queue.length : firstChatIndex, 0, { job: retry, text: "resume" });
+      this.queue.splice(firstChatIndex < 0 ? this.queue.length : firstChatIndex, 0, { job: retry, text: retryText });
       this.refreshQueuePositions();
       this.emit(retry, "queued");
     }

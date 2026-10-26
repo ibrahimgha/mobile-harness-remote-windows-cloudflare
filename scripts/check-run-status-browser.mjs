@@ -121,6 +121,15 @@ try {
  await page.clock.fastForward(31000);
  await page.waitForFunction(()=>{const c=JSON.parse(localStorage.getItem('active-jobs-cache-v1')||'{}');return !c['real-sidebar']&&!c['queued-sidebar'];});
  console.log('PASS: cached 100+ hour ghosts clear automatically; genuine old workers/queues survive validation; missed completions clear on background refresh without selecting chats or cancelling work.');
+  const rateNow=await page.evaluate(()=>Date.now());
+  capacityRetry={...capacityRetry,id:'rate-retry',capacityRetryOfJobId:undefined,rateLimitRetryOfJobId:'rate-failure',promptPreview:'Original prompt to resend',notBefore:new Date(rateNow+480000).toISOString()};
+  await page.reload({waitUntil:'domcontentloaded'});
+  await page.locator('.command-queue .queue-actions time').waitFor();
+  assert.equal(await page.locator('.queue-actions time').textContent(),'Rate limit retry in 8:00');
+  await page.clock.runFor(2000);
+  assert.equal(await page.locator('.queue-actions time').textContent(),'Rate limit retry in 7:58');
+  assert.equal(await page.locator('.job-strip-label').textContent(),'Rate limit retry in 7:58');
+  console.log('PASS: mobile eight-minute rate-limit countdown ticks in queue and banner without an active worker.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);

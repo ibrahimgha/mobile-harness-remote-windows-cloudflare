@@ -114,6 +114,9 @@ export type CodexRunJob = {
   notBefore?: string;
   capacityRetryOfJobId?: string;
   capacityRetryFailedAt?: string;
+  /** Eight-minute resend of the original prompt after exhausted HTTP 429 retries. */
+  rateLimitRetryOfJobId?: string;
+  retryFailedAt?: string;
   queuePosition?: number;
   createdAt: string;
   promptPreview: string;

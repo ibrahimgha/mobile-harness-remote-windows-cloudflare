@@ -228,6 +228,7 @@ type CodexRunJob = {
   queuePosition?: number;
   notBefore?: string;
   capacityRetryOfJobId?: string;
+  rateLimitRetryOfJobId?: string;
   createdAt: string;
   promptPreview: string;
   textLength: number;
@@ -1168,6 +1169,9 @@ function jobStableSignature(job: CodexRunJob) {
     job.activityUnverified ?? false,
     job.kind ?? "",
     job.queuePosition ?? "",
+    job.notBefore ?? "",
+    job.capacityRetryOfJobId ?? "",
+    job.rateLimitRetryOfJobId ?? "",
     job.createdAt,
     job.promptPreview,
     job.textLength,
@@ -4729,7 +4733,7 @@ export function App() {
   const selectedDisplayJobIsExternal = Boolean(selectedDisplayJob?.id.startsWith("session-run-"));
   const selectedPromptReceipt = promptReceipt?.chatId === selectedChatId ? promptReceipt : null;
   const selectedQueueCount = selectedQueuedServerJobs.length;
-  const hasScheduledCapacityRetry = selectedQueuedServerJobs.some(job => Boolean(job.capacityRetryOfJobId && job.notBefore));
+  const hasScheduledCapacityRetry = selectedQueuedServerJobs.some(job => Boolean((job.capacityRetryOfJobId || job.rateLimitRetryOfJobId) && job.notBefore));
   const selectedMessagePage = selectedChat?.messagePage;
   const selectedCanLoadMoreMessages = Boolean(selectedChatId && selectedMessagePage?.hasMore);
   const runFailureMessages = useMemo<VisibleChatMessage[]>(
@@ -9378,7 +9382,7 @@ export function App() {
                       {job.steeringState ? jobStatusLabel(job) : `#${index + 1}`}
                     </span>
                     <span className="queue-actions">
-                      <time dateTime={job.notBefore ?? job.createdAt} title={job.notBefore ? `Automatic resume scheduled for ${formatDate(job.notBefore)}` : undefined}>
+                      <time dateTime={job.notBefore ?? job.createdAt} title={job.notBefore ? `Automatic ${job.rateLimitRetryOfJobId ? "resend" : "resume"} scheduled for ${formatDate(job.notBefore)}` : undefined}>
                         {capacityRetryStatus(job, durationNow) ?? formatRelative(job.finishedAt ?? job.startedAt ?? job.createdAt)}
                       </time>
                       <button
