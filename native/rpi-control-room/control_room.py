@@ -37,7 +37,7 @@ if cairo is not None:
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, WebKit2  # noqa: E402
 
 
 APP_ID = "com.bit68.CodexControlRoomNative"
@@ -830,9 +830,11 @@ class ControlRoomWindow(Gtk.ApplicationWindow):
         self.tiles: list[BrowserTile] = []
         self.library = [*config.get("dashboards", []), *config.get("machines", [])]
         self.previous_cpu: tuple[int, int] | None = None
+        self.broadcasting_arrow_key = False
         self.set_decorated(False)
         self.set_default_size(1920, 1080)
         self.connect("key-press-event", self.key_pressed)
+        self.connect("key-release-event", self.key_released)
         provider = Gtk.CssProvider()
         provider.load_from_data(css())
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -894,7 +896,7 @@ class ControlRoomWindow(Gtk.ApplicationWindow):
             box.pack_start(row, False, False, 0)
         for title, callback in (
             ("Toggle fullscreen   F11", self.toggle_fullscreen),
-            ("Scroll all tabs to bottom   Ctrl+↓", self.scroll_all_bottom),
+            ("Scroll all tabs to bottom", self.scroll_all_bottom),
             ("Reload all live tabs", self.reload_all),
         ):
             button = Gtk.Button(label=title)
@@ -1067,12 +1069,34 @@ class ControlRoomWindow(Gtk.ApplicationWindow):
         self.status_label.set_text(f"{self.state['columns']}×{self.state['rows']}  ·  {live} LIVE  ·  {dormant} DORMANT  ·  {time.strftime('%H:%M:%S')}")
         return True
 
+    def broadcast_arrow_key(self, event: Gdk.EventKey) -> bool:
+        if self.broadcasting_arrow_key or event.keyval not in (
+            Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Up, Gdk.KEY_Down,
+            Gdk.KEY_KP_Left, Gdk.KEY_KP_Right, Gdk.KEY_KP_Up, Gdk.KEY_KP_Down,
+        ):
+            return False
+        # Use native events so WebKit performs normal scrolling and delivers
+        # trusted keydown/keyup events to page handlers, including modifiers.
+        # Consume the original event to avoid sending it twice to the focused tab.
+        self.broadcasting_arrow_key = True
+        try:
+            for tile in self.tiles:
+                if tile.webview and tile.webview.get_realized():
+                    forwarded = event.copy()
+                    forwarded.window = tile.webview.get_window()
+                    tile.webview.event(forwarded)
+        finally:
+            self.broadcasting_arrow_key = False
+        return True
+
+    def key_released(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        return self.broadcast_arrow_key(event)
+
     def key_pressed(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
-        ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        if self.broadcast_arrow_key(event):
+            return True
         if event.keyval == Gdk.KEY_F11:
             self.toggle_fullscreen(); return True
-        if ctrl and event.keyval == Gdk.KEY_Down:
-            self.scroll_all_bottom(); return True
         return False
 
 
@@ -1094,6 +1118,21 @@ def load_files() -> tuple[dict[str, Any], dict[str, Any]]:
 class App(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id=APP_ID)
+        fullscreen_action = Gio.SimpleAction.new("show-fullscreen", None)
+        fullscreen_action.connect("activate", self.show_fullscreen)
+        self.add_action(fullscreen_action)
+
+    def show_fullscreen(self, _action: Gio.SimpleAction, _parameter: Any) -> None:
+        window = self.get_active_window()
+        if not window:
+            self.activate()
+            window = self.get_active_window()
+        if not isinstance(window, ControlRoomWindow):
+            return
+        window.state["fullscreen"] = True
+        window.save_state()
+        window.fullscreen()
+        window.present()
 
     def do_activate(self) -> None:
         existing = self.get_active_window()
