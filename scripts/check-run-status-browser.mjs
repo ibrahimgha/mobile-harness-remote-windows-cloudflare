@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const require=createRequire(import.meta.url);
-const {chromium}=require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
+const {chromium,webkit}=require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
 const tempBase=fs.existsSync('D:/')?'D:/CodexTemp':os.tmpdir();
 fs.mkdirSync(tempBase,{recursive:true});
 const scratch=fs.mkdtempSync(path.join(tempBase,'codex-run-status-'));
@@ -15,7 +15,7 @@ await server.listen();
 console.log('Isolated App server ready');
 let browser;
 try {
- browser=await chromium.launch({headless:true});
+ browser=await (process.argv.includes('--webkit')?webkit:chromium).launch({headless:true});
  console.log('Isolated browser ready');
  const page=await browser.newPage({viewport:{width:390,height:844}});
  page.on('pageerror',error=>console.log('Fixture page error:',error.message));
@@ -94,6 +94,7 @@ try {
  await page.getByText('Newest reply',{exact:true}).waitFor();
  assert.equal(await page.locator('.chat-content').getByText('Injected policy fixture',{exact:true}).count(),0);
  for(let refresh=0;refresh<3;refresh++){
+  await page.locator('.chat-content').getByText('Stopped from the remote for this chat',{exact:true}).waitFor();
   const text=await page.locator('.chat-content').innerText();
   assert.ok(text.indexOf('Stopped from the remote')<text.indexOf('Newer reply'));
   assert.ok(text.indexOf('Newer reply')<text.indexOf('Newest reply'));
@@ -130,6 +131,23 @@ try {
   assert.equal(await page.locator('.queue-actions time').textContent(),'Rate limit retry in 7:58');
   assert.equal(await page.locator('.job-strip-label').textContent(),'Rate limit retry in 7:58');
   console.log('PASS: mobile eight-minute rate-limit countdown ticks in queue and banner without an active worker.');
+  const editor=page.getByRole('textbox',{name:'New prompt'});
+  await editor.fill('Previously written half prompt');
+  await editor.evaluate(e=>{const s=getSelection(),r=document.createRange();r.selectNodeContents(e);r.collapse(false);s.removeAllRanges();s.addRange(r);});
+  await editor.press('Shift+Enter');await editor.press('Shift+Enter');
+  const beforePaste=await editor.evaluate(async e=>{const m=await import('/src/composerDOM.ts');return {text:m.composerDOMSnapshot(e).text,selection:m.composerDOMSelection(e)};});
+  const expectedPaste=beforePaste.text.slice(0,beforePaste.selection.start)+'PASTED\nsecond line'+beforePaste.text.slice(beforePaste.selection.end);
+  await editor.evaluate(e=>{const data=new DataTransfer();data.setData('text/plain','PASTED\nsecond line');e.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));});
+  assert.equal(await editor.textContent(),expectedPaste);
+  await editor.evaluate(e=>{const s=getSelection(),r=document.createRange();r.setStart(e.firstChild,11);r.setEnd(e.firstChild,18);s.removeAllRanges();s.addRange(r);const data=new DataTransfer();data.setData('text/plain','REPLACED');e.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));});
+  assert.equal(await editor.textContent(),expectedPaste.slice(0,11)+'REPLACED'+expectedPaste.slice(18));
+  const domCases=await page.evaluate(async()=>{
+    const {composerDOMSnapshot,composerDOMSelection}=await import('/src/composerDOM.ts');
+    const cases=[['foo<div><br></div>','foo\n'],['foo<div><br></div><div><br></div>','foo\n\n'],['<div>foo</div><div>bar</div>','foo\nbar'],['foo<br><br>','foo\n'],['foo\n\n','foo\n\n'],['<div>foo</div><div>🙂bar<br></div>','foo\n🙂bar']];
+    return cases.map(([html,expected])=>{const e=document.createElement('div');e.contentEditable='true';e.innerHTML=html;document.body.append(e);const snapshot=composerDOMSnapshot(e);const point=snapshot.pointAt(expected.length);const range=document.createRange();range.setStart(point.node,point.offset);range.collapse(true);getSelection().removeAllRanges();getSelection().addRange(range);const selection=composerDOMSelection(e);e.remove();return {expected,actual:snapshot.text,caret:selection?.end};});
+  });
+  for(const c of domCases){assert.equal(c.actual,c.expected);assert.equal(c.caret,c.expected.length);}
+  console.log('PASS: actual App pastes after native blank lines, replaces an intentional selection, and maps DIV/BR/emoji/trailing-newline carets consistently.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);

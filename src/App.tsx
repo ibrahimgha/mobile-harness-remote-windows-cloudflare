@@ -71,6 +71,7 @@ import { mergeRunStatusTimeline, mergeTranscriptWindow, preserveOptimisticRunSet
 import { isInjectedInstruction, injectedInstructionsPreferenceKey, readInjectedInstructionsPreference } from "./injectedMessages";
 import { capacityRetryStatus } from "./capacityRetry";
 import { installComposerOverlap } from "./composerOverlap";
+import { composerDOMSnapshot, composerDOMSelection } from "./composerDOM";
 import { isConfirmedActiveJob, confirmedActiveJobVersions, activeChatIdsForRevalidation, preferredJobVersion } from "./jobActivity";
 import { isPowerBarTheme, powerBarThemes, powerBarTexture, powerBarTint, usePowerBarTheme, type PowerBarTheme } from "./powerBarThemes";
 import { isVoiceOrbTheme, useVoiceOrbTheme, voiceOrbThemes, type VoiceOrbTheme } from "./voiceOrbThemes";
@@ -1529,10 +1530,7 @@ function composerShouldExpand(element: HTMLElement) {
 }
 
 function rawTextFromComposerEditor(element: HTMLElement) {
-  const customKeyboard = element.dataset.customKeyboard === "true";
-  const source = customKeyboard ? (element.textContent ?? "") : element.innerText;
-  const text = source.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n");
-  return customKeyboard ? text : text.replace(/\n$/, "");
+  return composerDOMSnapshot(element).text;
 }
 
 function syncComposerEditorText(element: HTMLElement, text: string) {
@@ -2398,28 +2396,7 @@ const customKeyboardTapSlopPx = 10;
 const customKeyboardDraftSyncDelayMs = 750;
 
 function browserSelectionInsideComposer(editor: HTMLDivElement) {
-  const editorText = rawTextFromComposerEditor(editor);
-  const selection = window.getSelection();
-  if (!selection?.rangeCount) {
-    return null;
-  }
-
-  const range = selection.getRangeAt(0);
-  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
-    return null;
-  }
-
-  const offsetWithinEditor = (container: Node, offset: number) => {
-    const probe = document.createRange();
-    probe.selectNodeContents(editor);
-    probe.setEnd(container, offset);
-    return probe.toString().length;
-  };
-
-  return normalizeTextSelection(editorText, {
-    start: offsetWithinEditor(range.startContainer, range.startOffset),
-    end: offsetWithinEditor(range.endContainer, range.endOffset)
-  });
+  return composerDOMSelection(editor);
 }
 
 function selectionInsideComposer(editor: HTMLDivElement, fallback: TextSelection) {
@@ -2474,14 +2451,11 @@ function restoreComposerSelection(editor: HTMLDivElement, text: string, selectio
   }
 
   const range = document.createRange();
-  const textNode = editor.firstChild;
-  if (textNode?.nodeType === Node.TEXT_NODE) {
-    range.setStart(textNode, normalized.start);
-    range.setEnd(textNode, normalized.end);
-  } else {
-    range.selectNodeContents(editor);
-    range.collapse(true);
-  }
+  const snapshot = composerDOMSnapshot(editor);
+  const start = snapshot.pointAt(normalized.start);
+  const end = snapshot.pointAt(normalized.end);
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
 
   browserSelection.removeAllRanges();
   browserSelection.addRange(range);
