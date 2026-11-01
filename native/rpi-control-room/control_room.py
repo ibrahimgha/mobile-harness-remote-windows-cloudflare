@@ -331,7 +331,7 @@ class BrowserTile(Gtk.Box):
         self.position = position
         self.webview: WebKit2.WebView | None = None
         self.tracker_body: TrackerBody | None = None
-        self.browser_stack: Gtk.Stack | None = None
+        self.connection_notice: Gtk.Box | None = None
         self.connection_message: Gtk.Label | None = None
         self.connection_retry_timer = 0
         self.connection_retry_attempt = 0
@@ -349,7 +349,7 @@ class BrowserTile(Gtk.Box):
             child.destroy()
         self.webview = None
         self.tracker_body = None
-        self.browser_stack = None
+        self.connection_notice = None
         self.connection_message = None
 
     def render(self) -> None:
@@ -428,8 +428,6 @@ class BrowserTile(Gtk.Box):
         self.webview.connect("permission-request", self.permission_requested)
         self.webview.connect("decide-policy", self.decide_policy)
         self.webview.connect("create", self.new_window_requested)
-        self.browser_stack = Gtk.Stack()
-        self.browser_stack.add_named(self.webview, "browser")
         offline = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         offline.set_halign(Gtk.Align.CENTER)
         offline.set_valign(Gtk.Align.CENTER)
@@ -440,8 +438,12 @@ class BrowserTile(Gtk.Box):
         add_class(retry, "button")
         retry.connect("clicked", lambda *_: self.reload())
         offline.pack_start(retry, False, False, 0)
-        self.browser_stack.add_named(offline, "offline")
-        self.pack_start(self.browser_stack, True, True, 0)
+        offline.show_all()
+        offline.set_no_show_all(True)
+        offline.hide()
+        self.connection_notice = offline
+        self.pack_start(offline, True, True, 0)
+        self.pack_start(self.webview, True, True, 0)
         self.webview.load_uri(self.runtime_url(self.tile["url"]))
 
     def render_tracker(self) -> None:
@@ -715,8 +717,10 @@ class BrowserTile(Gtk.Box):
             )
             if self.connection_message:
                 self.connection_message.set_text(f"Connection unavailable. Retrying in {delay}s.")
-            if self.browser_stack:
-                self.browser_stack.set_visible_child_name("offline")
+            if self.connection_notice:
+                self.connection_notice.show()
+            if self.webview:
+                self.webview.hide()
             print(f"connection retry scheduled for {self.tile['id']} in {delay}s", flush=True)
 
     def retry_dead_connection(self) -> bool:
@@ -751,8 +755,9 @@ class BrowserTile(Gtk.Box):
             return
         self.cancel_connection_retry()
         self.connection_retry_attempt = 0
-        if self.browser_stack:
-            self.browser_stack.set_visible_child_name("browser")
+        if self.connection_notice:
+            self.connection_notice.hide()
+        webview.show()
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
         if not item:
             return

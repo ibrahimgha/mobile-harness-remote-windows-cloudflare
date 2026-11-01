@@ -71,13 +71,13 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
     wait_for(lambda: bool(failures))
     assert failures[0].domain == "g-io-error-quark", failures[0]
     assert tile.connection_retry_timer, "GIO connection failure must schedule an automatic retry"
-    assert tile.browser_stack.get_visible_child_name() == "offline"
+    assert tile.connection_notice.get_visible()
     assert tile.tile["url"] == url
     server = ThreadingHTTPServer(("127.0.0.1", port), Page)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         wait_for(lambda: tile.webview.get_title() == "Recovered dashboard" and not tile.webview.is_loading())
-        assert tile.browser_stack.get_visible_child_name() == "browser"
+        assert not tile.connection_notice.get_visible()
         assert not tile.connection_retry_timer
         assert tile.connection_retry_attempt == 0
         # Server errors must continue retrying beyond the initial retry sequence.
@@ -85,17 +85,17 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
         start = Page.requests
         tile.reload()
         wait_for(lambda: Page.requests >= start + 5 and bool(tile.connection_retry_timer))
-        assert tile.browser_stack.get_visible_child_name() == "offline"
+        assert tile.connection_notice.get_visible()
         Page.status = 200
         wait_for(lambda: not tile.navigation_failed and not tile.webview.is_loading() and not tile.connection_retry_timer)
-        assert tile.browser_stack.get_visible_child_name() == "browser"
+        assert not tile.connection_notice.get_visible()
         # No-route-to-host is the same GIO family as the real refused connection.
         error = GLib.Error.new_literal(Gio.io_error_quark(), "No route to host", Gio.IOErrorEnum.HOST_UNREACHABLE)
         assert tile.load_failed(tile.webview, room.WebKit2.LoadEvent.STARTED, url, error)
         assert tile.connection_retry_timer
         tile.reload()  # Manual retry restores the configured URL, not an error page.
         wait_for(lambda: not tile.webview.is_loading() and not tile.connection_retry_timer)
-        assert tile.browser_stack.get_visible_child_name() == "browser"
+        assert not tile.connection_notice.get_visible()
         cancelled = GLib.Error.new_literal(Gio.io_error_quark(), "Cancelled", Gio.IOErrorEnum.CANCELLED)
         assert not tile.load_failed(tile.webview, room.WebKit2.LoadEvent.STARTED, url, cancelled)
         assert not tile.connection_retry_timer
