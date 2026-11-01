@@ -47,7 +47,7 @@ STATE_PATH = Path(os.environ.get("CODEX_CONTROL_ROOM_STATE", BASE / "state.json"
 DATA_PATH = Path.home() / ".local/share/codex-control-room-native"
 DEFAULT_COLUMNS = 5
 DEFAULT_ROWS = 3
-CONNECTION_RETRY_SECONDS = max(1, int(os.environ.get("CODEX_CONTROL_ROOM_RETRY_SECONDS", "900")))
+CONNECTION_RETRY_SECONDS = max(1, int(os.environ.get("CODEX_CONTROL_ROOM_RETRY_SECONDS", "60")))
 QUICK_CONNECTION_RETRY_SECONDS = (5, 15, 60)
 CONTROL_ROOM_QUERY_KEYS = frozenset(("control-room-tile", "control-room-slot", "control-room-origin", "control-room-view", "control-room-start"))
 
@@ -331,6 +331,8 @@ class BrowserTile(Gtk.Box):
         self.position = position
         self.webview: WebKit2.WebView | None = None
         self.tracker_body: TrackerBody | None = None
+        self.browser_stack: Gtk.Stack | None = None
+        self.connection_message: Gtk.Label | None = None
         self.connection_retry_timer = 0
         self.connection_retry_attempt = 0
         self.navigation_failed = False
@@ -347,6 +349,8 @@ class BrowserTile(Gtk.Box):
             child.destroy()
         self.webview = None
         self.tracker_body = None
+        self.browser_stack = None
+        self.connection_message = None
 
     def render(self) -> None:
         self.clear()
@@ -424,7 +428,20 @@ class BrowserTile(Gtk.Box):
         self.webview.connect("permission-request", self.permission_requested)
         self.webview.connect("decide-policy", self.decide_policy)
         self.webview.connect("create", self.new_window_requested)
-        self.pack_start(self.webview, True, True, 0)
+        self.browser_stack = Gtk.Stack()
+        self.browser_stack.add_named(self.webview, "browser")
+        offline = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        offline.set_halign(Gtk.Align.CENTER)
+        offline.set_valign(Gtk.Align.CENTER)
+        offline.pack_start(text_label("Reconnecting…", "state-title"), False, False, 0)
+        self.connection_message = text_label("", "empty-copy")
+        offline.pack_start(self.connection_message, False, False, 0)
+        retry = Gtk.Button(label="Retry now")
+        add_class(retry, "button")
+        retry.connect("clicked", lambda *_: self.reload())
+        offline.pack_start(retry, False, False, 0)
+        self.browser_stack.add_named(offline, "offline")
+        self.pack_start(self.browser_stack, True, True, 0)
         self.webview.load_uri(self.runtime_url(self.tile["url"]))
 
     def render_tracker(self) -> None:
@@ -681,7 +698,7 @@ class BrowserTile(Gtk.Box):
             self.cancel_connection_retry()
             self.connection_retry_attempt = 0
             self.navigation_failed = False
-            self.webview.reload()
+            self.webview.load_uri(self.runtime_url(self.tile["url"]))
         elif self.tracker_body:
             self.tracker_body.refresh()
 
@@ -696,6 +713,10 @@ class BrowserTile(Gtk.Box):
             self.connection_retry_timer = GLib.timeout_add_seconds(
                 delay, self.retry_dead_connection
             )
+            if self.connection_message:
+                self.connection_message.set_text(f"Connection unavailable. Retrying in {delay}s.")
+            if self.browser_stack:
+                self.browser_stack.set_visible_child_name("offline")
             print(f"connection retry scheduled for {self.tile['id']} in {delay}s", flush=True)
 
     def retry_dead_connection(self) -> bool:
@@ -706,7 +727,7 @@ class BrowserTile(Gtk.Box):
         self.connection_retry_attempt += 1
         self.navigation_failed = False
         print(f"retrying failed connection for {self.tile['id']}", flush=True)
-        self.webview.reload()
+        self.webview.load_uri(self.runtime_url(self.tile["url"]))
         return GLib.SOURCE_REMOVE
 
     def title_changed(self, webview: WebKit2.WebView, _param: Any) -> None:
@@ -730,6 +751,8 @@ class BrowserTile(Gtk.Box):
             return
         self.cancel_connection_retry()
         self.connection_retry_attempt = 0
+        if self.browser_stack:
+            self.browser_stack.set_visible_child_name("browser")
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
         if not item:
             return
@@ -765,10 +788,16 @@ class BrowserTile(Gtk.Box):
     ) -> bool:
         if error.matches(WebKit2.network_error_quark(), WebKit2.NetworkError.CANCELLED):
             return False
-        if error.domain == GLib.quark_to_string(WebKit2.network_error_quark()):
-            self.navigation_failed = True
-            self.schedule_connection_retry()
-        return False
+        if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+            return False
+        # Soup also reports DNS/route/refused-connection failures as GIO errors,
+        # not WebKitNetworkError. Recover every non-cancelled failed navigation.
+        self.navigation_failed = True
+        print(f"navigation failed for {self.tile['id']}: {error.domain}/{error.code}: {error.message}", flush=True)
+        self.schedule_connection_retry()
+        # Suppress WebKit's white error document: it otherwise emits another
+        # FINISHED event and can be mistaken for a successful navigation.
+        return True
 
     def permission_requested(self, webview: WebKit2.WebView, request: Any) -> bool:
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
