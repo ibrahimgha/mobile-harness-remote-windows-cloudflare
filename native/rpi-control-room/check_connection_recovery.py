@@ -33,13 +33,28 @@ def wait_for(predicate, timeout=10):
 class Page(BaseHTTPRequestHandler):
     status = 200
     requests = 0
+    mode = "normal"
+    slow_started = threading.Event()
+    slow_release = threading.Event()
 
     def do_GET(self):
         Page.requests += 1
-        self.send_response(Page.status)
+        if self.path == "/slow-image":
+            Page.slow_started.set()
+            Page.slow_release.wait(10)
+        self.send_response(503 if self.path == "/broken-frame" else Page.status)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
-        self.wfile.write(b"<html><title>Recovered dashboard</title><body>Online</body></html>")
+        body = b"<html><title>Recovered dashboard</title><body>Online</body></html>"
+        if self.path == "/dashboard" and Page.mode == "iframe":
+            body += b'<iframe src="/broken-frame"></iframe>'
+        if self.path == "/dashboard" and Page.mode == "slow":
+            body += b'<img src="/slow-image">'
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The hung-resource test deliberately cancels this connection.
+            pass
 
     def log_message(self, *_args):
         pass
@@ -80,6 +95,33 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
         assert not tile.connection_notice.get_visible()
         assert not tile.connection_retry_timer
         assert tile.connection_retry_attempt == 0
+        # A failed subframe must not hide a healthy main dashboard.
+        Page.mode = "iframe"
+        tile.reload()
+        wait_for(lambda: not tile.webview.is_loading())
+        assert not tile.navigation_failed and not tile.connection_retry_timer
+        assert not tile.connection_notice.get_visible()
+        # Recovery becomes visible on main-document commit, even if an image hangs.
+        Page.mode = "slow"
+        room.PAGE_LOAD_TIMEOUT_SECONDS = 1
+        route_error = GLib.Error.new_literal(Gio.io_error_quark(), "No route to host", Gio.IOErrorEnum.HOST_UNREACHABLE)
+        tile.load_failed(tile.webview, room.WebKit2.LoadEvent.STARTED, url, route_error)
+        tile.reload()
+        wait_for(Page.slow_started.is_set)
+        wait_for(lambda: not tile.connection_notice.get_visible())
+        assert tile.webview.is_loading()
+        wait_for(lambda: bool(tile.connection_retry_timer))
+        assert tile.connection_error == "Page load timed out"
+        Page.mode = "normal"
+        Page.slow_release.set()
+        room.PAGE_LOAD_TIMEOUT_SECONDS = 30
+        wait_for(lambda: not tile.navigation_failed and not tile.webview.is_loading() and not tile.connection_retry_timer)
+        assert not tile.connection_notice.get_visible()
+        # A renderer crash must restart automatically, too.
+        tile.webview.terminate_web_process()
+        wait_for(lambda: bool(tile.connection_retry_timer))
+        wait_for(lambda: not tile.navigation_failed and not tile.webview.is_loading() and not tile.connection_retry_timer)
+        assert not tile.connection_notice.get_visible()
         # Server errors must continue retrying beyond the initial retry sequence.
         Page.status = 503
         start = Page.requests
@@ -102,8 +144,10 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
         tile.load_failed(tile.webview, room.WebKit2.LoadEvent.STARTED, url, error)
         tile.display_off()
         assert not tile.connection_retry_timer and tile.webview is None
-        print("PASS: real GIO failure, automatic recovery, repeated HTTP 503, route error, manual retry, cancellation, display off")
+        assert not tile.load_timeout_timer
+        print("PASS: GIO recovery, subframe isolation, hung resource timeout, renderer restart, repeated HTTP 503, manual retry, cancellation, display off")
     finally:
         window.destroy()
+        Page.slow_release.set()
         server.shutdown()
         server.server_close()
