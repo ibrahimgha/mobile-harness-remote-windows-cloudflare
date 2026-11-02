@@ -334,6 +334,8 @@ class BrowserTile(Gtk.Box):
         self.tracker_body: TrackerBody | None = None
         self.connection_notice: Gtk.Box | None = None
         self.connection_message: Gtk.Label | None = None
+        self.page_title_label: Gtk.Label | None = None
+        self.source_combo: Gtk.ComboBoxText | None = None
         self.connection_retry_timer = 0
         self.connection_retry_attempt = 0
         self.load_timeout_timer = 0
@@ -355,6 +357,8 @@ class BrowserTile(Gtk.Box):
         self.tracker_body = None
         self.connection_notice = None
         self.connection_message = None
+        self.page_title_label = None
+        self.source_combo = None
 
     def render(self) -> None:
         self.clear()
@@ -377,6 +381,7 @@ class BrowserTile(Gtk.Box):
         bar.pack_start(text_label(f"{self.position:02d}", "tab-index"), False, False, 0)
         current_item = self.window.item_by_id(self.tile.get("libraryId", ""))
         source = Gtk.ComboBoxText()
+        self.source_combo = source
         for renderer in source.get_cells():
             renderer.set_property("ellipsize", 3)
             renderer.set_property("width-chars", 16)
@@ -390,7 +395,8 @@ class BrowserTile(Gtk.Box):
         source.connect("changed", self.source_changed)
         bar.pack_start(source, False, False, 0)
         title = self.tile.get("title") or self.window.name_for_url(self.tile.get("url", ""))
-        bar.pack_start(text_label(title, "page-title"), True, True, 0)
+        self.page_title_label = text_label(title, "page-title")
+        bar.pack_start(self.page_title_label, True, True, 0)
         is_machine = bool(current_item and current_item.get("type") == "machine")
         status = "FROZEN" if self.tile.get("mode") == "frozen" else "LIVE" if is_machine else "DASHBOARD" if current_item else "WEBSITE"
         bar.pack_start(text_label(f"● {status}", "tile-status", xalign=1.0), False, False, 0)
@@ -775,6 +781,17 @@ class BrowserTile(Gtk.Box):
         if self.navigation_failed:
             return
         title = webview.get_title() or ""
+        if title and self.page_title_label:
+            self.page_title_label.set_text(title)
+        if title and self.source_combo and self.source_combo.get_active_id() == "__custom__":
+            if self.source_combo.get_active_text() != title:
+                self.source_combo.handler_block_by_func(self.source_changed)
+                try:
+                    self.source_combo.remove(0)
+                    self.source_combo.prepend("__custom__", title)
+                    self.source_combo.set_active_id("__custom__")
+                finally:
+                    self.source_combo.handler_unblock_by_func(self.source_changed)
         if title and title != self.tile.get("title"):
             self.tile["title"] = title
             self.window.queue_save()

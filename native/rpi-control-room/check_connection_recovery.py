@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
     state = room.blank_state(1, 1)
     state["fullscreen"] = False
     url = f"http://127.0.0.1:{port}/dashboard"
-    state["tiles"][0].update(mode="browser", url=url)
+    state["tiles"][0].update(mode="browser", url=url, title="Cloudflare Tunnel error")
     app = Gtk.Application(application_id="com.bit68.ControlRoomRecoveryTest")
     app.register(None)
     failures = []
@@ -80,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
         return original_load_failed(self, webview, event, uri, error)
 
     room.BrowserTile.load_failed = record_failure
-    window = room.ControlRoomWindow(app, {"version": 2}, state)
+    config = {"version": 2, "dashboards": [{"id": "other", "type": "dashboard", "name": "Other dashboard", "url": url + "/other"}]}
+    window = room.ControlRoomWindow(app, config, state)
     window.show_all()
     tile = window.tiles[0]
     wait_for(lambda: bool(failures))
@@ -95,6 +96,9 @@ with tempfile.TemporaryDirectory(prefix="control-room-recovery-") as temporary:
         assert not tile.connection_notice.get_visible()
         assert not tile.connection_retry_timer
         assert tile.connection_retry_attempt == 0
+        assert tile.page_title_label.get_text() == "Recovered dashboard"
+        assert tile.source_combo.get_active_text() == "Recovered dashboard"
+        assert not tile.tile.get("libraryId") and tile.tile["url"] == url
         # A failed subframe must not hide a healthy main dashboard.
         Page.mode = "iframe"
         tile.reload()
