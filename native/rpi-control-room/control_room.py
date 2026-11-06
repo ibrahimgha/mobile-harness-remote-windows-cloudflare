@@ -47,8 +47,9 @@ STATE_PATH = Path(os.environ.get("CODEX_CONTROL_ROOM_STATE", BASE / "state.json"
 DATA_PATH = Path.home() / ".local/share/codex-control-room-native"
 DEFAULT_COLUMNS = 5
 DEFAULT_ROWS = 3
-CONNECTION_RETRY_SECONDS = max(1, int(os.environ.get("CODEX_CONTROL_ROOM_RETRY_SECONDS", "900")))
+CONNECTION_RETRY_SECONDS = max(1, int(os.environ.get("CODEX_CONTROL_ROOM_RETRY_SECONDS", "60")))
 QUICK_CONNECTION_RETRY_SECONDS = (5, 15, 60)
+PAGE_LOAD_TIMEOUT_SECONDS = max(5, int(os.environ.get("CODEX_CONTROL_ROOM_LOAD_TIMEOUT_SECONDS", "30")))
 CONTROL_ROOM_QUERY_KEYS = frozenset(("control-room-tile", "control-room-slot", "control-room-origin", "control-room-view", "control-room-start"))
 
 
@@ -331,8 +332,14 @@ class BrowserTile(Gtk.Box):
         self.position = position
         self.webview: WebKit2.WebView | None = None
         self.tracker_body: TrackerBody | None = None
+        self.connection_notice: Gtk.Box | None = None
+        self.connection_message: Gtk.Label | None = None
+        self.page_title_label: Gtk.Label | None = None
+        self.source_combo: Gtk.ComboBoxText | None = None
         self.connection_retry_timer = 0
         self.connection_retry_attempt = 0
+        self.load_timeout_timer = 0
+        self.connection_error = "Connection unavailable"
         self.navigation_failed = False
         self.frozen_path = DATA_PATH / "frozen" / f"{tile['id']}.png"
         add_class(self, "tile")
@@ -340,6 +347,7 @@ class BrowserTile(Gtk.Box):
 
     def clear(self) -> None:
         self.cancel_connection_retry()
+        self.cancel_load_timeout()
         self.connection_retry_attempt = 0
         self.navigation_failed = False
         for child in self.get_children():
@@ -347,6 +355,10 @@ class BrowserTile(Gtk.Box):
             child.destroy()
         self.webview = None
         self.tracker_body = None
+        self.connection_notice = None
+        self.connection_message = None
+        self.page_title_label = None
+        self.source_combo = None
 
     def render(self) -> None:
         self.clear()
@@ -369,6 +381,11 @@ class BrowserTile(Gtk.Box):
         bar.pack_start(text_label(f"{self.position:02d}", "tab-index"), False, False, 0)
         current_item = self.window.item_by_id(self.tile.get("libraryId", ""))
         source = Gtk.ComboBoxText()
+        self.source_combo = source
+        for renderer in source.get_cells():
+            renderer.set_property("ellipsize", 3)
+            renderer.set_property("width-chars", 16)
+            renderer.set_property("max-width-chars", 20)
         add_class(source, "source-select")
         if not current_item:
             source.append("__custom__", self.tile.get("title") or self.window.name_for_url(self.tile.get("url", "")))
@@ -378,7 +395,8 @@ class BrowserTile(Gtk.Box):
         source.connect("changed", self.source_changed)
         bar.pack_start(source, False, False, 0)
         title = self.tile.get("title") or self.window.name_for_url(self.tile.get("url", ""))
-        bar.pack_start(text_label(title, "page-title"), True, True, 0)
+        self.page_title_label = text_label(title, "page-title")
+        bar.pack_start(self.page_title_label, True, True, 0)
         is_machine = bool(current_item and current_item.get("type") == "machine")
         status = "FROZEN" if self.tile.get("mode") == "frozen" else "LIVE" if is_machine else "DASHBOARD" if current_item else "WEBSITE"
         bar.pack_start(text_label(f"● {status}", "tile-status", xalign=1.0), False, False, 0)
@@ -421,9 +439,25 @@ class BrowserTile(Gtk.Box):
         self.webview.connect("notify::uri", self.uri_changed)
         self.webview.connect("load-changed", self.load_changed)
         self.webview.connect("load-failed", self.load_failed)
+        self.webview.connect("web-process-terminated", self.web_process_terminated)
         self.webview.connect("permission-request", self.permission_requested)
         self.webview.connect("decide-policy", self.decide_policy)
         self.webview.connect("create", self.new_window_requested)
+        offline = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        offline.set_halign(Gtk.Align.CENTER)
+        offline.set_valign(Gtk.Align.CENTER)
+        offline.pack_start(text_label("Reconnecting…", "state-title"), False, False, 0)
+        self.connection_message = text_label("", "empty-copy")
+        offline.pack_start(self.connection_message, False, False, 0)
+        retry = Gtk.Button(label="Retry now")
+        add_class(retry, "button")
+        retry.connect("clicked", lambda *_: self.reload())
+        offline.pack_start(retry, False, False, 0)
+        offline.show_all()
+        offline.set_no_show_all(True)
+        offline.hide()
+        self.connection_notice = offline
+        self.pack_start(offline, True, True, 0)
         self.pack_start(self.webview, True, True, 0)
         self.webview.load_uri(self.runtime_url(self.tile["url"]))
 
@@ -681,9 +715,37 @@ class BrowserTile(Gtk.Box):
             self.cancel_connection_retry()
             self.connection_retry_attempt = 0
             self.navigation_failed = False
-            self.webview.reload()
+            self.reload_browser()
         elif self.tracker_body:
             self.tracker_body.refresh()
+
+    def reload_browser(self) -> None:
+        target = self.runtime_url(self.tile["url"])
+        if self.webview.get_uri() == target:
+            self.webview.reload_bypass_cache()
+        else:
+            self.webview.load_uri(target)
+
+    def cancel_load_timeout(self) -> None:
+        if self.load_timeout_timer:
+            GLib.source_remove(self.load_timeout_timer)
+            self.load_timeout_timer = 0
+
+    def load_timed_out(self) -> bool:
+        self.load_timeout_timer = 0
+        if self.webview and self.webview.is_loading():
+            self.navigation_failed = True
+            self.connection_error = "Page load timed out"
+            self.webview.stop_loading()
+            self.schedule_connection_retry()
+        return GLib.SOURCE_REMOVE
+
+    def web_process_terminated(self, _webview: WebKit2.WebView, reason: Any) -> None:
+        self.cancel_load_timeout()
+        self.navigation_failed = True
+        self.connection_error = "Browser process stopped"
+        print(f"browser process terminated for {self.tile['id']}: {reason}", flush=True)
+        self.schedule_connection_retry()
 
     def cancel_connection_retry(self) -> None:
         if self.connection_retry_timer:
@@ -696,6 +758,12 @@ class BrowserTile(Gtk.Box):
             self.connection_retry_timer = GLib.timeout_add_seconds(
                 delay, self.retry_dead_connection
             )
+            if self.connection_message:
+                self.connection_message.set_text(f"{self.connection_error}. Retrying in {delay}s.")
+            if self.connection_notice:
+                self.connection_notice.show()
+            if self.webview:
+                self.webview.hide()
             print(f"connection retry scheduled for {self.tile['id']} in {delay}s", flush=True)
 
     def retry_dead_connection(self) -> bool:
@@ -706,11 +774,24 @@ class BrowserTile(Gtk.Box):
         self.connection_retry_attempt += 1
         self.navigation_failed = False
         print(f"retrying failed connection for {self.tile['id']}", flush=True)
-        self.webview.reload()
+        self.reload_browser()
         return GLib.SOURCE_REMOVE
 
     def title_changed(self, webview: WebKit2.WebView, _param: Any) -> None:
+        if self.navigation_failed:
+            return
         title = webview.get_title() or ""
+        if title and self.page_title_label:
+            self.page_title_label.set_text(title)
+        if title and self.source_combo and self.source_combo.get_active_id() == "__custom__":
+            if self.source_combo.get_active_text() != title:
+                self.source_combo.handler_block_by_func(self.source_changed)
+                try:
+                    self.source_combo.remove(0)
+                    self.source_combo.prepend("__custom__", title)
+                    self.source_combo.set_active_id("__custom__")
+                finally:
+                    self.source_combo.handler_unblock_by_func(self.source_changed)
         if title and title != self.tile.get("title"):
             self.tile["title"] = title
             self.window.queue_save()
@@ -723,13 +804,28 @@ class BrowserTile(Gtk.Box):
             self.window.queue_save()
 
     def load_changed(self, webview: WebKit2.WebView, event: WebKit2.LoadEvent) -> None:
+        if event == WebKit2.LoadEvent.STARTED:
+            self.navigation_failed = False
+            self.cancel_load_timeout()
+            self.load_timeout_timer = GLib.timeout_add_seconds(PAGE_LOAD_TIMEOUT_SECONDS, self.load_timed_out)
+            return
+        if event == WebKit2.LoadEvent.COMMITTED and not self.navigation_failed:
+            # A healthy main document can render before slow images/frames finish.
+            if self.connection_notice:
+                self.connection_notice.hide()
+            webview.show()
         if event != WebKit2.LoadEvent.FINISHED:
             return
+        self.cancel_load_timeout()
         if self.navigation_failed:
             self.schedule_connection_retry()
             return
         self.cancel_connection_retry()
         self.connection_retry_attempt = 0
+        if self.connection_notice:
+            self.connection_notice.hide()
+        webview.show()
+        self.title_changed(webview, None)
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
         if not item:
             return
@@ -765,10 +861,17 @@ class BrowserTile(Gtk.Box):
     ) -> bool:
         if error.matches(WebKit2.network_error_quark(), WebKit2.NetworkError.CANCELLED):
             return False
-        if error.domain == GLib.quark_to_string(WebKit2.network_error_quark()):
-            self.navigation_failed = True
-            self.schedule_connection_retry()
-        return False
+        if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+            return False
+        # Soup also reports DNS/route/refused-connection failures as GIO errors,
+        # not WebKitNetworkError. Recover every non-cancelled failed navigation.
+        self.navigation_failed = True
+        self.connection_error = "Connection unavailable"
+        print(f"navigation failed for {self.tile['id']}: {error.domain}/{error.code}: {error.message}", flush=True)
+        self.schedule_connection_retry()
+        # Suppress WebKit's white error document: it otherwise emits another
+        # FINISHED event and can be mistaken for a successful navigation.
+        return True
 
     def permission_requested(self, webview: WebKit2.WebView, request: Any) -> bool:
         item = self.window.item_by_id(self.tile.get("libraryId", ""))
@@ -796,8 +899,10 @@ class BrowserTile(Gtk.Box):
     def decide_policy(self, _webview: WebKit2.WebView, decision: Any, decision_type: Any) -> bool:
         if decision_type == WebKit2.PolicyDecisionType.RESPONSE:
             response = decision.get_response()
-            if response and response.get_status_code() >= 500:
+            if response and decision.is_main_frame_main_resource() and response.get_status_code() >= 500:
                 self.navigation_failed = True
+                self.connection_error = f"Server returned HTTP {response.get_status_code()}"
+                print(f"HTTP {response.get_status_code()} for {self.tile['id']} main document", flush=True)
                 self.schedule_connection_retry()
             return False
         if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:

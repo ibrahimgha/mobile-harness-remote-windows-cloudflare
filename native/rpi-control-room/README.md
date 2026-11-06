@@ -22,7 +22,23 @@ display user's control room:
 
 ```sh
 xvfb-run -a /usr/bin/python3 native/rpi-control-room/check_arrow_keys.py
+xvfb-run -a /usr/bin/python3 native/rpi-control-room/check_connection_recovery.py
 ```
+
+Failed navigations (including GLib/GIO DNS, route and connection errors) show a
+native Reconnecting panel instead of WebKit's white error page. The tile retries
+after 5, 15 and 60 seconds, then every 60 seconds until the page loads successfully.
+`CODEX_CONTROL_ROOM_RETRY_SECONDS` overrides the ongoing retry interval. HTTP 5xx
+responses also retry; cancelled navigations do not. Retry now reloads the saved
+URL. Display-off, frozen and empty tiles never start recovery requests.
+
+Retries bypass the browser cache. Only a main-document HTTP error takes a square
+offline; a failed iframe cannot hide a healthy dashboard. A recovered main
+document appears as soon as it commits instead of waiting for every image or
+frame to finish. Loads that hang for 30 seconds are stopped and retried (override
+with `CODEX_CONTROL_ROOM_LOAD_TIMEOUT_SECONDS`), and terminated WebKit processes
+restart automatically. The native launcher should be a symlink to the installed
+`control_room.py` so startup and updates use the same source.
 
 The installed configuration contains credentials and must remain mode `0600`.
 Browser cookies live in the display user's WebKitGTK profile and survive restarts.
