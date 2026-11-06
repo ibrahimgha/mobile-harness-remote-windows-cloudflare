@@ -8,7 +8,11 @@ param(
   [string]$TaskName = "",
   [string]$StartupShortcutPath = "",
   [string]$ResumeChatId = "",
-  [string]$ResumeText = "resume"
+  [string]$ResumeText = "resume",
+  [string]$ResumeModel = "",
+  [string]$ResumeReasoning = "",
+  [ValidateSet("default", "priority")]
+  [string]$ResumeSpeed = "default"
 )
 
 Set-StrictMode -Version Latest
@@ -134,7 +138,11 @@ try {
   Write-RestartLog "Restart verified newPid=$newAppProcessId health=True"
 
   if (-not [string]::IsNullOrWhiteSpace($ResumeChatId)) {
-    $resumeBody = @{ text = $ResumeText; clientRequestId = "restart-resume-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" } | ConvertTo-Json -Compress
+    $resumePayload = @{ text = $ResumeText; clientRequestId = "restart-resume-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" }
+    if (-not [string]::IsNullOrWhiteSpace($ResumeModel)) {
+      $resumePayload.settings = @{ model = $ResumeModel; reasoningEffort = $ResumeReasoning; speed = $ResumeSpeed }
+    }
+    $resumeBody = $resumePayload | ConvertTo-Json -Depth 4 -Compress
     $resumeResult = Invoke-RestMethod `
       -Uri "http://127.0.0.1:8787/api/chats/$([Uri]::EscapeDataString($ResumeChatId))/prompt" `
       -Method Post `
