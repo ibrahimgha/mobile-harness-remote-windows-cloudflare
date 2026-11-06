@@ -33,6 +33,16 @@ export function detectConfirmation(raw: string, explicit?: ConfirmationHint): Co
   const tail = text.slice(-1200);
   const quoted = tail.match(/(?:^|\n|[.!?]\s+)(?:if (?:you(?:'d| would)? like|you want|that(?:'s| is) (?:okay|ok)),?\s+)?(?:please\s+|just\s+)?(?:reply(?:\s+with)?|say|send|type)\s+["'`“‘]([^"'`”’\n]{1,80})["'`”’](?:\s+(?:to|and|if|when)\b[^.!?\n]*)?[.!?]?\s*$/i);
   if (quoted && allowedReply.test(quoted[1])) return { reply: quoted[1], summary: tail.split(/\n/).at(-1)!.slice(0, 180) };
+  // Recovery questions ask the user to expose browser chrome before the tool can
+  // retry its own URL check. An error report alone is not a confirmation request.
+  const lastSentence = tail.split(/\n+|(?<=[.!?])\s+/).filter(Boolean).at(-1) ?? "";
+  const urlVisibility = /\b(?:url|address bar|browser address)\b/i.test(lastSentence)
+    && /\b(?:visible|shown|showing|in view)\b/i.test(lastSentence);
+  const asksForVisibility = /\b(?:please confirm|can you confirm|could you confirm|confirm (?:that|once|when|the)|let me know (?:once|when)|tell me (?:once|when)|is (?:the |your )?(?:url|address bar|browser address))\b/i.test(lastSentence);
+  const negativeOrInformational = /\b(?:example|for instance|not|hidden|never|isn't|isn’t|aren't|or)\b|\b(?:I|we|the tool|the browser) (?:can |will |already )?confirm\b/i.test(lastSentence);
+  if (urlVisibility && asksForVisibility && !negativeOrInformational) {
+    return { reply: "The URL is now visible", summary: "Confirm browser URL visibility so the worker can retry URL verification" };
+  }
   const question = tail.match(/(?:^|[\n.!]\s*)([^\n?]*(?:shall I|should I|may I|can I|would you like me to|do you want me to|ready for me to)[^\n?]*\?)\s*$/i);
   if (question && /\b(?:proceed|continue|go ahead|start|run|build|implement|apply|make|change|update|deploy|publish|install|restart|send|delete|remove|commit|push|merge|create|fix|do|open|move|add|enable|disable)\b/i.test(question[1]) && !/\b(?:which|what|where|when|how|or)\b/i.test(question[1])) {
     return { reply: "proceed", summary: question[1].trim().slice(0, 180) };

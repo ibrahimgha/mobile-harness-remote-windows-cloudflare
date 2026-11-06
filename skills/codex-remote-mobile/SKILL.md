@@ -25,6 +25,14 @@ For a normal prose final response, append one metadata-only HTML comment with a 
 
 When your response asks the user to confirm a specific next action, append one hidden marker with the short reply that authorizes that action and a concise action summary: `<!-- codex-confirmation: {"reply":"proceed","summary":"Deploy the tested update"} -->`. Supply the expected affirmative reply as plain text on one line, up to 80 characters; examples include `ok`, `yes`, `proceed`, `confirmed`, `approved`, and `go ahead`. Place this marker before the notification comment. Use it for an actual pending action with a clear affirmative choice; use ordinary questions for missing information or choices between alternatives. The Remote presents confirmation and custom-reply buttons and supplies the requesting turn's model and reasoning when the user confirms. Keep existing authorization and the user's requested scope as the basis for deciding whether confirmation is needed.
 
+## Browser URL visibility confirmations
+
+When browser control cannot verify the current URL, follow the available browser-recovery procedure. If the remaining supported recovery step requires the user to make the URL/address bar visible and confirm it, present that request through the same confirmation buttons. Briefly state the observed verification failure and the required visible state, then include:
+
+`<!-- codex-confirmation: {"reply":"The URL is now visible","summary":"Confirm browser URL visibility so the worker can retry URL verification"} -->`
+
+Use this marker when that user action is actually needed. The confirmation means the user reports that the URL is visible; on receipt, retry the documented URL verification and continue the original task when it succeeds. Keep the browser tool's verification and safety requirements in effect. The existing custom-reply button lets the user explain a different state. This request also appears in the machine's Acknowledgment table for the existing workflow choices.
+
 ## Voice-transcribed prompts
 
 The Remote marks spoken input in `codex_remote_context` as `voice` or `mixed`. Treat that text as a transcription of intended speech. Resolve plausible homophones, spelling errors, punctuation, and human/project/product names using the conversation and the actual workspace. Keep the user's intended action, quantities, dates, and scope intact.

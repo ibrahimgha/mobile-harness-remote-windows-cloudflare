@@ -13,10 +13,22 @@ for (const [text, reply] of [
   ['Please reply with "confirmed".', "confirmed"],
   ['Reply "ship it" to deploy.', "ship it"],
   ["Waiting for your approval to deploy.", "confirmed"],
+  ["The browser tool cannot verify the current URL. Please confirm the URL is now visible.", "The URL is now visible"],
+  ["I need to retry URL verification. Can you confirm the address bar is visible?", "The URL is now visible"],
+  ["Let me know once the browser address is in view.", "The URL is now visible"],
+  ["Is the URL visible now?", "The URL is now visible"],
   ['Ready?\n<!-- codex-confirmation: {"reply":"GO AHEAD","summary":"Apply fix"} -->\n<!-- codex-notification: Awaiting deployment approval -->', "GO AHEAD"]
 ]) assert.equal(detectConfirmation(text)?.reply, reply, text);
 for (const text of [
   "Done. I will proceed.", "Which machine should I deploy to?", "Should I deploy or wait?",
+  "The browser tool cannot verify the current URL.",
+  "The address bar is now visible and URL verification succeeded.",
+  "Please do not confirm the URL is visible.",
+  "Can you confirm the URL is not visible?",
+  "Can you confirm the address bar is visible or hidden?",
+  "I can confirm the URL is visible.",
+  '> Can you confirm the URL is visible?',
+  '```\nCan you confirm the URL is visible?\n```',
   "Please confirm your address.", "What model should I use?", 'Do not reply "proceed".',
   '> Shall I deploy it?', 'Example:\n```\nReply "proceed"\n```',
   '```\n<!-- codex-confirmation: {"reply":"proceed","summary":"Example"} -->\n```'
@@ -27,6 +39,10 @@ assert.equal(parsed.text.includes("codex-notification"), true);
 const chat = { id: "test-chat", messages: [{ id: "unstable-page-id", role: "assistant", text: "Shall I deploy it?",
   createdAt: "2026-09-13T10:00:00Z", model: "gpt-6-astra", reasoningEffort: "max", speed: "priority" }] } as ChatDetail;
 const first = confirmationForChat(chat, [])!;
+const browserRequest = confirmationForChat({ ...chat, messages: [{ ...chat.messages[0], text: "Can you confirm the URL is now visible?" }] }, [])!;
+assert.equal(browserRequest.reply, "The URL is now visible");
+assert.equal(browserRequest.settings.model, "gpt-6-astra");
+assert.equal(browserRequest.settings.reasoningEffort, "max");
 assert.equal(first.settings.model, "gpt-6-astra");
 assert.equal(first.settings.reasoningEffort, "max");
 assert.equal(first.settings.speed, "priority");
