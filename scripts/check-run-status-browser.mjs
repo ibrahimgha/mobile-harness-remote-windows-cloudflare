@@ -151,15 +151,19 @@ try {
   console.log('PASS: actual App pastes after native blank lines, replaces an intentional selection, and maps DIV/BR/emoji/trailing-newline carets consistently.');
   await page.clock.resume();
   let releasePost;
+  let heldQueuedJob;
   let disposition = 'started';
   await page.route('**/api/chats/status-fixture/prompt', async route => {
+    const {text,clientRequestId}=route.request().postDataJSON();
+    heldQueuedJob=disposition==='queued'
+      ? {...job,id:clientRequestId,clientRequestId,status:'queued',finishedAt:undefined,promptPreview:text,queuePosition:2}
+      : null;
     await new Promise(resolve => { releasePost = resolve; });
     if (disposition === 'failed') {
       return route.fulfill({status:400,json:{ok:false,message:'Fixture rejected prompt'}});
     }
     if(disposition==='queued'){
-      const {text,clientRequestId}=route.request().postDataJSON();
-      submittedJob={...job,id:clientRequestId,clientRequestId,status:'queued',finishedAt:undefined,promptPreview:text,queuePosition:2};
+      submittedJob=heldQueuedJob;
       return route.fulfill({json:{ok:true,disposition,job:submittedJob}});
     }
     return route.fulfill({json:{ok:true,disposition}});
@@ -195,19 +199,34 @@ try {
   const queuedPrompt='Queued fixture prompt';
   await sendWhileWaiting(queuedPrompt);
   await page.evaluate(text=>{
-    const thread=document.querySelector('.chat-content');
+    const workspace=document.querySelector('.chat-workspace');
     const samples=[];
-    const sample=()=>samples.push([...thread.querySelectorAll('article p')].filter(p=>p.textContent===text&&p.getClientRects().length).length);
+    const sample=()=>samples.push([...workspace.querySelectorAll('.chat-content article p, .command-queue .queue-preview')].filter(p=>p.textContent===text&&p.getClientRects().length).length);
     const observer=new MutationObserver(sample);
-    observer.observe(thread,{subtree:true,childList:true,attributes:true,characterData:true});
+    observer.observe(workspace,{subtree:true,childList:true,attributes:true,characterData:true});
     sample();
     window.stopBubbleObservation=()=>{observer.disconnect();sample();return samples;};
   },queuedPrompt);
+  const queueCard=page.locator('.command-queue .queue-preview').getByText(queuedPrompt,{exact:true});
+  // The queue poll can beat the send acknowledgment.
+  submittedJob=heldQueuedJob;
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await queueCard.waitFor();
+  assert.equal(await bubble(queuedPrompt).count(),0);
   releasePost();
   await page.getByText('Queued on server',{exact:true}).first().waitFor();
   await page.getByRole('button',{name:'Chat actions',exact:true}).click();
   await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
   await page.clock.fastForward(40000);
+  assert.equal(await queueCard.count(),1);
+  assert.equal(await bubble(queuedPrompt).count(),0);
+  // Starting the job removes the card before its transcript is available.
+  submittedJob={...submittedJob,status:'running',startedAt:new Date(await page.evaluate(()=>Date.now())).toISOString()};
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await bubble(queuedPrompt).waitFor();
+  assert.equal(await queueCard.count(),0);
   assert.equal(await bubble(queuedPrompt).count(),1);
   const echoAt=new Date(await page.evaluate(()=>Date.now())).toISOString();
   messages.push({id:'queued-echo',role:'user',kind:'user_prompt',text:queuedPrompt,createdAt:echoAt});
@@ -236,7 +255,7 @@ try {
   releasePost();
   await bubble('Rejected fixture prompt').waitFor({state:'detached'});
   await page.waitForFunction(()=>document.querySelector('.composer-editor')?.textContent==='Rejected fixture prompt');
-  console.log('PASS: immediate and queued bubbles stay visible across delayed acknowledgments, stale refresh and transcript echo; queue edit and rejection restore drafts.');
+  console.log('PASS: exactly one representation across send preview, early queue card, acknowledgment, running preview and transcript; queue edit and rejection restore drafts.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);

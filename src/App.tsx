@@ -3893,6 +3893,7 @@ export function App() {
   // replace the transcript without losing this bubble or caching an unsent turn.
   const [pendingPrompt, setPendingPrompt] = useState<{
     chatId: string;
+    clientRequestId: string;
     messages: ChatTranscriptMessage[];
   } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
@@ -4790,13 +4791,18 @@ export function App() {
     [runFailureMessages, transcriptMessages]
   );
   const visibleMessages = useMemo<VisibleChatMessage[]>(() => {
-    const queuedPreviews = timelineMessages.filter(message => message.queuedJobId);
+    const queueCardIds = new Set(selectedQueuedServerJobs.map(job => job.id));
+    // Keep the preview for the handoff to the transcript, but render only the
+    // queue card while that same job is visible in Command queue.
+    const queuedPreviews = timelineMessages.filter(message => message.queuedJobId && !queueCardIds.has(message.queuedJobId));
     const messages = messagesForViewMode(
       timelineMessages.filter(message => !message.queuedJobId && (showInjectedInstructions || !isInjectedInstruction(message))),
       selectedChatMessageViewMode,
       selectedDisplayJob
     ).concat(queuedPreviews);
     if (!pendingPrompt || pendingPrompt.chatId !== selectedChatId) return messages;
+    // A job event can put the card on screen before the POST reply arrives.
+    if (selectedQueuedServerJobs.some(job => job.clientRequestId === pendingPrompt.clientRequestId)) return messages;
     const prompt = pendingPrompt.messages.at(-1);
     if (prompt && transcriptMessages.some(message =>
       message.role === "user" &&
@@ -4805,7 +4811,7 @@ export function App() {
           Date.parse(message.createdAt) >= Date.parse(prompt.createdAt)))
     )) return messages;
     return [...messages, ...pendingPrompt.messages];
-  }, [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions, pendingPrompt, selectedChatId, transcriptMessages]);
+  }, [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions, pendingPrompt, selectedChatId, transcriptMessages, selectedQueuedServerJobs]);
   const visibleMessageItems = useMemo(
     () => transcriptRenderItems(visibleMessages, chatMessageStableSignature),
     [visibleMessages]
@@ -8417,6 +8423,7 @@ export function App() {
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
     const showPendingPrompt = (text: string) => setPendingPrompt({
       chatId: targetChatId,
+      clientRequestId,
       messages: createOptimisticPromptMessages(text, optimisticAt, optimisticMessageId, options.voiceNote, state?.runner.settings)
     });
     showPendingPrompt(promptWithUploadedFiles(outgoingDraft, []));
