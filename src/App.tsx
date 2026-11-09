@@ -278,6 +278,7 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
   durationMs?: number;
   voiceNoteUrl?: string;
   voiceNoteMimeType?: string;
+  queuedJobId?: string;
   model?: string;
   reasoningEffort?: CodexRunSettings["reasoningEffort"];
   speed?: CodexRunSettings["speed"];
@@ -993,6 +994,8 @@ function findServerPromptMatchIndex(messages: ChatTranscriptMessage[], optimisti
     if (message.role !== "user" || message.text.trimEnd() !== optimistic.text.trimEnd()) {
       return false;
     }
+    // An echo already matched to another send cannot acknowledge this one too.
+    if (isOptimisticPromptMessage(message)) return message.id === optimistic.id;
 
     const messageTime = Date.parse(message.createdAt);
 
@@ -1000,7 +1003,7 @@ function findServerPromptMatchIndex(messages: ChatTranscriptMessage[], optimisti
       return true;
     }
 
-    return messageTime >= optimisticTime - 60000;
+    return messageTime >= optimisticTime - (optimistic.queuedJobId ? 0 : 60000);
   });
 }
 
@@ -1026,6 +1029,7 @@ function mergeChatDetailPreservingOptimistic(
 
   const incomingMessages = [...(incoming.messages ?? [])];
   let replacedOptimisticPrompt = false;
+  const echoedQueueIds = new Set<string>();
   const optimisticMessages = (current.messages ?? []).filter((message) => {
     if (isOptimisticVoiceNoteMessage(message)) {
       return true;
@@ -1050,6 +1054,7 @@ function mergeChatDetailPreservingOptimistic(
         label: message.label ?? serverMessage.label
       };
       replacedOptimisticPrompt = true;
+      if (message.queuedJobId) echoedQueueIds.add(message.queuedJobId);
       return false;
     }
 
@@ -1060,10 +1065,12 @@ function mergeChatDetailPreservingOptimistic(
     ? mergeTranscriptWindow(current.messages ?? [], incomingMessages, messagesRepresentSameTranscriptItem)
     : incomingMessages;
   const preservedMessageCount = Math.max(0, mergedWindow.length - incomingMessages.length);
-  const messages = dedupeMessagesById([...mergedWindow, ...optimisticMessages]);
-  const lastOptimisticPrompt = optimisticMessages.filter(isOptimisticPromptMessage).at(-1);
+  const messages = dedupeMessagesById([...mergedWindow, ...optimisticMessages.map(message =>
+    message.queuedJobId && echoedQueueIds.has(message.queuedJobId) ? { ...message, queuedJobId: undefined } : message
+  )]);
+  const lastOptimisticPrompt = optimisticMessages.filter(message => isOptimisticPromptMessage(message) && !message.queuedJobId).at(-1);
 
-  if (!lastOptimisticPrompt && !preservedMessageCount) {
+  if (!lastOptimisticPrompt && !optimisticMessages.some(message => message.queuedJobId) && !preservedMessageCount) {
     return replacedOptimisticPrompt ? { ...incoming, messages } : incoming;
   }
 
@@ -1121,6 +1128,7 @@ function sameChatDetailForRender(a: ChatDetail | null, b: ChatDetail) {
       message.id === other.id &&
       message.role === other.role &&
       message.kind === other.kind &&
+      message.queuedJobId === other.queuedJobId &&
       message.createdAt === other.createdAt &&
       message.text === other.text &&
       (message.label ?? "") === (other.label ?? "") &&
@@ -1157,6 +1165,7 @@ function sameChatDetailForQuietRefresh(a: ChatDetail | null, b: ChatDetail) {
 
     return (
       other &&
+      message.queuedJobId === other.queuedJobId &&
       chatMessageStableSignature(message) === chatMessageStableSignature(other)
     );
   });
@@ -1400,7 +1409,7 @@ function cacheableChatDetail(chat: ChatDetail): ChatDetail {
         }
       : null,
     messages: (chat.messages ?? [])
-      .filter((message) => !isOptimisticVoiceNoteMessage(message))
+      .filter((message) => !isOptimisticVoiceNoteMessage(message) && !message.queuedJobId)
       .slice(-20)
       .map(trimCachedMessage)
   };
@@ -4781,11 +4790,12 @@ export function App() {
     [runFailureMessages, transcriptMessages]
   );
   const visibleMessages = useMemo<VisibleChatMessage[]>(() => {
+    const queuedPreviews = timelineMessages.filter(message => message.queuedJobId);
     const messages = messagesForViewMode(
-      showInjectedInstructions ? timelineMessages : timelineMessages.filter(message => !isInjectedInstruction(message)),
+      timelineMessages.filter(message => !message.queuedJobId && (showInjectedInstructions || !isInjectedInstruction(message))),
       selectedChatMessageViewMode,
       selectedDisplayJob
-    );
+    ).concat(queuedPreviews);
     if (!pendingPrompt || pendingPrompt.chatId !== selectedChatId) return messages;
     const prompt = pendingPrompt.messages.at(-1);
     if (prompt && transcriptMessages.some(message =>
@@ -6367,14 +6377,16 @@ export function App() {
     createdAt: string,
     messageId = optimisticPromptId(createdAt),
     voiceNote?: DictationVoiceNote,
-    runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">
+    runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">,
+    queuedJobId?: string
   ) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
         return current;
       }
 
-      const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote, runSettings);
+      const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote, runSettings)
+        .map(message => queuedJobId ? { ...message, queuedJobId } : message);
       const messages = [...(current.messages ?? [])];
 
       for (const message of newMessages) {
@@ -6398,6 +6410,8 @@ export function App() {
         }
       }
 
+      if (queuedJobId) return { ...current, messages: dedupeMessagesById(messages) };
+
       const lastResponseTime = Date.parse(current.lastResponse?.createdAt ?? "") || 0;
       const promptTime = Date.parse(createdAt) || 0;
       const responseIsNewer = lastResponseTime >= promptTime;
@@ -6412,6 +6426,7 @@ export function App() {
       };
     });
 
+    if (queuedJobId) return;
     setChatIndex((current) => {
       if (!current) {
         return current;
@@ -7309,6 +7324,10 @@ export function App() {
         `/api/chats/${encodeURIComponent(job.chatId)}/queued-prompts/${encodeURIComponent(job.id)}`,
         { method: "DELETE" }
       );
+      removeCachedChatHistory(job.chatId);
+      setSelectedChat(current => current?.id === job.chatId
+        ? { ...current, messages: current.messages?.filter(message => message.queuedJobId !== job.id) }
+        : current);
       setDraftForChat(job.chatId, result.text ?? "");
       writeChatDraftSource(localStorage, job.chatId, result.job?.inputSource ?? job.inputSource ?? "typed");
       const restoredAttachments = (result.attachments ?? []).map((uploadedFile, index) => ({
@@ -8454,15 +8473,16 @@ export function App() {
         rememberJob(result.job);
       }
 
+      applyOptimisticPrompt(
+        targetChatId,
+        promptText,
+        optimisticAt,
+        optimisticMessageId,
+        options.voiceNote,
+        result.job?.settings ?? state?.runner.settings,
+        disposition === "queued" ? result.job?.id ?? clientRequestId : undefined
+      );
       if (disposition === "started") {
-        applyOptimisticPrompt(
-          targetChatId,
-          promptText,
-          optimisticAt,
-          optimisticMessageId,
-          options.voiceNote,
-          result.job?.settings ?? state?.runner.settings
-        );
         chatShouldAutoScrollRef.current = true;
         requestChatScroll(true);
         window.requestAnimationFrame(() => scrollChatToBottom("auto"));
@@ -8507,16 +8527,15 @@ export function App() {
       if (acceptedJob) {
         rememberJob(acceptedJob);
         const acceptedDisposition = acceptedJob.status === "queued" ? "queued" : "started";
-        if (acceptedDisposition === "started") {
-          applyOptimisticPrompt(
-            targetChatId,
-            submittedPromptText,
-            optimisticAt,
-            optimisticMessageId,
-            options.voiceNote,
-            acceptedJob.settings ?? state?.runner.settings
-          );
-        }
+        applyOptimisticPrompt(
+          targetChatId,
+          submittedPromptText,
+          optimisticAt,
+          optimisticMessageId,
+          options.voiceNote,
+          acceptedJob.settings ?? state?.runner.settings,
+          acceptedDisposition === "queued" ? acceptedJob.id : undefined
+        );
         if (receiptId) {
           finishPromptReceipt(receiptId, acceptedDisposition === "queued" ? "Queued on server" : "Server received");
         }
@@ -9230,7 +9249,7 @@ export function App() {
         ) : null}
 
         <div className="chat-content" ref={chatContentRef} onScroll={updateChatAutoScrollState}>
-          {chatShellIsLoading ? (
+          {chatShellIsLoading && selectedChat?.id !== selectedChatId ? (
             <div className="loading-state">
               <Loader2 className="spin" size={24} />
             </div>
@@ -9303,6 +9322,8 @@ export function App() {
                             <time className="bubble-time-full" dateTime={message.createdAt}>{formatDate(message.createdAt)}</time>
                             <time className="bubble-time-compact" dateTime={message.createdAt}>{formatDate(message.createdAt, true)}</time>
                             {runSettingsLabel ? <span className="bubble-run-settings">{runSettingsLabel}</span> : null}
+                            {message.queuedJobId && !selectedJobs.some(job => job.id === message.queuedJobId && job.status !== "queued")
+                              ? <span className="bubble-run-settings">Queued</span> : null}
                             {runDuration ? (
                               <span className="bubble-duration" title="Run duration">
                                 <Clock3 size={12} />

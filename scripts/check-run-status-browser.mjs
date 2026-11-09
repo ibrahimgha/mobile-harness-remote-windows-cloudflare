@@ -44,7 +44,8 @@ try {
  await page.addInitScript(cache=>{if(!localStorage.getItem('sidebar-qc-seeded')){localStorage.setItem('active-jobs-cache-v1',JSON.stringify(cache));localStorage.setItem('sidebar-qc-seeded','true');}},cache);
  const sidebarReads=new Set();
  let capacityRetry=null;
- const jobs=()=>capacityRetry?[capacityRetry,job]:[job];
+ let submittedJob=null;
+ const jobs=()=>[capacityRetry,submittedJob,job].filter(Boolean);
  const messages=[
   {id:'old-prompt',role:'user',kind:'user_prompt',text:'Old task',createdAt:at('13')},
   {id:'new-prompt',role:'user',kind:'user_prompt',text:'New task after stopping',createdAt:at('15')},
@@ -156,6 +157,11 @@ try {
     if (disposition === 'failed') {
       return route.fulfill({status:400,json:{ok:false,message:'Fixture rejected prompt'}});
     }
+    if(disposition==='queued'){
+      const {text,clientRequestId}=route.request().postDataJSON();
+      submittedJob={...job,id:clientRequestId,clientRequestId,status:'queued',finishedAt:undefined,promptPreview:text,queuePosition:2};
+      return route.fulfill({json:{ok:true,disposition,job:submittedJob}});
+    }
     return route.fulfill({json:{ok:true,disposition}});
   });
   const send = page.getByRole('button',{name:'Send prompt',exact:true});
@@ -186,16 +192,51 @@ try {
   assert.equal(await bubble(prompt).count(),1);
   await page.clock.fastForward(5000);
   disposition='queued';
-  await sendWhileWaiting('Queued fixture prompt');
+  const queuedPrompt='Queued fixture prompt';
+  await sendWhileWaiting(queuedPrompt);
+  await page.evaluate(text=>{
+    const thread=document.querySelector('.chat-content');
+    const samples=[];
+    const sample=()=>samples.push([...thread.querySelectorAll('article p')].filter(p=>p.textContent===text&&p.getClientRects().length).length);
+    const observer=new MutationObserver(sample);
+    observer.observe(thread,{subtree:true,childList:true,attributes:true,characterData:true});
+    sample();
+    window.stopBubbleObservation=()=>{observer.disconnect();sample();return samples;};
+  },queuedPrompt);
   releasePost();
   await page.getByText('Queued on server',{exact:true}).first().waitFor();
-  await bubble('Queued fixture prompt').waitFor({state:'detached'});
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await page.clock.fastForward(40000);
+  assert.equal(await bubble(queuedPrompt).count(),1);
+  const echoAt=new Date(await page.evaluate(()=>Date.now())).toISOString();
+  messages.push({id:'queued-echo',role:'user',kind:'user_prompt',text:queuedPrompt,createdAt:echoAt});
+  messages.push({id:'queued-reply',role:'assistant',kind:'assistant_final',isFinal:true,text:'Queued echo confirmed',createdAt:echoAt});
+  submittedJob={...submittedJob,status:'completed',finishedAt:echoAt};
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await bubble('Queued echo confirmed').waitFor();
+  assert.equal(await bubble(queuedPrompt).count(),1);
+  const samples=await page.evaluate(()=>window.stopBubbleObservation());
+  assert.ok(samples.length>2 && samples.every(n=>n===1),`queued bubble continuity: ${samples.join(',')}`);
+  const cancelledPrompt='Edit this queued fixture';
+  await sendWhileWaiting(cancelledPrompt);
+  releasePost();
+  await page.getByText('Queued on server',{exact:true}).first().waitFor();
+  await page.route('**/api/chats/status-fixture/queued-prompts/'+submittedJob.id,route=>{
+    submittedJob=null;
+    return route.fulfill({json:{ok:true,text:cancelledPrompt}});
+  });
+  await page.locator('.command-queue').getByText(cancelledPrompt,{exact:true})
+    .locator('..').getByRole('button',{name:'Move queued prompt back to composer'}).click();
+  await bubble(cancelledPrompt).waitFor({state:'detached'});
+  await page.waitForFunction(text=>document.querySelector('.composer-editor')?.textContent===text,cancelledPrompt);
   disposition='failed';
   await sendWhileWaiting('Rejected fixture prompt');
   releasePost();
   await bubble('Rejected fixture prompt').waitFor({state:'detached'});
-  assert.equal(await editor.textContent(),'Rejected fixture prompt');
-  console.log('PASS: immediate bubble survives 40 seconds without acknowledgment or thinking; acknowledgment and transcript echo do not duplicate it; queue/rejection remove the provisional bubble and rejection restores the draft.');
+  await page.waitForFunction(()=>document.querySelector('.composer-editor')?.textContent==='Rejected fixture prompt');
+  console.log('PASS: immediate and queued bubbles stay visible across delayed acknowledgments, stale refresh and transcript echo; queue edit and rejection restore drafts.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);
