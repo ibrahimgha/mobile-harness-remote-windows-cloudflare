@@ -148,6 +148,54 @@ try {
   });
   for(const c of domCases){assert.equal(c.actual,c.expected);assert.equal(c.caret,c.expected.length);}
   console.log('PASS: actual App pastes after native blank lines, replaces an intentional selection, and maps DIV/BR/emoji/trailing-newline carets consistently.');
+  await page.clock.resume();
+  let releasePost;
+  let disposition = 'started';
+  await page.route('**/api/chats/status-fixture/prompt', async route => {
+    await new Promise(resolve => { releasePost = resolve; });
+    if (disposition === 'failed') {
+      return route.fulfill({status:400,json:{ok:false,message:'Fixture rejected prompt'}});
+    }
+    return route.fulfill({json:{ok:true,disposition}});
+  });
+  const send = page.getByRole('button',{name:'Send prompt',exact:true});
+  const bubble = text => page.locator('.chat-content').getByText(text,{exact:true});
+  async function sendWhileWaiting(text) {
+    releasePost = undefined;
+    await editor.fill(text);
+    await send.click();
+    await bubble(text).waitFor({timeout:3000});
+    assert.equal(await page.getByText('Server received',{exact:true}).count(),0);
+    assert.equal(typeof releasePost,'function','POST is still held open');
+  }
+  const prompt = 'Immediate bubble before the server replies';
+  await sendWhileWaiting(prompt);
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await page.clock.fastForward(40000);
+  await bubble(prompt).waitFor({timeout:3000});
+  assert.equal(await bubble(prompt).count(),1);
+  releasePost();
+  await page.getByText('Server received',{exact:true}).waitFor();
+  assert.equal(await bubble(prompt).count(),1);
+  messages.push({id:'echo',role:'user',kind:'user_prompt',text:prompt,createdAt:new Date(await page.evaluate(()=>Date.now())).toISOString()});
+  messages.push({id:'echo-confirmed',role:'assistant',kind:'assistant_final',isFinal:true,text:'Echo confirmed',createdAt:messages.at(-1).createdAt});
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await bubble('Echo confirmed').waitFor();
+  assert.equal(await bubble(prompt).count(),1);
+  await page.clock.fastForward(5000);
+  disposition='queued';
+  await sendWhileWaiting('Queued fixture prompt');
+  releasePost();
+  await page.getByText('Queued on server',{exact:true}).first().waitFor();
+  await bubble('Queued fixture prompt').waitFor({state:'detached'});
+  disposition='failed';
+  await sendWhileWaiting('Rejected fixture prompt');
+  releasePost();
+  await bubble('Rejected fixture prompt').waitFor({state:'detached'});
+  assert.equal(await editor.textContent(),'Rejected fixture prompt');
+  console.log('PASS: immediate bubble survives 40 seconds without acknowledgment or thinking; acknowledgment and transcript echo do not duplicate it; queue/rejection remove the provisional bubble and rejection restores the draft.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);

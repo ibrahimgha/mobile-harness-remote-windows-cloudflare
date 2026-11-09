@@ -3880,6 +3880,12 @@ export function App() {
   const reorderingChatIdsRef = useRef(new Set<string>());
   const [activeSessionRuns, setActiveSessionRuns] = useState<ActiveSessionRun[]>([]);
   const [promptReceipt, setPromptReceipt] = useState<PromptReceipt | null>(null);
+  // Pending sends are a view overlay, not transcript history. A refresh can
+  // replace the transcript without losing this bubble or caching an unsent turn.
+  const [pendingPrompt, setPendingPrompt] = useState<{
+    chatId: string;
+    messages: ChatTranscriptMessage[];
+  } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentUploadStatuses, setAttachmentUploadStatuses] = useState<Record<string, AttachmentUploadStatus>>({});
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set());
@@ -4774,14 +4780,22 @@ export function App() {
     },
     [runFailureMessages, transcriptMessages]
   );
-  const visibleMessages = useMemo(
-    () => messagesForViewMode(
+  const visibleMessages = useMemo<VisibleChatMessage[]>(() => {
+    const messages = messagesForViewMode(
       showInjectedInstructions ? timelineMessages : timelineMessages.filter(message => !isInjectedInstruction(message)),
       selectedChatMessageViewMode,
       selectedDisplayJob
-    ),
-    [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions]
-  );
+    );
+    if (!pendingPrompt || pendingPrompt.chatId !== selectedChatId) return messages;
+    const prompt = pendingPrompt.messages.at(-1);
+    if (prompt && transcriptMessages.some(message =>
+      message.role === "user" &&
+      (message.id === prompt.id ||
+        (message.text.trimEnd() === prompt.text.trimEnd() &&
+          Date.parse(message.createdAt) >= Date.parse(prompt.createdAt)))
+    )) return messages;
+    return [...messages, ...pendingPrompt.messages];
+  }, [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions, pendingPrompt, selectedChatId, transcriptMessages]);
   const visibleMessageItems = useMemo(
     () => transcriptRenderItems(visibleMessages, chatMessageStableSignature),
     [visibleMessages]
@@ -8362,6 +8376,7 @@ export function App() {
     }
 
     const optimisticAt = new Date().toISOString();
+    const optimisticMessageId = optimisticPromptId(optimisticAt);
     const clientRequestId =
       globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let receiptId: string | undefined;
@@ -8381,6 +8396,14 @@ export function App() {
 
     setSending(true);
     setNotice(outgoingAttachments.length ? "Uploading files..." : "");
+    const showPendingPrompt = (text: string) => setPendingPrompt({
+      chatId: targetChatId,
+      messages: createOptimisticPromptMessages(text, optimisticAt, optimisticMessageId, options.voiceNote, state?.runner.settings)
+    });
+    showPendingPrompt(promptWithUploadedFiles(outgoingDraft, []));
+    chatShouldAutoScrollRef.current = true;
+    requestChatScroll(true);
+    window.requestAnimationFrame(() => scrollChatToBottom("auto"));
 
     if (!options.preserveDraft) {
       // Hide the submitted text immediately, but keep its persisted draft until
@@ -8403,7 +8426,7 @@ export function App() {
       const uploadedFiles = await uploadAttachments(targetChatId, outgoingAttachments);
       const promptText = promptWithUploadedFiles(outgoingDraft, uploadedFiles);
       submittedPromptText = promptText;
-      const optimisticMessageId = optimisticPromptId(optimisticAt);
+      showPendingPrompt(promptText);
 
       const sameChatIsBusy = busyServerChatIds.has(targetChatId) || serverChatIsBusyNow(targetChatId);
       const expectedDisposition = sameChatIsBusy ? "queued" : "started";
@@ -8489,7 +8512,7 @@ export function App() {
             targetChatId,
             submittedPromptText,
             optimisticAt,
-            optimisticPromptId(optimisticAt),
+            optimisticMessageId,
             options.voiceNote,
             acceptedJob.settings ?? state?.runner.settings
           );
@@ -8528,6 +8551,7 @@ export function App() {
       setNotice(error instanceof Error ? error.message : "Prompt failed");
       return false;
     } finally {
+      setPendingPrompt(null);
       setSending(false);
     }
   }
