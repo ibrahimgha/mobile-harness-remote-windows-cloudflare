@@ -279,6 +279,7 @@ type ChatTranscriptMessage = ChatMessageExcerpt & {
   voiceNoteUrl?: string;
   voiceNoteMimeType?: string;
   queuedJobId?: string;
+  clientRequestId?: string;
   model?: string;
   reasoningEffort?: CodexRunSettings["reasoningEffort"];
   speed?: CodexRunSettings["speed"];
@@ -1051,6 +1052,7 @@ function mergeChatDetailPreservingOptimistic(
         ...preserveOptimisticRunSettings(serverMessage, message),
         id: message.id,
         createdAt: message.createdAt,
+        clientRequestId: message.clientRequestId,
         label: message.label ?? serverMessage.label
       };
       replacedOptimisticPrompt = true;
@@ -4795,8 +4797,37 @@ export function App() {
     // Keep the preview for the handoff to the transcript, but render only the
     // queue card while that same job is visible in Command queue.
     const queuedPreviews = timelineMessages.filter(message => message.queuedJobId && !queueCardIds.has(message.queuedJobId));
+    const running = selectedJobs.find(job => job.status === "running" && isActiveJob(job) &&
+      job.clientRequestId && job.kind !== "steer" && !job.id.startsWith("session-run-") && !queueCardIds.has(job.id));
+    const preview = running?.promptPreview?.trim();
+    const runningAt = running ? Date.parse(running.createdAt) : NaN;
+    const alreadyShown = running && (
+      (pendingPrompt && pendingPrompt.chatId === selectedChatId && pendingPrompt.clientRequestId === running.clientRequestId) ||
+      timelineMessages.some(message => {
+        if (message.role !== "user" || message.kind === "voice_note") return false;
+        if (message.clientRequestId === running.clientRequestId || message.queuedJobId === running.id) return true;
+        if (!preview || !(Date.parse(message.createdAt) >= runningAt)) return false;
+        const text = message.text.replace(/\s+/g, " ").trim();
+        return text === preview || (preview.endsWith("...") && text.startsWith(preview.slice(0, -3)));
+      })
+    );
+    const settledMessages = timelineMessages.filter(message => !message.queuedJobId && (showInjectedInstructions || !isInjectedInstruction(message)));
+    if (running && preview && !alreadyShown) {
+      // A restored PWA has no in-memory send overlay. Use the confirmed job
+      // until its user turn becomes available in the transcript.
+      settledMessages.push({
+        id: `running-prompt-${running.id}`,
+        role: "user",
+        kind: "user_prompt",
+        text: preview,
+        createdAt: running.createdAt,
+        model: running.settings?.model,
+        reasoningEffort: running.settings?.reasoningEffort,
+        speed: running.settings?.speed
+      });
+    }
     const messages = messagesForViewMode(
-      timelineMessages.filter(message => !message.queuedJobId && (showInjectedInstructions || !isInjectedInstruction(message))),
+      settledMessages,
       selectedChatMessageViewMode,
       selectedDisplayJob
     ).concat(queuedPreviews);
@@ -4811,7 +4842,7 @@ export function App() {
           Date.parse(message.createdAt) >= Date.parse(prompt.createdAt)))
     )) return messages;
     return [...messages, ...pendingPrompt.messages];
-  }, [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions, pendingPrompt, selectedChatId, transcriptMessages, selectedQueuedServerJobs]);
+  }, [durationNow, selectedChatMessageViewMode, selectedDisplayJob, timelineMessages, showInjectedInstructions, pendingPrompt, selectedChatId, transcriptMessages, selectedQueuedServerJobs, selectedJobs]);
   const visibleMessageItems = useMemo(
     () => transcriptRenderItems(visibleMessages, chatMessageStableSignature),
     [visibleMessages]
@@ -6384,7 +6415,8 @@ export function App() {
     messageId = optimisticPromptId(createdAt),
     voiceNote?: DictationVoiceNote,
     runSettings?: Pick<CodexRunSettings, "model" | "reasoningEffort" | "speed">,
-    queuedJobId?: string
+    queuedJobId?: string,
+    clientRequestId?: string
   ) => {
     setSelectedChat((current) => {
       if (!current || current.id !== chatId) {
@@ -6392,7 +6424,7 @@ export function App() {
       }
 
       const newMessages = createOptimisticPromptMessages(text, createdAt, messageId, voiceNote, runSettings)
-        .map(message => queuedJobId ? { ...message, queuedJobId } : message);
+        .map(message => ({ ...message, queuedJobId, clientRequestId }));
       const messages = [...(current.messages ?? [])];
 
       for (const message of newMessages) {
@@ -6405,6 +6437,7 @@ export function App() {
               ...preserveOptimisticRunSettings(serverMessage, message),
               id: message.id,
               createdAt: message.createdAt,
+              clientRequestId: message.clientRequestId,
               label: message.label ?? serverMessage.label
             };
             continue;
@@ -8487,7 +8520,8 @@ export function App() {
         optimisticMessageId,
         options.voiceNote,
         result.job?.settings ?? state?.runner.settings,
-        disposition === "queued" ? result.job?.id ?? clientRequestId : undefined
+        disposition === "queued" ? result.job?.id ?? clientRequestId : undefined,
+        clientRequestId
       );
       if (disposition === "started") {
         chatShouldAutoScrollRef.current = true;
@@ -8541,7 +8575,8 @@ export function App() {
           optimisticMessageId,
           options.voiceNote,
           acceptedJob.settings ?? state?.runner.settings,
-          acceptedDisposition === "queued" ? acceptedJob.id : undefined
+          acceptedDisposition === "queued" ? acceptedJob.id : undefined,
+          clientRequestId
         );
         if (receiptId) {
           finishPromptReceipt(receiptId, acceptedDisposition === "queued" ? "Queued on server" : "Server received");

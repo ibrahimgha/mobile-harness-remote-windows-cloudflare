@@ -256,6 +256,25 @@ try {
   await bubble('Rejected fixture prompt').waitFor({state:'detached'});
   await page.waitForFunction(()=>document.querySelector('.composer-editor')?.textContent==='Rejected fixture prompt');
   console.log('PASS: exactly one representation across send preview, early queue card, acknowledgment, running preview and transcript; queue edit and rejection restore drafts.');
+  // Reopening the PWA loses component state, but the server still knows the
+  // accepted job. The transcript is deliberately one turn behind.
+  capacityRetry=null;
+  const runningAt=new Date(await page.evaluate(()=>Date.now())).toISOString();
+  const runningPreview='Running after reopening...';
+  submittedJob={...job,id:'running-after-reload',clientRequestId:'reload-request',status:'running',
+    promptPreview:runningPreview,createdAt:runningAt,startedAt:runningAt,finishedAt:undefined};
+  await page.reload({waitUntil:'domcontentloaded'});
+  await bubble(runningPreview).waitFor();
+  assert.equal(await bubble(runningPreview).count(),1);
+  assert.equal(await page.locator('.command-queue').count(),0);
+  const fullPrompt='Running after reopening with the saved full text';
+  messages.push({id:'reopened-echo',role:'user',kind:'user_prompt',text:fullPrompt,createdAt:runningAt});
+  await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh this chat',exact:true}).click();
+  await bubble(fullPrompt).waitFor();
+  assert.equal(await bubble(runningPreview).count(),0);
+  assert.equal(await bubble(fullPrompt).count(),1);
+  console.log('PASS: running-job prompt recovered after reload with an older transcript; full transcript replaces the truncated preview without duplicates.');
 } finally {
  await browser?.close();await server.close();
  const resolved=path.resolve(scratch);
