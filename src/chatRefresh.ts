@@ -68,14 +68,43 @@ export function mergeTranscriptWindow<T extends TranscriptWindowItem>(
   incoming: T[],
   representsSameItem: (currentItem: T, incomingItem: T) => boolean
 ) {
-  const preserved = current.filter(
-    (currentItem) => !incoming.some((incomingItem) => representsSameItem(currentItem, incomingItem))
-  );
-  const byId = new Map<string, T>();
+  // A last-N-turn response can omit either end: older loaded history OR a
+  // newly submitted prompt that has not reached the transcript yet. Prepending
+  // every omitted item moves that new prompt above the entire conversation.
+  const authoritative = [...new Map(incoming.map(item => [item.id, item])).values()];
+  const matches = current.map(item => authoritative.findIndex(candidate => representsSameItem(item, candidate)));
+  const merged = [...authoritative];
+  const ids = new Set(merged.map(item => item.id));
+  let after = 0;
 
-  for (const item of [...preserved, ...incoming]) {
-    byId.set(item.id, item);
+  for (let index = 0; index < current.length; index += 1) {
+    const match = matches[index];
+    if (match >= 0) {
+      after = merged.indexOf(authoritative[match]) + 1;
+      continue;
+    }
+    const item = current[index];
+    if (ids.has(item.id)) continue;
+
+    // Shared transcript items anchor missing blocks on their original side.
+    // Timestamps place a pending tail before newer incoming commentary, without
+    // sorting/reordering native messages or reversing equal-time tool events.
+    const nextMatch = matches.slice(index + 1).find(candidate => candidate >= 0);
+    const before = nextMatch === undefined ? merged.length : merged.indexOf(authoritative[nextMatch]);
+    const start = Math.min(after, before);
+    const time = Date.parse(item.createdAt);
+    let insertion = before;
+    if (Number.isFinite(time)) {
+      for (let cursor = start; cursor < before; cursor += 1) {
+        if (Date.parse(merged[cursor].createdAt) > time) {
+          insertion = cursor;
+          break;
+        }
+      }
+    }
+    merged.splice(insertion, 0, item);
+    ids.add(item.id);
+    after = insertion + 1;
   }
-
-  return [...byId.values()];
+  return merged;
 }

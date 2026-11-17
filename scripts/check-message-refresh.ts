@@ -172,6 +172,28 @@ assert.deepEqual(
   "the same transcript item with a new backend ID must not render twice"
 );
 
+const pending: TestMessage = { id: "pending-send", createdAt: "2026-07-10T00:00:03.000Z", text: "One new message" };
+const commentary: TestMessage = { id: "thinking", createdAt: "2026-07-10T00:00:04.000Z", text: "Working" };
+let waiting = [...current, pending];
+const pendingKey = transcriptRenderItems(waiting, signature).at(-1)?.renderKey;
+for (let poll = 0; poll < 20; poll += 1) {
+  waiting = mergeTranscriptWindow(waiting, current, sameItem);
+  assert.deepEqual(waiting.map(m => m.id), ["turn-1", "turn-2", "pending-send"],
+    "background polls must keep a single new send AFTER old history, not prepend it");
+  assert.equal(transcriptRenderItems(waiting, signature).at(-1)?.renderKey, pendingKey);
+}
+assert.deepEqual(mergeTranscriptWindow(waiting, [current[1], commentary], sameItem).map(m => m.id),
+  ["turn-1", "turn-2", "pending-send", "thinking"], "preserve both loaded prefix and pending suffix before newer commentary");
+assert.deepEqual(mergeTranscriptWindow(waiting, [], sameItem), waiting, "an empty/stale response cannot reorder visible history");
+assert.deepEqual(mergeTranscriptWindow(waiting, [...current, { ...pending, text: "Updated echo" }], sameItem).map(m => m.text),
+  ["first", "second", "Updated echo"], "the eventual echo replaces the pending item in place");
+const equalTime = current.map(m => ({ ...m, createdAt: pending.createdAt }));
+assert.deepEqual(mergeTranscriptWindow([...equalTime, pending], [equalTime[1]], sameItem).map(m => m.id),
+  ["turn-1", "turn-2", "pending-send"], "shared anchors retain equal-time prefix and suffix ordering");
+assert.deepEqual(mergeTranscriptWindow([...current, pending, commentary], [current[0], commentary], sameItem).map(m => m.id),
+  ["turn-1", "turn-2", "pending-send", "thinking"], "missing middle blocks retain their position between native anchors");
+assert.deepEqual(current.map(m => m.id), ["turn-1", "turn-2"], "merging never mutates the source transcript");
+
 assert.deepEqual(
   preserveOptimisticRunSettings(
     { id: "server-prompt", model: undefined, reasoningEffort: undefined, speed: undefined },
