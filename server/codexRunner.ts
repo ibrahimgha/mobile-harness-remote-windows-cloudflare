@@ -10,6 +10,7 @@ import {
   type Stats
 } from "node:fs";
 import fs from "node:fs/promises";
+import { transcriptLines } from "./transcriptLines.js";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -1314,9 +1315,7 @@ export class CodexRunner {
     let responseVisible = false;
 
     try {
-      const raw = await fs.readFile(sessionPath, "utf8");
-
-      for (const line of raw.split(/\r?\n/)) {
+      for await (const line of transcriptLines(sessionPath)) {
         if (!line.includes('"type":"message"')) {
           continue;
         }

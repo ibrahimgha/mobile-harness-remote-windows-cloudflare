@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { transcriptLines } from "./transcriptLines.js";
 import { ParsedFileCache } from "./parsedFileCache.js";
 import { compressedSessionRows, materializeSession } from "./sessionArchive.js";
 import { stripRemotePromptContext } from "./remotePromptContext.js";
@@ -366,16 +367,16 @@ async function findLineStartAtOrBefore(filePath: string, offset: number): Promis
   return 0;
 }
 
-function countPromptRecords(buffer: Buffer): number {
+function countPromptRecords(line: string): number {
   let count = 0;
 
-  for (const line of buffer.toString("utf8").split(/\r?\n/)) {
+  {
     if (
       !line.includes('"type":"response_item"') ||
       !line.includes('"type":"message"') ||
       !line.includes('"role":"user"')
     ) {
-      continue;
+      return 0;
     }
 
     try {
@@ -409,10 +410,10 @@ export async function resolveTranscriptTailBytes(
   let bytesToRead = Math.min(fileSize, Math.max(1, initialBytes));
 
   while (bytesToRead < fileSize) {
-    const buffer = await readFileSlice(filePath, fileSize - bytesToRead, bytesToRead);
-
-    if (countPromptRecords(buffer) >= requiredPrompts) {
-      return bytesToRead;
+    let prompts = 0;
+    for await (const line of transcriptLines(filePath, fileSize - bytesToRead, bytesToRead)) {
+      prompts += countPromptRecords(line);
+      if (prompts >= requiredPrompts) return bytesToRead;
     }
 
     bytesToRead = Math.min(fileSize, bytesToRead * 2);
@@ -1013,14 +1014,12 @@ async function parseSessionFileUncached(
     const compactLength = Math.max(0, detailedStart - tailStart);
 
     if (compactLength > 0) {
-      const compactBuffer = await readFileSlice(filePath, tailStart, compactLength);
-      for (const line of compactBuffer.toString("utf8").split(/\r?\n/)) {
+      for await (const line of transcriptLines(filePath, tailStart, compactLength)) {
         consumeTranscriptLine(line, true);
       }
     }
 
-    const detailedBuffer = await readFileSlice(filePath, detailedStart, stat.size - detailedStart);
-    for (const line of detailedBuffer.toString("utf8").split(/\r?\n/)) {
+    for await (const line of transcriptLines(filePath, detailedStart, stat.size - detailedStart)) {
       consumeTranscriptLine(line);
     }
   }
