@@ -3281,9 +3281,9 @@ const codexPowerSettings: Array<{
 }> = [
   { model: "gpt-6-luna", reasoningEffort: "low", modelLabel: "Luna", effortLabel: "Light" },
   { model: "gpt-6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max" },
-  { model: "gpt-6.1-sol", reasoningEffort: "low", modelLabel: "Sol 6.1", effortLabel: "Low" },
-  { model: "gpt-6.1-sol", reasoningEffort: "medium", modelLabel: "Sol 6.1", effortLabel: "Medium" },
-  { model: "gpt-6.1-sol", reasoningEffort: "max", modelLabel: "Sol 6.1", effortLabel: "Max" },
+  { model: "gpt-6.2-sol", reasoningEffort: "low", modelLabel: "Sol 6.2", effortLabel: "Low" },
+  { model: "gpt-6.2-sol", reasoningEffort: "medium", modelLabel: "Sol 6.2", effortLabel: "Medium" },
+  { model: "gpt-6.2-sol", reasoningEffort: "max", modelLabel: "Sol 6.2", effortLabel: "Max" },
   { model: "gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max" }
 ];
 
@@ -3455,7 +3455,7 @@ export function RunSettingsPanel({
   const previewPowerSetting = powerSettings[safePowerPreviewIndex];
   const powerPercent = powerSettings.length > 1 ? (safePowerPreviewIndex / (powerSettings.length - 1)) * 100 : 0;
   const powerFillWidth = `calc(${powerPercent}% + ${14 - powerPercent * 0.28}px)`;
-  const solLowIndex = Math.max(0, powerSettings.findIndex((setting) => setting.model === "gpt-6.1-sol" && setting.reasoningEffort === "low"));
+  const solLowIndex = Math.max(0, powerSettings.findIndex((setting) => setting.model === "gpt-6.2-sol" && setting.reasoningEffort === "low"));
   const opaquePowerPercent = powerSettings.length > 1 ? (solLowIndex / (powerSettings.length - 1)) * 100 : 0;
   const opaquePowerEnd = `calc(${opaquePowerPercent}% + ${14 - opaquePowerPercent * 0.28}px)`;
   const fastModeSupported = availableSpeeds.includes("priority");

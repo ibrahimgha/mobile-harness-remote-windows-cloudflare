@@ -29,7 +29,7 @@ try {
   });
   const at=new Date(Date.now()-3600_000).toISOString();
   const summary={id:'single-send',title:'Single-send regression',projectName:'Isolated test',projectPath:'/test-only',createdAt:at,updatedAt:at,hasResponse:true};
-  const settings={model:'gpt-6.1-sol',reasoningEffort:'medium',speed:'default',updatedAt:at};
+  const settings={model:'gpt-6.2-sol',reasoningEffort:'medium',speed:'default',updatedAt:at};
   const messages=[
     {id:'old-prompt',role:'user',kind:'user_prompt',text:'Earlier task',createdAt:at},
     {id:'old-reply',role:'assistant',kind:'assistant_final',isFinal:true,text:Array.from({length:12},(_,i)=>`Earlier response paragraph ${i+1}. This belongs to the previous completed task.`).join('\n\n'),createdAt:at}
@@ -48,7 +48,7 @@ try {
       await new Promise(resolve=>setTimeout(resolve,600));
       body={ok:true,disposition:'started',job:submittedJob};
     }
-    else if(pathname==='/api/state')body={access:{mode:'full'},bridge:{mode:'simulation',targetTitle:'Fixture',controlEnabled:false,platform:'win32'},server:{name:'QC ONLY',uptimeSeconds:1},runner:{mode:'simulation',settings,settingsOptions:{models:['gpt-6.1-sol'],reasoningEfforts:['medium'],speeds:['default']},activeJobs:submittedJob?1:0,queuedJobs:0,recentJobs:submittedJob?[submittedJob]:[],usage:null}};
+    else if(pathname==='/api/state')body={access:{mode:'full'},bridge:{mode:'simulation',targetTitle:'Fixture',controlEnabled:false,platform:'win32'},server:{name:'QC ONLY',uptimeSeconds:1},runner:{mode:'simulation',settings,settingsOptions:{models:['gpt-6-luna','gpt-6.2-sol','gpt-6-astra'],reasoningEfforts:['low','medium','max'],speeds:['default']},activeJobs:submittedJob?1:0,queuedJobs:0,recentJobs:submittedJob?[submittedJob]:[],usage:null}};
     else if(pathname==='/api/chats')body={projects:[{projectName:summary.projectName,projectPath:summary.projectPath,chats:[summary]}],activeRuns:[]};
     else if(pathname.endsWith('/jobs'))body={jobs:submittedJob?[submittedJob]:[],activeJobs:submittedJob?1:0,queuedJobs:0};
     else if(pathname==='/api/chats/single-send'){
@@ -60,6 +60,7 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/?chat=single-send`,{waitUntil:'domcontentloaded'});
   await page.getByText('Earlier response paragraph 12.',{exact:false}).waitFor();
+  assert.equal(await page.locator('.composer-power-model').textContent(),'Sol 6.2 Medium');
   await page.getByRole('textbox',{name:'New prompt'}).fill(prompt);
   await page.getByRole('button',{name:'Send prompt',exact:true}).click();
   await page.locator('.chat-content').getByText(prompt,{exact:true}).waitFor();
