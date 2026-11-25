@@ -3284,7 +3284,7 @@ const codexPowerSettings: Array<{
   { model: "gpt-6.2-sol", reasoningEffort: "low", modelLabel: "Sol 6.2", effortLabel: "Low" },
   { model: "gpt-6.2-sol", reasoningEffort: "medium", modelLabel: "Sol 6.2", effortLabel: "Medium" },
   { model: "gpt-6.2-sol", reasoningEffort: "max", modelLabel: "Sol 6.2", effortLabel: "Max" },
-  { model: "gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max" }
+  { model: "gpt-6.2-astra", reasoningEffort: "max", modelLabel: "Astra 6.2", effortLabel: "Max" }
 ];
 
 function powerSettingLabel(setting: (typeof codexPowerSettings)[number]) {

@@ -50,7 +50,7 @@ assert.match(appSource, /Measuring with Codex\.\.\./, "usage refresh describes t
 assert.match(appSource, /Not provided by Codex/, "an omitted five-hour bucket is shown honestly");
 assert.match(
   appSource,
-  /gpt-6-luna", reasoningEffort: "low", modelLabel: "Luna", effortLabel: "Light"[\s\S]*gpt-6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max"[\s\S]*gpt-6\.2-sol", reasoningEffort: "low", modelLabel: "Sol 6\.2", effortLabel: "Low"[\s\S]*gpt-6\.2-sol", reasoningEffort: "medium", modelLabel: "Sol 6\.2", effortLabel: "Medium"[\s\S]*gpt-6\.2-sol", reasoningEffort: "max", modelLabel: "Sol 6\.2", effortLabel: "Max"[\s\S]*gpt-6-astra", reasoningEffort: "max", modelLabel: "Astra", effortLabel: "Max"/,
+  /gpt-6-luna", reasoningEffort: "low", modelLabel: "Luna", effortLabel: "Light"[\s\S]*gpt-6-luna", reasoningEffort: "max", modelLabel: "Luna", effortLabel: "Max"[\s\S]*gpt-6\.2-sol", reasoningEffort: "low", modelLabel: "Sol 6\.2", effortLabel: "Low"[\s\S]*gpt-6\.2-sol", reasoningEffort: "medium", modelLabel: "Sol 6\.2", effortLabel: "Medium"[\s\S]*gpt-6\.2-sol", reasoningEffort: "max", modelLabel: "Sol 6\.2", effortLabel: "Max"[\s\S]*gpt-6\.2-astra", reasoningEffort: "max", modelLabel: "Astra 6\.2", effortLabel: "Max"/,
   "the shared power slider keeps the requested preset order in both settings surfaces"
 );
 assert.match(appSource, /isControlRoomTile \? "is-control-room-tile"/, "embedded squares identify themselves for tile-specific composer layering");

@@ -48,7 +48,7 @@ try {
       await new Promise(resolve=>setTimeout(resolve,600));
       body={ok:true,disposition:'started',job:submittedJob};
     }
-    else if(pathname==='/api/state')body={access:{mode:'full'},bridge:{mode:'simulation',targetTitle:'Fixture',controlEnabled:false,platform:'win32'},server:{name:'QC ONLY',uptimeSeconds:1},runner:{mode:'simulation',settings,settingsOptions:{models:['gpt-6-luna','gpt-6.2-sol','gpt-6-astra'],reasoningEfforts:['low','medium','max'],speeds:['default']},activeJobs:submittedJob?1:0,queuedJobs:0,recentJobs:submittedJob?[submittedJob]:[],usage:null}};
+    else if(pathname==='/api/state')body={access:{mode:'full'},bridge:{mode:'simulation',targetTitle:'Fixture',controlEnabled:false,platform:'win32'},server:{name:'QC ONLY',uptimeSeconds:1},runner:{mode:'simulation',settings,settingsOptions:{models:['gpt-6-luna','gpt-6.2-sol','gpt-6.2-astra'],reasoningEfforts:['low','medium','max'],speeds:['default']},activeJobs:submittedJob?1:0,queuedJobs:0,recentJobs:submittedJob?[submittedJob]:[],usage:null}};
     else if(pathname==='/api/chats')body={projects:[{projectName:summary.projectName,projectPath:summary.projectPath,chats:[summary]}],activeRuns:[]};
     else if(pathname.endsWith('/jobs'))body={jobs:submittedJob?[submittedJob]:[],activeJobs:submittedJob?1:0,queuedJobs:0};
     else if(pathname==='/api/chats/single-send'){
